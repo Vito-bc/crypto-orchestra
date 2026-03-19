@@ -16,6 +16,10 @@ ATR_TARGET_MULTIPLIER = 3.0
 MIN_TREND_STRENGTH = 0.003
 MIN_VOLUME_RATIO = 1.05
 MAX_VOLUME_RATIO = 4.0
+MAX_HOLD_HOURS = {
+    "BTC-USD": 12,
+    "ETH-USD": 8,
+}
 START_BALANCE = 10000
 
 SYMBOLS = ["BTC-USD", "ETH-USD"]
@@ -278,6 +282,7 @@ def close_position(position, price, time, reason, symbol):
         pnl_pct = (position["entry"] - price) / position["entry"]
 
     pnl_usd = net_returned - position["cost"]
+    hold_hours = (pd.Timestamp(time) - pd.Timestamp(position["entry_time"])).total_seconds() / 3600
 
     trade = {
         "type": "CLOSE",
@@ -289,6 +294,7 @@ def close_position(position, price, time, reason, symbol):
         "pnl_pct": pnl_pct,
         "exit_time": time,
         "entry_time": position["entry_time"],
+        "hold_hours": hold_hours,
         "reason": reason,
         "net_returned": net_returned,
     }
@@ -340,6 +346,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
     trades = []
     equity = []
     exit_settings = EXIT_SETTINGS.get(symbol, {})
+    max_hold_hours = MAX_HOLD_HOURS.get(symbol)
     diagnostics = {
         "eligible_rows": 0,
         "trend_ok": 0,
@@ -372,6 +379,8 @@ def run_backtest(symbol, timeframe="1h", days=365):
         equity.append({"time": row["time"], "balance": equity_value})
 
         if position:
+            held_hours = (pd.Timestamp(row["time"]) - pd.Timestamp(position["entry_time"])).total_seconds() / 3600
+
             if position["side"] == "LONG":
                 pnl_pct = (price - position["entry"]) / position["entry"]
             else:
@@ -393,13 +402,14 @@ def run_backtest(symbol, timeframe="1h", days=365):
 
             hit_stop = price <= position["stop_price"]
             hit_target = price >= position["target_price"]
+            hit_max_hold = max_hold_hours is not None and held_hours >= max_hold_hours
 
-            if hit_stop or hit_target:
+            if hit_stop or hit_target or hit_max_hold:
                 close_trade = close_position(
                     position,
                     price,
                     row["time"],
-                    "STOP_LOSS" if hit_stop else "TAKE_PROFIT",
+                    "STOP_LOSS" if hit_stop else ("TAKE_PROFIT" if hit_target else "MAX_HOLD"),
                     symbol,
                 )
                 balance += close_trade["net_returned"]
@@ -513,6 +523,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
     print_breakdown("SIGNAL", [t for t in closed_trades if t["reason"] == "SIGNAL"])
     print_breakdown("STOP_LOSS", [t for t in closed_trades if t["reason"] == "STOP_LOSS"])
     print_breakdown("TAKE_PROFIT", [t for t in closed_trades if t["reason"] == "TAKE_PROFIT"])
+    print_breakdown("MAX_HOLD", [t for t in closed_trades if t["reason"] == "MAX_HOLD"])
     print_breakdown("END_OF_TEST", [t for t in closed_trades if t["reason"] == "END_OF_TEST"])
     print(f"  {'-' * 45}")
     print("  Entry Diagnostics:")
