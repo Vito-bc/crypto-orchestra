@@ -31,6 +31,9 @@ STRATEGY_CONFIG = {
         "trailing_stop_multiplier": 1.0,
         "break_even_trigger_atr": 1.0,
         "macd_mode": "strict_cross",
+        "trend_mode": "close_above_4h_ema200",
+        "require_local_above_ema50": True,
+        "local_ema50_buffer": 1.0,
     },
     "ETH-USD": {
         "min_trend_strength": 0.003,
@@ -44,6 +47,9 @@ STRATEGY_CONFIG = {
         "trailing_stop_multiplier": None,
         "break_even_trigger_atr": None,
         "macd_mode": "refined_momentum",
+        "trend_mode": "ema_or_close_4h",
+        "require_local_above_ema50": True,
+        "local_ema50_buffer": 1.0,
     },
 }
 
@@ -70,6 +76,23 @@ def macd_sell_ok(row, config):
             and row["macd_prev"] >= row["macd_diff"] * MACD_PREV_RATIO_CAP
         )
     return row["macd_diff"] < 0 and row["macd_prev"] >= 0
+
+
+def trend_ok(row, config):
+    local_trend_ok = row["ema50"] > row["ema200"]
+    if config.get("require_local_above_ema50", True):
+        local_trend_ok = local_trend_ok and row["close"] >= row["ema50"] * config.get("local_ema50_buffer", 1.0)
+    mode = config.get("trend_mode", "ema_or_close_4h")
+
+    if mode == "close_above_4h_ema200":
+        higher_tf_ok = row.get("close_4h", np.nan) > row.get("ema200_4h", np.nan)
+    else:
+        higher_tf_ok = (
+            row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
+            or row.get("close_4h", np.nan) > row.get("ema200_4h", np.nan)
+        )
+
+    return local_trend_ok and higher_tf_ok
 
 
 def fetch_historical(symbol, timeframe="1h", days=365):
@@ -186,14 +209,7 @@ def get_signal(row, prev_row, config):
     ):
         return "HOLD"
 
-    uptrend = (
-        row["ema50"] > row["ema200"]
-        and row["close"] > row["ema50"]
-        and (
-            row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
-            or row.get("close_4h", np.nan) > row.get("ema200_4h", np.nan)
-        )
-    )
+    uptrend = trend_ok(row, config)
     volume_ok = config["min_volume_ratio"] < row["volume_ratio"] < config["max_volume_ratio"]
 
     buy_signals = 0
@@ -234,14 +250,7 @@ def evaluate_entry_components(row, prev_row, config):
     ):
         return None
 
-    uptrend = (
-        row["ema50"] > row["ema200"]
-        and row["close"] > row["ema50"]
-        and (
-            row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
-            or row.get("close_4h", np.nan) > row.get("ema200_4h", np.nan)
-        )
-    )
+    uptrend = trend_ok(row, config)
     volume_ok = config["min_volume_ratio"] < row["volume_ratio"] < config["max_volume_ratio"]
 
     buy_signals = 0
