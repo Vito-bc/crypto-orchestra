@@ -14,6 +14,7 @@ TRADE_SIZE_PCT = 0.02
 ATR_STOP_MULTIPLIER = 1.5
 ATR_TARGET_MULTIPLIER = 3.0
 START_BALANCE = 10000
+MACD_PREV_RATIO_CAP = 0.2
 
 SYMBOLS = ["BTC-USD", "ETH-USD"]
 
@@ -29,6 +30,7 @@ STRATEGY_CONFIG = {
         "max_hold_hours": 12,
         "trailing_stop_multiplier": 1.0,
         "break_even_trigger_atr": 1.0,
+        "macd_mode": "strict_cross",
     },
     "ETH-USD": {
         "min_trend_strength": 0.003,
@@ -41,12 +43,33 @@ STRATEGY_CONFIG = {
         "max_hold_hours": 8,
         "trailing_stop_multiplier": None,
         "break_even_trigger_atr": None,
+        "macd_mode": "refined_momentum",
     },
 }
 
 
 def get_symbol_config(symbol):
     return STRATEGY_CONFIG[symbol]
+
+
+def macd_buy_ok(row, config):
+    if config.get("macd_mode") == "refined_momentum":
+        return (
+            row["macd_diff"] > 0
+            and row["macd_diff"] > row["macd_prev"]
+            and row["macd_prev"] <= row["macd_diff"] * MACD_PREV_RATIO_CAP
+        )
+    return row["macd_diff"] > 0 and row["macd_prev"] <= 0
+
+
+def macd_sell_ok(row, config):
+    if config.get("macd_mode") == "refined_momentum":
+        return (
+            row["macd_diff"] < 0
+            and row["macd_diff"] < row["macd_prev"]
+            and row["macd_prev"] >= row["macd_diff"] * MACD_PREV_RATIO_CAP
+        )
+    return row["macd_diff"] < 0 and row["macd_prev"] >= 0
 
 
 def fetch_historical(symbol, timeframe="1h", days=365):
@@ -135,9 +158,10 @@ def prepare_timeframe_df(symbol, timeframe, days):
 
 
 def attach_higher_timeframe_context(signal_df, trend_df):
-    trend_cols = trend_df[["time", "ema50", "ema200", "trend"]].copy()
+    trend_cols = trend_df[["time", "close", "ema50", "ema200", "trend"]].copy()
     trend_cols["trend_strength_4h"] = (trend_cols["ema50"] - trend_cols["ema200"]) / trend_cols["ema200"]
     trend_cols = trend_cols.rename(columns={
+        "close": "close_4h",
         "ema50": "ema50_4h",
         "ema200": "ema200_4h",
         "trend": "trend_4h",
@@ -150,28 +174,6 @@ def attach_higher_timeframe_context(signal_df, trend_df):
         direction="backward",
     )
     return merged
-
-
-def attach_entry_timeframe_context(signal_df, entry_df):
-    entry_cols = entry_df[["time", "rsi", "macd_diff", "macd_prev", "bb_pct", "close", "ema50"]].copy()
-    entry_cols = entry_cols.rename(columns={
-        "rsi": "rsi_15m",
-        "macd_diff": "macd_diff_15m",
-        "macd_prev": "macd_prev_15m",
-        "bb_pct": "bb_pct_15m",
-        "close": "close_15m",
-        "ema50": "ema50_15m",
-    })
-
-    merged = pd.merge_asof(
-        signal_df.sort_values("time"),
-        entry_cols.sort_values("time"),
-        on="time",
-        direction="backward",
-    )
-    return merged
-
-
 def get_signal(row, prev_row, config):
     if (
         pd.isna(row["rsi"])
@@ -184,32 +186,23 @@ def get_signal(row, prev_row, config):
     ):
         return "HOLD"
 
-    use_entry_timing = bool(row.get("use_15m_timing", False))
-    entry_confirmation = True
-    if use_entry_timing:
-        entry_confirmation = (
-            not pd.isna(row.get("macd_diff_15m", np.nan))
-            and (
-                row["macd_diff_15m"] > 0
-                or row["close_15m"] > row["ema50_15m"]
-                or row["rsi_15m"] < 55
-                or row["bb_pct_15m"] < 0.60
-            )
-        )
-
     uptrend = (
         row["ema50"] > row["ema200"]
         and row["close"] > row["ema50"]
-        and row.get("trend_4h") == "bull"
-        and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
-        and row.get("trend_strength_4h", 0) > config["min_trend_strength"]
+        and (
+            row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
+            or row.get("close_4h", np.nan) > row.get("ema200_4h", np.nan)
+        )
     )
     volume_ok = config["min_volume_ratio"] < row["volume_ratio"] < config["max_volume_ratio"]
 
     buy_signals = 0
+    rsi_ok = row["rsi"] < config["buy_rsi_max"]
+    macd_ok = macd_buy_ok(row, config)
+    bb_ok = row["bb_pct"] < config["buy_bb_pct_max"]
     if row["rsi"] < config["buy_rsi_max"]:
         buy_signals += 1
-    if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
+    if macd_ok:
         buy_signals += 1
     if row["bb_pct"] < config["buy_bb_pct_max"]:
         buy_signals += 1
@@ -217,12 +210,12 @@ def get_signal(row, prev_row, config):
     sell_signals = 0
     if row["rsi"] > config["sell_rsi_min"]:
         sell_signals += 1
-    if row["macd_diff"] < 0 and row["macd_prev"] >= 0:
+    if macd_sell_ok(row, config):
         sell_signals += 1
     if row["bb_pct"] > config["sell_bb_pct_min"]:
         sell_signals += 1
 
-    if uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and entry_confirmation and volume_ok:
+    if uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and volume_ok:
         return "BUY"
     if sell_signals >= 2:
         return "SELL"
@@ -241,43 +234,41 @@ def evaluate_entry_components(row, prev_row, config):
     ):
         return None
 
-    use_entry_timing = bool(row.get("use_15m_timing", False))
-    entry_confirmation = True
-    if use_entry_timing:
-        entry_confirmation = (
-            not pd.isna(row.get("macd_diff_15m", np.nan))
-            and (
-                row["macd_diff_15m"] > 0
-                or row["close_15m"] > row["ema50_15m"]
-                or row["rsi_15m"] < 55
-                or row["bb_pct_15m"] < 0.60
-            )
-        )
-
     uptrend = (
         row["ema50"] > row["ema200"]
         and row["close"] > row["ema50"]
-        and row.get("trend_4h") == "bull"
-        and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
-        and row.get("trend_strength_4h", 0) > config["min_trend_strength"]
+        and (
+            row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
+            or row.get("close_4h", np.nan) > row.get("ema200_4h", np.nan)
+        )
     )
     volume_ok = config["min_volume_ratio"] < row["volume_ratio"] < config["max_volume_ratio"]
 
     buy_signals = 0
-    if row["rsi"] < config["buy_rsi_max"]:
+    rsi_ok = row["rsi"] < config["buy_rsi_max"]
+    macd_ok = macd_buy_ok(row, config)
+    bb_ok = row["bb_pct"] < config["buy_bb_pct_max"]
+    if rsi_ok:
         buy_signals += 1
-    if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
+    if macd_ok:
         buy_signals += 1
-    if row["bb_pct"] < config["buy_bb_pct_max"]:
+    if bb_ok:
         buy_signals += 1
 
     return {
         "trend_ok": uptrend,
         "macd_ok": row["macd_diff"] > 0,
+        "macd_cross_ok": macd_ok,
+        "rsi_ok": rsi_ok,
+        "bb_ok": bb_ok,
         "signal_count_ok": buy_signals >= 2,
         "volume_ok": volume_ok,
-        "timing_ok": bool(entry_confirmation),
-        "buy_ready": bool(uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and entry_confirmation and volume_ok),
+        "timing_ok": True,
+        "buy_ready": bool(uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and volume_ok),
+        "blocked_by_macd": bool(uptrend and rsi_ok and bb_ok and volume_ok and not macd_ok),
+        "blocked_by_rsi": bool(uptrend and macd_ok and bb_ok and volume_ok and not rsi_ok),
+        "blocked_by_bb": bool(uptrend and macd_ok and rsi_ok and volume_ok and not bb_ok),
+        "blocked_by_volume": bool(uptrend and macd_ok and rsi_ok and bb_ok and not volume_ok),
     }
 
 
@@ -343,17 +334,11 @@ def run_backtest(symbol, timeframe="1h", days=365):
     config = get_symbol_config(symbol)
     signal_df = prepare_timeframe_df(symbol, timeframe, days)
     trend_df = prepare_timeframe_df(symbol, "4h", days)
-    use_15m_timing = days <= 60
-    entry_df = prepare_timeframe_df(symbol, "15m", days) if use_15m_timing else None
 
     if signal_df is None or trend_df is None:
         return None
 
     df = attach_higher_timeframe_context(signal_df, trend_df)
-    if use_15m_timing and entry_df is not None:
-        df = attach_entry_timeframe_context(df, entry_df)
-
-    df["use_15m_timing"] = use_15m_timing
 
     balance = START_BALANCE
     position = None
@@ -364,10 +349,17 @@ def run_backtest(symbol, timeframe="1h", days=365):
         "eligible_rows": 0,
         "trend_ok": 0,
         "macd_ok": 0,
+        "macd_cross_ok": 0,
+        "rsi_ok": 0,
+        "bb_ok": 0,
         "signal_count_ok": 0,
         "volume_ok": 0,
         "timing_ok": 0,
         "buy_ready": 0,
+        "blocked_by_macd": 0,
+        "blocked_by_rsi": 0,
+        "blocked_by_bb": 0,
+        "blocked_by_volume": 0,
     }
 
     for i in range(1, len(df)):
@@ -378,7 +370,21 @@ def run_backtest(symbol, timeframe="1h", days=365):
         entry_check = evaluate_entry_components(row, prev_row, config)
         if entry_check is not None:
             diagnostics["eligible_rows"] += 1
-            for key in ["trend_ok", "macd_ok", "signal_count_ok", "volume_ok", "timing_ok", "buy_ready"]:
+            for key in [
+                "trend_ok",
+                "macd_ok",
+                "macd_cross_ok",
+                "rsi_ok",
+                "bb_ok",
+                "signal_count_ok",
+                "volume_ok",
+                "timing_ok",
+                "buy_ready",
+                "blocked_by_macd",
+                "blocked_by_rsi",
+                "blocked_by_bb",
+                "blocked_by_volume",
+            ]:
                 if entry_check[key]:
                     diagnostics[key] += 1
 
@@ -519,8 +525,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
     print(f"  Final Balance:     ${balance:,.2f}")
     print(f"  Total Return:      {total_return:+.2f}%")
     print(f"  {'-' * 45}")
-    mode_label = "4h bullish trend + 15m timing" if use_15m_timing else "4h bullish trend only"
-    print(f"  Regime Filter:     {mode_label}")
+    print("  Regime Filter:     4h bullish trend only")
     print(f"  Total Trades:      {len(closed_trades)}")
     print(f"  Win Rate:          {win_rate:.1f}%  (need >55%)")
     print(f"  Profit Factor:     {profit_factor:.2f}  (need >1.3)")
@@ -543,10 +548,17 @@ def run_backtest(symbol, timeframe="1h", days=365):
     print(f"  Eligible Rows:     {diagnostics['eligible_rows']}")
     print(f"  Trend OK:          {diagnostics['trend_ok']}")
     print(f"  MACD OK:           {diagnostics['macd_ok']}")
+    print(f"  MACD Cross OK:     {diagnostics['macd_cross_ok']}")
+    print(f"  RSI OK:            {diagnostics['rsi_ok']}")
+    print(f"  BB OK:             {diagnostics['bb_ok']}")
     print(f"  Signal Count OK:   {diagnostics['signal_count_ok']}")
     print(f"  Volume OK:         {diagnostics['volume_ok']}")
     print(f"  Timing OK:         {diagnostics['timing_ok']}")
     print(f"  Buy Ready:         {diagnostics['buy_ready']}")
+    print(f"  Blocked by MACD:   {diagnostics['blocked_by_macd']}")
+    print(f"  Blocked by RSI:    {diagnostics['blocked_by_rsi']}")
+    print(f"  Blocked by BB:     {diagnostics['blocked_by_bb']}")
+    print(f"  Blocked by Volume: {diagnostics['blocked_by_volume']}")
 
     passed = (
         win_rate > 55
