@@ -13,9 +13,23 @@ FEE_RATE = 0.006
 TRADE_SIZE_PCT = 0.02
 ATR_STOP_MULTIPLIER = 1.5
 ATR_TARGET_MULTIPLIER = 3.0
+MIN_TREND_STRENGTH = 0.003
+MIN_VOLUME_RATIO = 1.05
+MAX_VOLUME_RATIO = 4.0
 START_BALANCE = 10000
 
 SYMBOLS = ["BTC-USD", "ETH-USD"]
+
+EXIT_SETTINGS = {
+    "BTC-USD": {
+        "trailing_stop_multiplier": 1.0,
+        "break_even_trigger_atr": 1.0,
+    },
+    "ETH-USD": {
+        "trailing_stop_multiplier": None,
+        "break_even_trigger_atr": None,
+    },
+}
 
 
 def fetch_historical(symbol, timeframe="1h", days=365):
@@ -105,6 +119,7 @@ def prepare_timeframe_df(symbol, timeframe, days):
 
 def attach_higher_timeframe_context(signal_df, trend_df):
     trend_cols = trend_df[["time", "ema50", "ema200", "trend"]].copy()
+    trend_cols["trend_strength_4h"] = (trend_cols["ema50"] - trend_cols["ema200"]) / trend_cols["ema200"]
     trend_cols = trend_cols.rename(columns={
         "ema50": "ema50_4h",
         "ema200": "ema200_4h",
@@ -170,15 +185,16 @@ def get_signal(row, prev_row):
         and row["close"] > row["ema50"]
         and row.get("trend_4h") == "bull"
         and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
+        and row.get("trend_strength_4h", 0) > MIN_TREND_STRENGTH
     )
-    volume_ok = row["volume_ratio"] > 1.05
+    volume_ok = MIN_VOLUME_RATIO < row["volume_ratio"] < MAX_VOLUME_RATIO
 
     buy_signals = 0
     if row["rsi"] < 55:
         buy_signals += 1
     if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
         buy_signals += 1
-    if row["bb_pct"] < 0.55:
+    if row["bb_pct"] < 0.50:
         buy_signals += 1
 
     sell_signals = 0
@@ -226,15 +242,16 @@ def evaluate_entry_components(row, prev_row):
         and row["close"] > row["ema50"]
         and row.get("trend_4h") == "bull"
         and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
+        and row.get("trend_strength_4h", 0) > MIN_TREND_STRENGTH
     )
-    volume_ok = row["volume_ratio"] > 1.05
+    volume_ok = MIN_VOLUME_RATIO < row["volume_ratio"] < MAX_VOLUME_RATIO
 
     buy_signals = 0
     if row["rsi"] < 55:
         buy_signals += 1
     if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
         buy_signals += 1
-    if row["bb_pct"] < 0.55:
+    if row["bb_pct"] < 0.50:
         buy_signals += 1
 
     return {
@@ -262,7 +279,7 @@ def close_position(position, price, time, reason, symbol):
 
     pnl_usd = net_returned - position["cost"]
 
-    return {
+    trade = {
         "type": "CLOSE",
         "side": position["side"],
         "symbol": symbol,
@@ -275,6 +292,8 @@ def close_position(position, price, time, reason, symbol):
         "reason": reason,
         "net_returned": net_returned,
     }
+    trade.update(position.get("entry_context", {}))
+    return trade
 
 
 def print_breakdown(label, subset):
@@ -284,6 +303,21 @@ def print_breakdown(label, subset):
     win_rate = len(wins) / len(subset) * 100
     avg_pnl = sum(t["pnl_usd"] for t in subset) / len(subset)
     print(f"  {label:12} {len(subset):3} trades  Win Rate: {win_rate:5.1f}%  Avg PnL: ${avg_pnl:+.2f}")
+
+
+def export_trade_log(symbol, closed_trades, timeframe, days):
+    if not closed_trades:
+        return None
+
+    output_dir = Path("analysis") / "trade_logs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{symbol.replace('-', '_')}_{timeframe}_{days}d_trades.csv"
+    output_path = output_dir / filename
+
+    trade_df = pd.DataFrame(closed_trades).copy()
+    trade_df.to_csv(output_path, index=False)
+    return output_path
 
 
 def run_backtest(symbol, timeframe="1h", days=365):
@@ -305,6 +339,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
     position = None
     trades = []
     equity = []
+    exit_settings = EXIT_SETTINGS.get(symbol, {})
     diagnostics = {
         "eligible_rows": 0,
         "trend_ok": 0,
@@ -341,6 +376,20 @@ def run_backtest(symbol, timeframe="1h", days=365):
                 pnl_pct = (price - position["entry"]) / position["entry"]
             else:
                 pnl_pct = (position["entry"] - price) / position["entry"]
+
+            if position["side"] == "LONG":
+                break_even_trigger_atr = exit_settings.get("break_even_trigger_atr")
+                trailing_stop_multiplier = exit_settings.get("trailing_stop_multiplier")
+
+                if (
+                    break_even_trigger_atr is not None
+                    and price >= position["entry"] + row["atr"] * break_even_trigger_atr
+                ):
+                    position["stop_price"] = max(position["stop_price"], position["entry"])
+
+                if trailing_stop_multiplier is not None:
+                    trailing_stop = price - row["atr"] * trailing_stop_multiplier
+                    position["stop_price"] = max(position["stop_price"], trailing_stop)
 
             hit_stop = price <= position["stop_price"]
             hit_target = price >= position["target_price"]
@@ -386,6 +435,19 @@ def run_backtest(symbol, timeframe="1h", days=365):
                 "entry_time": row["time"],
                 "stop_price": price - row["atr"] * ATR_STOP_MULTIPLIER,
                 "target_price": price + row["atr"] * ATR_TARGET_MULTIPLIER,
+                "entry_context": {
+                    "entry_rsi_1h": row["rsi"],
+                    "entry_macd_diff_1h": row["macd_diff"],
+                    "entry_bb_pct_1h": row["bb_pct"],
+                    "entry_volume_ratio_1h": row["volume_ratio"],
+                    "entry_atr_1h": row["atr"],
+                    "entry_trend_strength_4h": row.get("trend_strength_4h", np.nan),
+                    "entry_trend_4h": row.get("trend_4h", ""),
+                    "entry_rsi_15m": row.get("rsi_15m", np.nan),
+                    "entry_macd_diff_15m": row.get("macd_diff_15m", np.nan),
+                    "entry_bb_pct_15m": row.get("bb_pct_15m", np.nan),
+                    "entry_volume_1h": row.get("volume", np.nan),
+                },
             }
             trades.append({
                 "type": "OPEN",
@@ -407,6 +469,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
         trades.append(close_trade)
 
     closed_trades = [t for t in trades if t["type"] == "CLOSE"]
+    trade_log_path = export_trade_log(symbol, closed_trades, timeframe, days)
     wins = [t for t in closed_trades if t["pnl_usd"] > 0]
     losses = [t for t in closed_trades if t["pnl_usd"] <= 0]
     long_trades = [t for t in closed_trades if t["side"] == "LONG"]
@@ -443,6 +506,9 @@ def run_backtest(symbol, timeframe="1h", days=365):
     print(f"  Avg Win:           ${avg_win:+.2f}")
     print(f"  Avg Loss:          ${avg_loss:+.2f}")
     print(f"  {'-' * 45}")
+    if trade_log_path:
+        print(f"  Trade Log:         {trade_log_path}")
+        print(f"  {'-' * 45}")
     print_breakdown("LONG", long_trades)
     print_breakdown("SIGNAL", [t for t in closed_trades if t["reason"] == "SIGNAL"])
     print_breakdown("STOP_LOSS", [t for t in closed_trades if t["reason"] == "STOP_LOSS"])
