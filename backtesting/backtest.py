@@ -13,27 +13,40 @@ FEE_RATE = 0.006
 TRADE_SIZE_PCT = 0.02
 ATR_STOP_MULTIPLIER = 1.5
 ATR_TARGET_MULTIPLIER = 3.0
-MIN_TREND_STRENGTH = 0.003
-MIN_VOLUME_RATIO = 1.05
-MAX_VOLUME_RATIO = 4.0
-MAX_HOLD_HOURS = {
-    "BTC-USD": 12,
-    "ETH-USD": 8,
-}
 START_BALANCE = 10000
 
 SYMBOLS = ["BTC-USD", "ETH-USD"]
 
-EXIT_SETTINGS = {
+STRATEGY_CONFIG = {
     "BTC-USD": {
+        "min_trend_strength": 0.003,
+        "min_volume_ratio": 1.05,
+        "max_volume_ratio": 4.0,
+        "buy_rsi_max": 54,
+        "buy_bb_pct_max": 0.48,
+        "sell_rsi_min": 58,
+        "sell_bb_pct_min": 0.70,
+        "max_hold_hours": 12,
         "trailing_stop_multiplier": 1.0,
         "break_even_trigger_atr": 1.0,
     },
     "ETH-USD": {
+        "min_trend_strength": 0.003,
+        "min_volume_ratio": 1.05,
+        "max_volume_ratio": 4.0,
+        "buy_rsi_max": 55,
+        "buy_bb_pct_max": 0.50,
+        "sell_rsi_min": 58,
+        "sell_bb_pct_min": 0.70,
+        "max_hold_hours": 8,
         "trailing_stop_multiplier": None,
         "break_even_trigger_atr": None,
     },
 }
+
+
+def get_symbol_config(symbol):
+    return STRATEGY_CONFIG[symbol]
 
 
 def fetch_historical(symbol, timeframe="1h", days=365):
@@ -159,7 +172,7 @@ def attach_entry_timeframe_context(signal_df, entry_df):
     return merged
 
 
-def get_signal(row, prev_row):
+def get_signal(row, prev_row, config):
     if (
         pd.isna(row["rsi"])
         or pd.isna(row["macd_diff"])
@@ -189,24 +202,24 @@ def get_signal(row, prev_row):
         and row["close"] > row["ema50"]
         and row.get("trend_4h") == "bull"
         and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
-        and row.get("trend_strength_4h", 0) > MIN_TREND_STRENGTH
+        and row.get("trend_strength_4h", 0) > config["min_trend_strength"]
     )
-    volume_ok = MIN_VOLUME_RATIO < row["volume_ratio"] < MAX_VOLUME_RATIO
+    volume_ok = config["min_volume_ratio"] < row["volume_ratio"] < config["max_volume_ratio"]
 
     buy_signals = 0
-    if row["rsi"] < 55:
+    if row["rsi"] < config["buy_rsi_max"]:
         buy_signals += 1
     if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
         buy_signals += 1
-    if row["bb_pct"] < 0.50:
+    if row["bb_pct"] < config["buy_bb_pct_max"]:
         buy_signals += 1
 
     sell_signals = 0
-    if row["rsi"] > 58:
+    if row["rsi"] > config["sell_rsi_min"]:
         sell_signals += 1
     if row["macd_diff"] < 0 and row["macd_prev"] >= 0:
         sell_signals += 1
-    if row["bb_pct"] > 0.70:
+    if row["bb_pct"] > config["sell_bb_pct_min"]:
         sell_signals += 1
 
     if uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and entry_confirmation and volume_ok:
@@ -216,7 +229,7 @@ def get_signal(row, prev_row):
     return "HOLD"
 
 
-def evaluate_entry_components(row, prev_row):
+def evaluate_entry_components(row, prev_row, config):
     if (
         pd.isna(row["rsi"])
         or pd.isna(row["macd_diff"])
@@ -246,16 +259,16 @@ def evaluate_entry_components(row, prev_row):
         and row["close"] > row["ema50"]
         and row.get("trend_4h") == "bull"
         and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
-        and row.get("trend_strength_4h", 0) > MIN_TREND_STRENGTH
+        and row.get("trend_strength_4h", 0) > config["min_trend_strength"]
     )
-    volume_ok = MIN_VOLUME_RATIO < row["volume_ratio"] < MAX_VOLUME_RATIO
+    volume_ok = config["min_volume_ratio"] < row["volume_ratio"] < config["max_volume_ratio"]
 
     buy_signals = 0
-    if row["rsi"] < 55:
+    if row["rsi"] < config["buy_rsi_max"]:
         buy_signals += 1
     if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
         buy_signals += 1
-    if row["bb_pct"] < 0.50:
+    if row["bb_pct"] < config["buy_bb_pct_max"]:
         buy_signals += 1
 
     return {
@@ -327,6 +340,7 @@ def export_trade_log(symbol, closed_trades, timeframe, days):
 
 
 def run_backtest(symbol, timeframe="1h", days=365):
+    config = get_symbol_config(symbol)
     signal_df = prepare_timeframe_df(symbol, timeframe, days)
     trend_df = prepare_timeframe_df(symbol, "4h", days)
     use_15m_timing = days <= 60
@@ -345,8 +359,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
     position = None
     trades = []
     equity = []
-    exit_settings = EXIT_SETTINGS.get(symbol, {})
-    max_hold_hours = MAX_HOLD_HOURS.get(symbol)
+    max_hold_hours = config.get("max_hold_hours")
     diagnostics = {
         "eligible_rows": 0,
         "trend_ok": 0,
@@ -362,7 +375,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
         prev_row = df.iloc[i - 1]
         price = row["close"]
 
-        entry_check = evaluate_entry_components(row, prev_row)
+        entry_check = evaluate_entry_components(row, prev_row, config)
         if entry_check is not None:
             diagnostics["eligible_rows"] += 1
             for key in ["trend_ok", "macd_ok", "signal_count_ok", "volume_ok", "timing_ok", "buy_ready"]:
@@ -387,8 +400,8 @@ def run_backtest(symbol, timeframe="1h", days=365):
                 pnl_pct = (position["entry"] - price) / position["entry"]
 
             if position["side"] == "LONG":
-                break_even_trigger_atr = exit_settings.get("break_even_trigger_atr")
-                trailing_stop_multiplier = exit_settings.get("trailing_stop_multiplier")
+                break_even_trigger_atr = config.get("break_even_trigger_atr")
+                trailing_stop_multiplier = config.get("trailing_stop_multiplier")
 
                 if (
                     break_even_trigger_atr is not None
@@ -417,7 +430,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
                 position = None
                 continue
 
-        signal = get_signal(row, prev_row)
+        signal = get_signal(row, prev_row, config)
 
         if signal == "SELL" and position is not None and position["side"] == "LONG":
             close_trade = close_position(position, price, row["time"], "SIGNAL", symbol)
