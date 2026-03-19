@@ -1,0 +1,5 @@
+ccxt
+numpy
+pandas
+ta
+yfinance
