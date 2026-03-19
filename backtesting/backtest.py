@@ -5,14 +5,14 @@ import pandas as pd
 import numpy as np
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
-from ta.volatility import BollingerBands
+from ta.volatility import AverageTrueRange, BollingerBands
 from pathlib import Path
 
 
 FEE_RATE = 0.006
 TRADE_SIZE_PCT = 0.02
-STOP_LOSS_PCT = 0.015
-TAKE_PROFIT_PCT = 0.12
+ATR_STOP_MULTIPLIER = 1.5
+ATR_TARGET_MULTIPLIER = 3.0
 START_BALANCE = 10000
 
 SYMBOLS = ["BTC-USD", "ETH-USD"]
@@ -63,6 +63,8 @@ def fetch_historical(symbol, timeframe="1h", days=365):
 
 def calculate_indicators(df):
     df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
+    df["volume_sma20"] = df["volume"].rolling(window=20).mean()
+    df["volume_ratio"] = df["volume"] / df["volume_sma20"]
 
     macd = MACD(df["close"])
     df["macd_diff"] = macd.macd_diff()
@@ -73,6 +75,7 @@ def calculate_indicators(df):
     df["bb_lower"] = bb.bollinger_lband()
     df["bb_mid"] = bb.bollinger_mavg()
     df["bb_pct"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
+    df["atr"] = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
 
     df["ema50"] = EMAIndicator(df["close"], window=50).ema_indicator()
     df["ema200"] = EMAIndicator(df["close"], window=200).ema_indicator()
@@ -144,6 +147,8 @@ def get_signal(row, prev_row):
         or pd.isna(row["bb_pct"])
         or pd.isna(row["ema50"])
         or pd.isna(row["fib_382"])
+        or pd.isna(row["atr"])
+        or pd.isna(row["volume_ratio"])
     ):
         return "HOLD"
 
@@ -153,27 +158,27 @@ def get_signal(row, prev_row):
         entry_confirmation = (
             not pd.isna(row.get("macd_diff_15m", np.nan))
             and (
-                (row["macd_diff_15m"] > 0 and row["macd_prev_15m"] <= 0)
-                or (row["close_15m"] > row["ema50_15m"] and row["bb_pct_15m"] < 0.55)
+                row["macd_diff_15m"] > 0
+                or row["close_15m"] > row["ema50_15m"]
+                or row["rsi_15m"] < 55
+                or row["bb_pct_15m"] < 0.60
             )
         )
 
     uptrend = (
         row["ema50"] > row["ema200"]
         and row["close"] > row["ema50"]
-        and prev_row["ema50"] < row["ema50"]
         and row.get("trend_4h") == "bull"
         and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
     )
+    volume_ok = row["volume_ratio"] > 1.05
 
     buy_signals = 0
-    if row["rsi"] < 48:
+    if row["rsi"] < 55:
         buy_signals += 1
     if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
         buy_signals += 1
-    if row["bb_pct"] < 0.40:
-        buy_signals += 1
-    if row["fib_support_zone"]:
+    if row["bb_pct"] < 0.55:
         buy_signals += 1
 
     sell_signals = 0
@@ -183,14 +188,63 @@ def get_signal(row, prev_row):
         sell_signals += 1
     if row["bb_pct"] > 0.70:
         sell_signals += 1
-    if row["close"] >= row["fib_382"] * 1.02:
-        sell_signals += 1
 
-    if uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and row["fib_deep_discount"] and entry_confirmation:
+    if uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and entry_confirmation and volume_ok:
         return "BUY"
     if sell_signals >= 2:
         return "SELL"
     return "HOLD"
+
+
+def evaluate_entry_components(row, prev_row):
+    if (
+        pd.isna(row["rsi"])
+        or pd.isna(row["macd_diff"])
+        or pd.isna(row["bb_pct"])
+        or pd.isna(row["ema50"])
+        or pd.isna(row["fib_382"])
+        or pd.isna(row["atr"])
+        or pd.isna(row["volume_ratio"])
+    ):
+        return None
+
+    use_entry_timing = bool(row.get("use_15m_timing", False))
+    entry_confirmation = True
+    if use_entry_timing:
+        entry_confirmation = (
+            not pd.isna(row.get("macd_diff_15m", np.nan))
+            and (
+                row["macd_diff_15m"] > 0
+                or row["close_15m"] > row["ema50_15m"]
+                or row["rsi_15m"] < 55
+                or row["bb_pct_15m"] < 0.60
+            )
+        )
+
+    uptrend = (
+        row["ema50"] > row["ema200"]
+        and row["close"] > row["ema50"]
+        and row.get("trend_4h") == "bull"
+        and row.get("ema50_4h", np.nan) > row.get("ema200_4h", np.nan)
+    )
+    volume_ok = row["volume_ratio"] > 1.05
+
+    buy_signals = 0
+    if row["rsi"] < 55:
+        buy_signals += 1
+    if row["macd_diff"] > 0 and row["macd_prev"] <= 0:
+        buy_signals += 1
+    if row["bb_pct"] < 0.55:
+        buy_signals += 1
+
+    return {
+        "trend_ok": uptrend,
+        "macd_ok": row["macd_diff"] > 0,
+        "signal_count_ok": buy_signals >= 2,
+        "volume_ok": volume_ok,
+        "timing_ok": bool(entry_confirmation),
+        "buy_ready": bool(uptrend and row["macd_diff"] > 0 and buy_signals >= 2 and entry_confirmation and volume_ok),
+    }
 
 
 def close_position(position, price, time, reason, symbol):
@@ -251,11 +305,27 @@ def run_backtest(symbol, timeframe="1h", days=365):
     position = None
     trades = []
     equity = []
+    diagnostics = {
+        "eligible_rows": 0,
+        "trend_ok": 0,
+        "macd_ok": 0,
+        "signal_count_ok": 0,
+        "volume_ok": 0,
+        "timing_ok": 0,
+        "buy_ready": 0,
+    }
 
     for i in range(1, len(df)):
         row = df.iloc[i]
         prev_row = df.iloc[i - 1]
         price = row["close"]
+
+        entry_check = evaluate_entry_components(row, prev_row)
+        if entry_check is not None:
+            diagnostics["eligible_rows"] += 1
+            for key in ["trend_ok", "macd_ok", "signal_count_ok", "volume_ok", "timing_ok", "buy_ready"]:
+                if entry_check[key]:
+                    diagnostics[key] += 1
 
         equity_value = balance
         if position:
@@ -272,8 +342,8 @@ def run_backtest(symbol, timeframe="1h", days=365):
             else:
                 pnl_pct = (position["entry"] - price) / position["entry"]
 
-            hit_stop = pnl_pct <= -STOP_LOSS_PCT
-            hit_target = pnl_pct >= TAKE_PROFIT_PCT
+            hit_stop = price <= position["stop_price"]
+            hit_target = price >= position["target_price"]
 
             if hit_stop or hit_target:
                 close_trade = close_position(
@@ -314,6 +384,8 @@ def run_backtest(symbol, timeframe="1h", days=365):
                 "entry": price,
                 "cost": usd_amount,
                 "entry_time": row["time"],
+                "stop_price": price - row["atr"] * ATR_STOP_MULTIPLIER,
+                "target_price": price + row["atr"] * ATR_TARGET_MULTIPLIER,
             }
             trades.append({
                 "type": "OPEN",
@@ -376,6 +448,15 @@ def run_backtest(symbol, timeframe="1h", days=365):
     print_breakdown("STOP_LOSS", [t for t in closed_trades if t["reason"] == "STOP_LOSS"])
     print_breakdown("TAKE_PROFIT", [t for t in closed_trades if t["reason"] == "TAKE_PROFIT"])
     print_breakdown("END_OF_TEST", [t for t in closed_trades if t["reason"] == "END_OF_TEST"])
+    print(f"  {'-' * 45}")
+    print("  Entry Diagnostics:")
+    print(f"  Eligible Rows:     {diagnostics['eligible_rows']}")
+    print(f"  Trend OK:          {diagnostics['trend_ok']}")
+    print(f"  MACD OK:           {diagnostics['macd_ok']}")
+    print(f"  Signal Count OK:   {diagnostics['signal_count_ok']}")
+    print(f"  Volume OK:         {diagnostics['volume_ok']}")
+    print(f"  Timing OK:         {diagnostics['timing_ok']}")
+    print(f"  Buy Ready:         {diagnostics['buy_ready']}")
 
     passed = (
         win_rate > 55
