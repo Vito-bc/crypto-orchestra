@@ -31,7 +31,7 @@ def main():
 
     print("\nVALIDATION SUMMARY")
     print("=" * 72)
-    print(f"{'Symbol':12} {'Days':>5} {'Return%':>9} {'Trades':>7} {'WinRate%':>10} {'PF':>6} {'DD%':>7}")
+    print(f"{'Symbol':12} {'Days':>5} {'Return%':>9} {'Trades':>7} {'WinRate%':>10} {'PF':>6} {'AvgPnL':>8} {'HoldH':>7} {'DD%':>7}")
     print("-" * 72)
     for result in all_results:
         print(
@@ -41,6 +41,8 @@ def main():
             f"{result['trades']:7d} "
             f"{result['win_rate']:10.1f} "
             f"{result['profit_factor']:6.2f} "
+            f"{result['avg_trade_pnl']:8.2f} "
+            f"{result['avg_hold_hours']:7.1f} "
             f"{result['max_drawdown']:7.2f}"
         )
 

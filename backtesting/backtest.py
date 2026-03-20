@@ -30,6 +30,7 @@ STRATEGY_CONFIG = {
         "max_hold_hours": 12,
         "trailing_stop_multiplier": 1.0,
         "break_even_trigger_atr": 1.0,
+        "trail_activation_multiplier": None,
         "macd_mode": "strict_cross",
         "trend_mode": "close_above_4h_ema200",
         "require_local_above_ema50": True,
@@ -44,8 +45,9 @@ STRATEGY_CONFIG = {
         "sell_rsi_min": 58,
         "sell_bb_pct_min": 0.70,
         "max_hold_hours": 8,
-        "trailing_stop_multiplier": None,
+        "trailing_stop_multiplier": 2.0,
         "break_even_trigger_atr": None,
+        "trail_activation_multiplier": 1.2,
         "macd_mode": "refined_momentum",
         "trend_mode": "ema_or_close_4h",
         "require_local_above_ema50": True,
@@ -417,6 +419,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
             if position["side"] == "LONG":
                 break_even_trigger_atr = config.get("break_even_trigger_atr")
                 trailing_stop_multiplier = config.get("trailing_stop_multiplier")
+                trail_activation_multiplier = config.get("trail_activation_multiplier")
 
                 if (
                     break_even_trigger_atr is not None
@@ -424,7 +427,13 @@ def run_backtest(symbol, timeframe="1h", days=365):
                 ):
                     position["stop_price"] = max(position["stop_price"], position["entry"])
 
-                if trailing_stop_multiplier is not None:
+                if (
+                    trailing_stop_multiplier is not None
+                    and (
+                        trail_activation_multiplier is None
+                        or price >= position["entry"] + row["atr"] * trail_activation_multiplier
+                    )
+                ):
                     trailing_stop = price - row["atr"] * trailing_stop_multiplier
                     position["stop_price"] = max(position["stop_price"], trailing_stop)
 
@@ -515,6 +524,8 @@ def run_backtest(symbol, timeframe="1h", days=365):
     win_rate = len(wins) / len(closed_trades) * 100 if closed_trades else 0
     avg_win = sum(t["pnl_usd"] for t in wins) / len(wins) if wins else 0
     avg_loss = sum(t["pnl_usd"] for t in losses) / len(losses) if losses else 0
+    avg_trade_pnl = sum(t["pnl_usd"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
+    avg_hold_hours = sum(t["hold_hours"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
     profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else float("inf")
 
     eq_values = [e["balance"] for e in equity]
@@ -542,6 +553,8 @@ def run_backtest(symbol, timeframe="1h", days=365):
     print(f"  {'-' * 45}")
     print(f"  Avg Win:           ${avg_win:+.2f}")
     print(f"  Avg Loss:          ${avg_loss:+.2f}")
+    print(f"  Avg Trade PnL:     ${avg_trade_pnl:+.2f}")
+    print(f"  Avg Hold Hours:    {avg_hold_hours:.1f}h")
     print(f"  {'-' * 45}")
     if trade_log_path:
         print(f"  Trade Log:         {trade_log_path}")
@@ -588,6 +601,8 @@ def run_backtest(symbol, timeframe="1h", days=365):
         "profit_factor": profit_factor,
         "max_drawdown": max_dd * 100,
         "final_balance": balance,
+        "avg_trade_pnl": avg_trade_pnl,
+        "avg_hold_hours": avg_hold_hours,
         "passed": passed,
     }
 
