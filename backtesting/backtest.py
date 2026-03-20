@@ -37,7 +37,7 @@ STRATEGY_CONFIG = {
     },
     "ETH-USD": {
         "min_trend_strength": 0.003,
-        "min_volume_ratio": 1.05,
+        "min_volume_ratio": 1.00,
         "max_volume_ratio": 4.0,
         "buy_rsi_max": 55,
         "buy_bb_pct_max": 0.50,
