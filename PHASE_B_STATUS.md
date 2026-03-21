@@ -8,6 +8,7 @@ The immediate focus is:
 
 - run the current ETH baseline as a paper-trading candidate
 - log every evaluated signal snapshot
+- persist paper position state across runs
 - observe fills, inactivity periods, trade cadence, and operational issues
 
 ## Current Candidate
@@ -29,6 +30,9 @@ python trading/paper_trade.py
 
 - `logs/paper_signals.jsonl`
 - `logs/paper_signals.csv`
+- `logs/paper_position_eth.json`
+- `logs/paper_position_events.jsonl`
+- `logs/paper_position_events.csv`
 
 3. Run the log review helper:
 
@@ -40,6 +44,7 @@ python trading/review_paper_logs.py
 
 - how often ETH produces `BUY`, `SELL`, or `HOLD`
 - how often trades are blocked by MACD, BB, or volume
+- whether the runner is currently `FLAT` or `LONG`
 - whether real-time cadence matches the backtest expectation
 
 ## Success Criteria

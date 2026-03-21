@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,6 +27,9 @@ DEFAULT_LOOKBACK_DAYS = 90
 LOG_DIR = Path("logs")
 JSONL_LOG = LOG_DIR / "paper_signals.jsonl"
 CSV_LOG = LOG_DIR / "paper_signals.csv"
+POSITION_STATE = LOG_DIR / "paper_position_eth.json"
+EVENTS_JSONL_LOG = LOG_DIR / "paper_position_events.jsonl"
+EVENTS_CSV_LOG = LOG_DIR / "paper_position_events.csv"
 
 
 def build_signal_snapshot(symbol: str = DEFAULT_SYMBOL, days: int = DEFAULT_LOOKBACK_DAYS) -> dict | None:
@@ -94,12 +98,148 @@ def append_logs(snapshot: dict) -> None:
         writer.writerow(snapshot)
 
 
-def print_snapshot(snapshot: dict) -> None:
+def load_position_state() -> dict[str, Any]:
+    if not POSITION_STATE.exists():
+        return {
+            "status": "FLAT",
+            "symbol": DEFAULT_SYMBOL,
+            "entry_price": None,
+            "entry_time": None,
+            "stop_price": None,
+            "target_price": None,
+            "last_action": "NONE",
+            "last_updated_utc": None,
+        }
+
+    with POSITION_STATE.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def save_position_state(state: dict[str, Any]) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with POSITION_STATE.open("w", encoding="utf-8") as handle:
+        json.dump(state, handle, indent=2)
+
+
+def append_event_log(event: dict[str, Any]) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    with EVENTS_JSONL_LOG.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event) + "\n")
+
+    write_header = not EVENTS_CSV_LOG.exists()
+    with EVENTS_CSV_LOG.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(event.keys()))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(event)
+
+
+def evaluate_position_action(snapshot: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    config = get_symbol_config(snapshot["symbol"])
+    state = dict(state)
+    state["last_updated_utc"] = snapshot["logged_at_utc"]
+
+    if state["status"] != "LONG":
+        if snapshot["signal"] == "BUY":
+            entry_price = snapshot["close"]
+            atr = snapshot["atr_1h"]
+            state.update(
+                {
+                    "status": "LONG",
+                    "symbol": snapshot["symbol"],
+                    "entry_price": entry_price,
+                    "entry_time": snapshot["candle_time"],
+                    "stop_price": entry_price - atr * 1.5,
+                    "target_price": entry_price + atr * 3.0,
+                    "last_action": "OPEN_LONG",
+                }
+            )
+            event = {
+                "logged_at_utc": snapshot["logged_at_utc"],
+                "symbol": snapshot["symbol"],
+                "event": "OPEN_LONG",
+                "reason": "BUY_SIGNAL",
+                "price": entry_price,
+                "candle_time": snapshot["candle_time"],
+            }
+            return state, event
+
+        state["last_action"] = "HOLD_FLAT"
+        return state, None
+
+    current_price = snapshot["close"]
+    atr = snapshot["atr_1h"]
+    entry_price = float(state["entry_price"])
+    stop_price = float(state["stop_price"])
+    target_price = float(state["target_price"])
+
+    trail_multiplier = config.get("trailing_stop_multiplier")
+    activation_multiplier = config.get("trail_activation_multiplier")
+    if (
+        trail_multiplier is not None
+        and (
+            activation_multiplier is None
+            or current_price >= entry_price + atr * activation_multiplier
+        )
+    ):
+        trailing_stop = current_price - atr * trail_multiplier
+        stop_price = max(stop_price, trailing_stop)
+        state["stop_price"] = stop_price
+
+    entry_ts = datetime.fromisoformat(str(state["entry_time"]).replace("Z", "+00:00"))
+    candle_ts = datetime.fromisoformat(str(snapshot["candle_time"]).replace("Z", "+00:00"))
+    hold_hours = (candle_ts - entry_ts).total_seconds() / 3600
+    max_hold_hours = config.get("max_hold_hours")
+
+    exit_reason = None
+    if current_price <= stop_price:
+        exit_reason = "STOP_LOSS"
+    elif current_price >= target_price:
+        exit_reason = "TAKE_PROFIT"
+    elif snapshot["signal"] == "SELL":
+        exit_reason = "SIGNAL"
+    elif max_hold_hours is not None and hold_hours >= max_hold_hours:
+        exit_reason = "MAX_HOLD"
+
+    if exit_reason is None:
+        state["last_action"] = "HOLD_LONG"
+        return state, None
+
+    pnl_pct = (current_price - entry_price) / entry_price * 100
+    event = {
+        "logged_at_utc": snapshot["logged_at_utc"],
+        "symbol": snapshot["symbol"],
+        "event": "CLOSE_LONG",
+        "reason": exit_reason,
+        "price": current_price,
+        "entry_price": entry_price,
+        "candle_time": snapshot["candle_time"],
+        "entry_time": state["entry_time"],
+        "hold_hours": round(hold_hours, 2),
+        "pnl_pct": round(pnl_pct, 4),
+    }
+    state.update(
+        {
+            "status": "FLAT",
+            "entry_price": None,
+            "entry_time": None,
+            "stop_price": None,
+            "target_price": None,
+            "last_action": f"CLOSE_LONG_{exit_reason}",
+        }
+    )
+    return state, event
+
+
+def print_snapshot(snapshot: dict, state: dict[str, Any], event: dict[str, Any] | None) -> None:
     print("\nPHASE B PAPER SIGNAL")
     print("=" * 60)
     print(f"Symbol:          {snapshot['symbol']}")
     print(f"Candle Time:     {snapshot['candle_time']}")
     print(f"Signal:          {snapshot['signal']}")
+    print(f"Paper Status:    {state['status']}")
+    print(f"Last Action:     {state['last_action']}")
     print(f"Close:           {snapshot['close']:.2f}")
     print(f"Trend OK:        {snapshot['trend_ok']}")
     print(f"MACD Cross OK:   {snapshot['macd_cross_ok']}")
@@ -118,8 +258,23 @@ def print_snapshot(snapshot: dict) -> None:
     print(f"Trend 4h:        {snapshot['trend_4h']}")
     print(f"Trend Strength:  {snapshot['trend_strength_4h']:.6f}")
     print("-" * 60)
+    if state["status"] == "LONG":
+        print(f"Entry Price:     {state['entry_price']:.2f}")
+        print(f"Stop Price:      {state['stop_price']:.2f}")
+        print(f"Target Price:    {state['target_price']:.2f}")
+        print("-" * 60)
+    if event is not None:
+        print("Paper Event:")
+        print(f"  Event:         {event['event']}")
+        print(f"  Reason:        {event['reason']}")
+        if "pnl_pct" in event:
+            print(f"  PnL %:         {event['pnl_pct']:.4f}")
+        print("-" * 60)
     print(f"JSONL Log:       {JSONL_LOG}")
     print(f"CSV Log:         {CSV_LOG}")
+    print(f"State File:      {POSITION_STATE}")
+    print(f"Events JSONL:    {EVENTS_JSONL_LOG}")
+    print(f"Events CSV:      {EVENTS_CSV_LOG}")
 
 
 def main() -> None:
@@ -128,8 +283,13 @@ def main() -> None:
         print("No signal snapshot could be built.")
         return
 
+    state = load_position_state()
+    updated_state, event = evaluate_position_action(snapshot, state)
     append_logs(snapshot)
-    print_snapshot(snapshot)
+    save_position_state(updated_state)
+    if event is not None:
+        append_event_log(event)
+    print_snapshot(snapshot, updated_state, event)
 
 
 if __name__ == "__main__":
