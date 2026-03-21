@@ -109,7 +109,7 @@ def print_snapshot(snapshot: dict) -> None:
     print(f"Buy Ready:       {snapshot['buy_ready']}")
     print(f"Blocked by MACD: {snapshot['blocked_by_macd']}")
     print(f"Blocked by BB:   {snapshot['blocked_by_bb']}")
-    print(f"Blocked by Volume:{snapshot['blocked_by_volume']}")
+    print(f"Blocked by Volume: {snapshot['blocked_by_volume']}")
     print("-" * 60)
     print(f"RSI 1h:          {snapshot['rsi_1h']:.2f}")
     print(f"MACD Diff 1h:    {snapshot['macd_diff_1h']:.6f}")

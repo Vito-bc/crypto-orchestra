@@ -30,7 +30,13 @@ python trading/paper_trade.py
 - `logs/paper_signals.jsonl`
 - `logs/paper_signals.csv`
 
-3. Track:
+3. Run the log review helper:
+
+```bash
+python trading/review_paper_logs.py
+```
+
+4. Track:
 
 - how often ETH produces `BUY`, `SELL`, or `HOLD`
 - how often trades are blocked by MACD, BB, or volume
