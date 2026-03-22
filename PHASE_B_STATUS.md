@@ -26,6 +26,12 @@ The immediate focus is:
 python trading/paper_trade.py
 ```
 
+Or on Windows, use the scheduler-friendly wrapper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File trading\run_paper_trade.ps1
+```
+
 2. Review logs written to:
 
 - `logs/paper_signals.jsonl`
@@ -41,7 +47,13 @@ python trading/paper_trade.py
 python trading/review_paper_logs.py
 ```
 
-4. Track:
+4. Run the daily paper summary:
+
+```bash
+python trading/daily_paper_summary.py
+```
+
+5. Track:
 
 - how often ETH produces `BUY`, `SELL`, or `HOLD`
 - how often trades are blocked by MACD, BB, or volume
@@ -53,6 +65,7 @@ python trading/review_paper_logs.py
 - stable repeated signal snapshots
 - no strategy drift between paper logic and backtest logic
 - enough operational confidence to monitor ETH paper trades consistently
+- a repeatable operating workflow you can schedule and review daily
 
 ## Notes
 
