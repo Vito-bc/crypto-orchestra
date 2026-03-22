@@ -65,7 +65,25 @@ python trading/review_paper_logs.py
 python trading/daily_paper_summary.py
 ```
 
-5. Track:
+5. Send the daily summary to Telegram:
+
+```bash
+python trading/send_daily_telegram_summary.py
+```
+
+To register a daily Telegram summary task:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File trading\register_daily_summary_task.ps1
+```
+
+To remove it later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File trading\remove_daily_summary_task.ps1
+```
+
+6. Track:
 
 - how often ETH produces `BUY`, `SELL`, or `HOLD`
 - how often trades are blocked by MACD, BB, or volume
