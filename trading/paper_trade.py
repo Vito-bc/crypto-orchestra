@@ -18,6 +18,7 @@ from backtesting.backtest import (
     get_symbol_config,
     prepare_timeframe_df,
 )
+from notifications.telegram import format_trade_event_message, send_telegram_message
 
 
 DEFAULT_SYMBOL = "ETH-USD"
@@ -287,9 +288,13 @@ def main() -> None:
     updated_state, event = evaluate_position_action(snapshot, state)
     append_logs(snapshot)
     save_position_state(updated_state)
+    telegram_sent = False
     if event is not None:
         append_event_log(event)
+        telegram_sent = send_telegram_message(format_trade_event_message(event))
     print_snapshot(snapshot, updated_state, event)
+    if event is not None:
+        print(f"Telegram Alert:  {'sent' if telegram_sent else 'skipped'}")
 
 
 if __name__ == "__main__":

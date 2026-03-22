@@ -33,6 +33,7 @@ python trading/paper_trade.py
 - `logs/paper_position_eth.json`
 - `logs/paper_position_events.jsonl`
 - `logs/paper_position_events.csv`
+- optional Telegram alerts via local `.env`
 
 3. Run the log review helper:
 
@@ -58,3 +59,4 @@ python trading/review_paper_logs.py
 - BTC remains a secondary benchmark, not the primary Phase B candidate
 - if ETH stays too inactive in paper mode, the next decision is strategic:
   accept the system as selective, or redesign the framework rather than keep loosening filters
+- Telegram config lives in a local root `.env` file and is never committed
