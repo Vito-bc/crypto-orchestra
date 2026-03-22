@@ -32,6 +32,18 @@ Or on Windows, use the scheduler-friendly wrapper:
 powershell -ExecutionPolicy Bypass -File trading\run_paper_trade.ps1
 ```
 
+To register an hourly Windows Task Scheduler job:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File trading\register_paper_trade_task.ps1
+```
+
+To remove it later:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File trading\remove_paper_trade_task.ps1
+```
+
 2. Review logs written to:
 
 - `logs/paper_signals.jsonl`
