@@ -9,6 +9,7 @@ LOG_DIR = Path("logs")
 SIGNALS_LOG = LOG_DIR / "paper_signals.jsonl"
 EVENTS_LOG = LOG_DIR / "paper_position_events.jsonl"
 POSITION_STATE = LOG_DIR / "paper_position_eth.json"
+HEALTH_LOG = LOG_DIR / "paper_runner_health.jsonl"
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -106,10 +107,27 @@ def build_position_state_lines(state: dict | None) -> list[str]:
     ]
 
 
+def build_health_lines(entries: list[dict]) -> list[str]:
+    if not entries:
+        return ["Runner Health:", "  No runner health logs yet."]
+
+    status_counts = Counter(entry.get("status", "UNKNOWN") for entry in entries)
+    last = entries[-1]
+    return [
+        "Runner Health:",
+        f"  Success:       {status_counts.get('SUCCESS', 0)}",
+        f"  No Snapshot:   {status_counts.get('NO_SNAPSHOT', 0)}",
+        f"  Errors:        {status_counts.get('ERROR', 0)}",
+        f"  Last Status:   {last.get('status')}",
+        f"  Last Logged:   {last.get('logged_at_utc')}",
+    ]
+
+
 def build_summary_text() -> str:
     signal_entries = load_jsonl(SIGNALS_LOG)
     paper_events = load_jsonl(EVENTS_LOG)
     state = load_position_state()
+    health_entries = load_jsonl(HEALTH_LOG)
 
     sections = [
         "PHASE B DAILY PAPER SUMMARY",
@@ -117,12 +135,15 @@ def build_summary_text() -> str:
         f"Signals Log:     {SIGNALS_LOG}",
         f"Events Log:      {EVENTS_LOG}",
         f"State File:      {POSITION_STATE}",
+        f"Health Log:      {HEALTH_LOG}",
         "-" * 60,
         *build_signal_summary_lines(signal_entries),
         "-" * 60,
         *build_event_summary_lines(paper_events),
         "-" * 60,
         *build_position_state_lines(state),
+        "-" * 60,
+        *build_health_lines(health_entries),
     ]
     return "\n".join(sections)
 

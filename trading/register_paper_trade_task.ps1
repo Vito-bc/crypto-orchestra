@@ -14,9 +14,27 @@ if (-not (Test-Path $powershellExe)) {
     Write-Error "PowerShell executable not found at $powershellExe"
 }
 
-$taskCommand = "`"$powershellExe`" -ExecutionPolicy Bypass -File `"$runnerScript`""
+$action = New-ScheduledTaskAction `
+    -Execute $powershellExe `
+    -Argument "-ExecutionPolicy Bypass -File `"$runnerScript`""
 
-schtasks /Create /SC HOURLY /MO 1 /TN $taskName /TR $taskCommand /F | Out-Host
+$trigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Hours 1) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
+
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable
+
+Register-ScheduledTask `
+    -TaskName $taskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Settings $settings `
+    -Force | Out-Null
 
 Write-Host ""
 Write-Host "Task registered successfully."

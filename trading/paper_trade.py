@@ -31,6 +31,7 @@ CSV_LOG = LOG_DIR / "paper_signals.csv"
 POSITION_STATE = LOG_DIR / "paper_position_eth.json"
 EVENTS_JSONL_LOG = LOG_DIR / "paper_position_events.jsonl"
 EVENTS_CSV_LOG = LOG_DIR / "paper_position_events.csv"
+HEALTH_JSONL_LOG = LOG_DIR / "paper_runner_health.jsonl"
 
 
 def build_signal_snapshot(symbol: str = DEFAULT_SYMBOL, days: int = DEFAULT_LOOKBACK_DAYS) -> dict | None:
@@ -134,6 +135,30 @@ def append_event_log(event: dict[str, Any]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerow(event)
+
+
+def append_health_log(status: str, details: dict[str, Any] | None = None) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "logged_at_utc": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+    }
+    if details:
+        payload.update(details)
+
+    with HEALTH_JSONL_LOG.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+
+
+def format_runner_issue_message(status: str, message: str) -> str:
+    return "\n".join(
+        [
+            "Crypto Orchestra Runner Alert",
+            f"Status: {status}",
+            f"Message: {message}",
+            f"Logged UTC: {datetime.now(timezone.utc).isoformat()}",
+        ]
+    )
 
 
 def evaluate_position_action(snapshot: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -276,25 +301,52 @@ def print_snapshot(snapshot: dict, state: dict[str, Any], event: dict[str, Any] 
     print(f"State File:      {POSITION_STATE}")
     print(f"Events JSONL:    {EVENTS_JSONL_LOG}")
     print(f"Events CSV:      {EVENTS_CSV_LOG}")
+    print(f"Health JSONL:    {HEALTH_JSONL_LOG}")
 
 
 def main() -> None:
-    snapshot = build_signal_snapshot()
-    if snapshot is None:
-        print("No signal snapshot could be built.")
-        return
+    try:
+        snapshot = build_signal_snapshot()
+        if snapshot is None:
+            append_health_log("NO_SNAPSHOT", {"symbol": DEFAULT_SYMBOL})
+            send_telegram_message(
+                format_runner_issue_message("NO_SNAPSHOT", "No signal snapshot could be built.")
+            )
+            print("No signal snapshot could be built.")
+            return
 
-    state = load_position_state()
-    updated_state, event = evaluate_position_action(snapshot, state)
-    append_logs(snapshot)
-    save_position_state(updated_state)
-    telegram_sent = False
-    if event is not None:
-        append_event_log(event)
-        telegram_sent = send_telegram_message(format_trade_event_message(event))
-    print_snapshot(snapshot, updated_state, event)
-    if event is not None:
-        print(f"Telegram Alert:  {'sent' if telegram_sent else 'skipped'}")
+        state = load_position_state()
+        updated_state, event = evaluate_position_action(snapshot, state)
+        append_logs(snapshot)
+        save_position_state(updated_state)
+        append_health_log(
+            "SUCCESS",
+            {
+                "symbol": snapshot["symbol"],
+                "signal": snapshot["signal"],
+                "buy_ready": snapshot["buy_ready"],
+                "paper_status": updated_state["status"],
+                "candle_time": snapshot["candle_time"],
+            },
+        )
+        telegram_sent = False
+        if event is not None:
+            append_event_log(event)
+            telegram_sent = send_telegram_message(format_trade_event_message(event))
+        print_snapshot(snapshot, updated_state, event)
+        if event is not None:
+            print(f"Telegram Alert:  {'sent' if telegram_sent else 'skipped'}")
+    except Exception as exc:
+        append_health_log(
+            "ERROR",
+            {
+                "symbol": DEFAULT_SYMBOL,
+                "error": str(exc),
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        send_telegram_message(format_runner_issue_message("ERROR", str(exc)))
+        raise
 
 
 if __name__ == "__main__":

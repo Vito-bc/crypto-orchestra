@@ -51,6 +51,7 @@ powershell -ExecutionPolicy Bypass -File trading\remove_paper_trade_task.ps1
 - `logs/paper_position_eth.json`
 - `logs/paper_position_events.jsonl`
 - `logs/paper_position_events.csv`
+- `logs/paper_runner_health.jsonl`
 - optional Telegram alerts via local `.env`
 
 3. Run the log review helper:
@@ -89,6 +90,7 @@ powershell -ExecutionPolicy Bypass -File trading\remove_daily_summary_task.ps1
 - how often trades are blocked by MACD, BB, or volume
 - whether the runner is currently `FLAT` or `LONG`
 - whether real-time cadence matches the backtest expectation
+- whether the hourly runner is healthy or failing to build snapshots
 
 ## Success Criteria
 
