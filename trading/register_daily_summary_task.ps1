@@ -14,14 +14,29 @@ if (-not (Test-Path $pythonExe)) {
     Write-Error "Python executable not found at $pythonExe"
 }
 
-$taskCommand = "`"$pythonExe`" `"$summaryScript`""
+$action = New-ScheduledTaskAction `
+    -Execute $pythonExe `
+    -Argument "`"$summaryScript`""
 
-schtasks /Create /SC DAILY /ST 18:00 /TN $taskName /TR $taskCommand /F | Out-Host
+$trigger = New-ScheduledTaskTrigger -Daily -At "2:00PM"
+
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable
+
+Register-ScheduledTask `
+    -TaskName $taskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Settings $settings `
+    -Force | Out-Null
 
 Write-Host ""
 Write-Host "Daily summary task registered successfully."
 Write-Host "Task Name: $taskName"
-Write-Host "Command:   $taskCommand"
+Write-Host "Script:    $summaryScript"
+Write-Host "Time:      2:00 PM"
 Write-Host ""
 Write-Host "Useful commands:"
 Write-Host "  schtasks /Run /TN $taskName"

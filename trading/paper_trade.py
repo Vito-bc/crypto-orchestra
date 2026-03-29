@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import csv
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from typing import Any
+from urllib.error import URLError
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -24,6 +26,8 @@ from notifications.telegram import format_trade_event_message, send_telegram_mes
 DEFAULT_SYMBOL = "ETH-USD"
 DEFAULT_SIGNAL_TIMEFRAME = "1h"
 DEFAULT_LOOKBACK_DAYS = 90
+MAX_FETCH_RETRIES = 3
+FETCH_RETRY_DELAY_SECONDS = 5
 
 LOG_DIR = Path("logs")
 JSONL_LOG = LOG_DIR / "paper_signals.jsonl"
@@ -35,9 +39,27 @@ HEALTH_JSONL_LOG = LOG_DIR / "paper_runner_health.jsonl"
 
 
 def build_signal_snapshot(symbol: str = DEFAULT_SYMBOL, days: int = DEFAULT_LOOKBACK_DAYS) -> dict | None:
-    signal_df = prepare_timeframe_df(symbol, DEFAULT_SIGNAL_TIMEFRAME, days)
-    trend_df = prepare_timeframe_df(symbol, "4h", days)
-    if signal_df is None or trend_df is None:
+    last_exception: Exception | None = None
+    for attempt in range(1, MAX_FETCH_RETRIES + 1):
+        try:
+            signal_df = prepare_timeframe_df(symbol, DEFAULT_SIGNAL_TIMEFRAME, days)
+            trend_df = prepare_timeframe_df(symbol, "4h", days)
+            if signal_df is None or trend_df is None:
+                return None
+            break
+        except URLError as exc:
+            last_exception = exc
+            if attempt == MAX_FETCH_RETRIES:
+                raise
+            time.sleep(FETCH_RETRY_DELAY_SECONDS)
+        except Exception as exc:
+            last_exception = exc
+            if attempt == MAX_FETCH_RETRIES:
+                raise
+            time.sleep(FETCH_RETRY_DELAY_SECONDS)
+    else:
+        if last_exception is not None:
+            raise last_exception
         return None
 
     df = attach_higher_timeframe_context(signal_df, trend_df)

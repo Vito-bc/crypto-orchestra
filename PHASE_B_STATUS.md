@@ -78,6 +78,10 @@ To register a daily Telegram summary task:
 powershell -ExecutionPolicy Bypass -File trading\register_daily_summary_task.ps1
 ```
 
+Current default daily summary time:
+
+- `2:00 PM` local machine time
+
 To remove it later:
 
 ```powershell
@@ -91,6 +95,7 @@ powershell -ExecutionPolicy Bypass -File trading\remove_daily_summary_task.ps1
 - whether the runner is currently `FLAT` or `LONG`
 - whether real-time cadence matches the backtest expectation
 - whether the hourly runner is healthy or failing to build snapshots
+- whether transient Yahoo data fetch failures recover automatically
 
 ## Success Criteria
 
