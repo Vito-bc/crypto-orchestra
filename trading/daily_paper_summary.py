@@ -57,6 +57,8 @@ def build_signal_summary_lines(entries: list[dict]) -> list[str]:
         last = entries[-1]
         lines.append(f"  Latest Signal: {last.get('signal')} @ {last.get('candle_time')}")
         lines.append(f"  Latest Close:  {last.get('close', 0.0):.2f}")
+        lines.append(f"  Regime Mode:   {last.get('regime_mode', 'UNKNOWN')}")
+        lines.append(f"  Regime Reason: {last.get('regime_reason', 'N/A')}")
     return lines
 
 

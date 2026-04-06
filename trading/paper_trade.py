@@ -38,6 +38,26 @@ EVENTS_CSV_LOG = LOG_DIR / "paper_position_events.csv"
 HEALTH_JSONL_LOG = LOG_DIR / "paper_runner_health.jsonl"
 
 
+def classify_regime(row: Any) -> tuple[str, str]:
+    close_4h = row.get("close_4h")
+    ema50_4h = row.get("ema50_4h")
+    ema200_4h = row.get("ema200_4h")
+    trend_strength_4h = row.get("trend_strength_4h")
+
+    if any(value is None for value in [close_4h, ema50_4h, ema200_4h, trend_strength_4h]):
+        return "UNKNOWN", "Missing higher timeframe context"
+
+    if close_4h < ema200_4h and ema50_4h < ema200_4h:
+        return "OBSERVE", "4h bear regime"
+    if trend_strength_4h < 0:
+        return "OBSERVE", "4h trend strength negative"
+    if row["ema50"] <= row["ema200"]:
+        return "OBSERVE", "1h trend weak"
+    if row["close"] < row["ema50"]:
+        return "OBSERVE", "Price below 1h ema50"
+    return "ACTIVE", "Trend context acceptable"
+
+
 def build_signal_snapshot(symbol: str = DEFAULT_SYMBOL, days: int = DEFAULT_LOOKBACK_DAYS) -> dict | None:
     last_exception: Exception | None = None
     for attempt in range(1, MAX_FETCH_RETRIES + 1):
@@ -105,6 +125,9 @@ def build_signal_snapshot(symbol: str = DEFAULT_SYMBOL, days: int = DEFAULT_LOOK
         "trend_4h": row.get("trend_4h", ""),
         "trend_strength_4h": float(row["trend_strength_4h"]) if "trend_strength_4h" in row else None,
     }
+    regime_mode, regime_reason = classify_regime(row)
+    snapshot["regime_mode"] = regime_mode
+    snapshot["regime_reason"] = regime_reason
     return snapshot
 
 
@@ -305,6 +328,8 @@ def print_snapshot(snapshot: dict, state: dict[str, Any], event: dict[str, Any] 
     print(f"Volume Ratio 1h: {snapshot['volume_ratio_1h']:.3f}")
     print(f"Trend 4h:        {snapshot['trend_4h']}")
     print(f"Trend Strength:  {snapshot['trend_strength_4h']:.6f}")
+    print(f"Regime Mode:     {snapshot['regime_mode']}")
+    print(f"Regime Reason:   {snapshot['regime_reason']}")
     print("-" * 60)
     if state["status"] == "LONG":
         print(f"Entry Price:     {state['entry_price']:.2f}")
