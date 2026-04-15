@@ -3,3 +3,7 @@ numpy
 pandas
 ta
 yfinance
+anthropic
+pydantic
+httpx
+python-dotenv

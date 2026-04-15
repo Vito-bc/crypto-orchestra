@@ -351,6 +351,36 @@ def print_snapshot(snapshot: dict, state: dict[str, Any], event: dict[str, Any] 
     print(f"Health JSONL:    {HEALTH_JSONL_LOG}")
 
 
+def _override_signal_from_agent_decision(snapshot: dict, symbol: str) -> dict:
+    """
+    Run the multi-agent pipeline and override the rule-based signal
+    if the orchestrator reaches a different conclusion.
+    Logs the override for review. Falls back to rule signal on any error.
+    """
+    try:
+        from pipeline.runner import run_pipeline
+        decision = run_pipeline(symbol)
+        agent_action = decision.action.value  # "BUY" | "SELL" | "HOLD"
+
+        # Map orchestrator action to the signal format paper_trade uses
+        signal_map = {"BUY": "BUY", "SELL": "SELL", "HOLD": "HOLD"}
+        agent_signal = signal_map.get(agent_action, snapshot["signal"])
+
+        if agent_signal != snapshot["signal"]:
+            print(
+                f"[Agent Override] Rule signal={snapshot['signal']} → "
+                f"Agent signal={agent_signal}  (conf={decision.confidence:.0%})"
+            )
+        snapshot = dict(snapshot)
+        snapshot["signal"]          = agent_signal
+        snapshot["agent_action"]    = agent_action
+        snapshot["agent_confidence"] = decision.confidence
+        snapshot["agent_reasoning"] = decision.reasoning
+    except Exception as exc:
+        print(f"[Agent Pipeline] Skipped (error): {exc} — using rule signal.")
+    return snapshot
+
+
 def main() -> None:
     try:
         snapshot = build_signal_snapshot()
@@ -361,6 +391,9 @@ def main() -> None:
             )
             print("No signal snapshot could be built.")
             return
+
+        # Run multi-agent pipeline to refine the rule-based signal
+        snapshot = _override_signal_from_agent_decision(snapshot, DEFAULT_SYMBOL)
 
         state = load_position_state()
         updated_state, event = evaluate_position_action(snapshot, state)
@@ -374,6 +407,8 @@ def main() -> None:
                 "buy_ready": snapshot["buy_ready"],
                 "paper_status": updated_state["status"],
                 "candle_time": snapshot["candle_time"],
+                "agent_action": snapshot.get("agent_action"),
+                "agent_confidence": snapshot.get("agent_confidence"),
             },
         )
         telegram_sent = False
