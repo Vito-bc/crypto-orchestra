@@ -5,7 +5,8 @@ from collections import Counter
 from pathlib import Path
 
 
-LOG_DIR = Path("logs")
+ROOT = Path(__file__).resolve().parents[1]
+LOG_DIR = ROOT / "logs"
 SIGNALS_LOG = LOG_DIR / "paper_signals.jsonl"
 EVENTS_LOG = LOG_DIR / "paper_position_events.jsonl"
 POSITION_STATE = LOG_DIR / "paper_position_eth.json"
