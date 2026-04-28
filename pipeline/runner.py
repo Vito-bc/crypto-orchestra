@@ -33,7 +33,12 @@ from agents.sentiment_agent  import SentimentAgent
 from agents.technical_agent  import TechnicalAgent
 from agents.whale_agent      import WhaleAgent
 from notifications.telegram  import send_telegram_message
-from schemas.signals         import AgentSignal, TradeDecision
+from schemas.signals         import AgentSignal, TradeAction, TradeDecision
+from tools.price_data        import get_snapshot
+
+# Minimum candle body confirmation: current 1h close must be moving
+# in the same direction as the signal before we act.
+_MOMENTUM_THRESHOLD = 0.002   # 0.2% candle body required
 
 LOG_DIR       = ROOT / "logs"
 DECISIONS_LOG = LOG_DIR / "agent_decisions.jsonl"
@@ -166,6 +171,48 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
 
     elapsed_total = time.time() - t0
     print(f"[Orchestra] Decision ready in {elapsed_total:.1f}s total")
+
+    # ── Entry momentum filter ─────────────────────────────────────────────────
+    # Only act if the current 1h candle is already moving in signal direction.
+    # Prevents entering right as momentum is reversing.
+    if decision.action in (TradeAction.BUY, TradeAction.SELL):
+        snap = get_snapshot(asset)
+        if snap:
+            candle_body = (snap["close"] - snap["open"]) / snap["open"]
+            if decision.action == TradeAction.BUY and candle_body < _MOMENTUM_THRESHOLD:
+                print(f"[Filter] Momentum check FAILED for BUY — candle body {candle_body:+.3%} < +{_MOMENTUM_THRESHOLD:.1%}. Downgrading to HOLD.")
+                decision = TradeDecision(
+                    asset=asset,
+                    timestamp=decision.timestamp,
+                    action=TradeAction.HOLD,
+                    confidence=decision.confidence * 0.7,
+                    reasoning=f"[Momentum filter] Candle body {candle_body:+.3%} does not confirm BUY direction (need >{_MOMENTUM_THRESHOLD:.1%}). " + decision.reasoning,
+                    votes=decision.votes,
+                    overrides=decision.overrides + [f"BUY downgraded to HOLD: candle body {candle_body:+.3%} insufficient."],
+                    veto_triggered=decision.veto_triggered,
+                    veto_reason=decision.veto_reason,
+                    position_size_pct=None,
+                    stop_loss_price=None,
+                    take_profit_price=None,
+                )
+            elif decision.action == TradeAction.SELL and candle_body > -_MOMENTUM_THRESHOLD:
+                print(f"[Filter] Momentum check FAILED for SELL — candle body {candle_body:+.3%} > -{_MOMENTUM_THRESHOLD:.1%}. Downgrading to HOLD.")
+                decision = TradeDecision(
+                    asset=asset,
+                    timestamp=decision.timestamp,
+                    action=TradeAction.HOLD,
+                    confidence=decision.confidence * 0.7,
+                    reasoning=f"[Momentum filter] Candle body {candle_body:+.3%} does not confirm SELL direction (need <-{_MOMENTUM_THRESHOLD:.1%}). " + decision.reasoning,
+                    votes=decision.votes,
+                    overrides=decision.overrides + [f"SELL downgraded to HOLD: candle body {candle_body:+.3%} insufficient."],
+                    veto_triggered=decision.veto_triggered,
+                    veto_reason=decision.veto_reason,
+                    position_size_pct=None,
+                    stop_loss_price=None,
+                    take_profit_price=None,
+                )
+            else:
+                print(f"[Filter] Momentum check PASSED — candle body {candle_body:+.3%} confirms {decision.action.value}.")
 
     # ── Log + notify ──────────────────────────────────────────────────────────
     _log_decision(asset, signals, decision)
