@@ -38,6 +38,13 @@ Rules:
 - BULL regime → output "BUY" if structure is intact, else "NEUTRAL"
 - RANGING → "NEUTRAL"
 - confidence reflects how clear the regime classification is
+
+IMPORTANT — avoid false BEAR classifications:
+- A short-term EMA cross during an obvious bull market (close > EMA200 4h, positive 7d return)
+  is a PULLBACK within uptrend, NOT a regime change — classify as RANGING not BEAR
+- Only classify BEAR if: close_4h < EMA200_4h AND 7d price change is negative AND the
+  trend_strength is below -0.003 (strong sustained downward momentum)
+- During strong uptrends, prefer BULL or RANGING; reserve BEAR for genuine breakdowns
 - Return ONLY the JSON object, no markdown, no extra text."""
 
 

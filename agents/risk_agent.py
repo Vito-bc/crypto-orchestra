@@ -43,7 +43,7 @@ Output a JSON object with exactly these keys:
   reasoning         : one sentence
 
 Rules:
-- Use ATR-based stops: stop = close - (1.5 × ATR), target = close + (3.0 × ATR)
+- Use ATR-based stops: stop = close - (2.0 x ATR), target = close + (4.0 x ATR)
 - If daily loss limit is already hit: ok_to_trade=false, size=0
 - If open positions >= max_positions: ok_to_trade=false, size=0
 - If ATR is very high (> 3% of price): reduce size to 1% to limit exposure
@@ -103,8 +103,8 @@ Portfolio constraints:
 - Position status:  {state.get('status', 'FLAT')}
 
 ATR-based levels if entering now:
-- Stop loss:    {close - atr * 1.5:.2f}  (close - 1.5×ATR)
-- Take profit:  {close + atr * 3.0:.2f}  (close + 3.0×ATR)
+- Stop loss:    {close - atr * 2.0:.2f}  (close - 2.0xATR)
+- Take profit:  {close + atr * 4.0:.2f}  (close + 4.0xATR)
 - Risk/reward:  1 : 2.0
 
 Evaluate risk and produce your JSON output."""
