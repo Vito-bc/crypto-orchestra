@@ -1,13 +1,16 @@
 """
 Agent Backtest Tuning — Oct-Dec 2024 Bull Run
 
-Tests 5 configurations side by side to find which fixes improve performance.
+Tests configurations side by side to find which fixes improve performance.
 
-Config 0 — Baseline       (current live settings)
-Config 1 — Wider stops    (ATR x2.5 stop, x5.0 target)
-Config 2 — Relaxed veto   (macro veto requires stronger bear confirmation)
-Config 3 — Trend sentiment (sentiment follows trend instead of contrarian)
-Config 4 — All fixes      (1 + 2 + 3 combined)
+Config 0 — Baseline          (original live settings)
+Config 1 — Wider stops       (ATR x2.5 stop, x5.0 target)
+Config 2 — Relaxed veto      (macro veto requires stronger bear confirmation)
+Config 3 — Trend sentiment   (sentiment follows trend instead of contrarian)
+Config 4 — All fixes         (1 + 2 + 3 combined)
+Config 5 — 3-agent filter    (All fixes + need 3 agents aligned to act)
+Config 6 — High conviction   (All fixes + 3-agent + higher score threshold)
+Config 7 — Veto off          (All fixes + macro veto completely disabled)
 
 Usage:
     python backtesting/agent_backtest_tune.py
@@ -63,16 +66,21 @@ class BacktestConfig:
     atr_stop:          float = 1.5   # stop loss multiplier
     atr_target:        float = 3.0   # take profit multiplier
     strict_veto:       bool  = True  # True = veto on any bear EMA cross
+    veto_ts_threshold: float = -0.005  # trend_strength required for relaxed veto
     trend_sentiment:   bool  = False # True = sentiment follows trend, not contrarian
     min_agents:        int   = 2     # minimum agents aligned to act
+    min_buy_score:     float = 0.28  # minimum weighted score to act
 
 
 CONFIGS = [
-    BacktestConfig("Baseline",        atr_stop=1.5, atr_target=3.0, strict_veto=True,  trend_sentiment=False),
-    BacktestConfig("Wider stops",     atr_stop=2.5, atr_target=5.0, strict_veto=True,  trend_sentiment=False),
-    BacktestConfig("Relaxed veto",    atr_stop=1.5, atr_target=3.0, strict_veto=False, trend_sentiment=False),
-    BacktestConfig("Trend sentiment", atr_stop=1.5, atr_target=3.0, strict_veto=True,  trend_sentiment=True),
-    BacktestConfig("All fixes",       atr_stop=2.5, atr_target=5.0, strict_veto=False, trend_sentiment=True),
+    BacktestConfig("Baseline",          atr_stop=1.5, atr_target=3.0, strict_veto=True,  trend_sentiment=False, min_agents=2, min_buy_score=0.28),
+    BacktestConfig("Wider stops",       atr_stop=2.5, atr_target=5.0, strict_veto=True,  trend_sentiment=False, min_agents=2, min_buy_score=0.28),
+    BacktestConfig("Relaxed veto",      atr_stop=1.5, atr_target=3.0, strict_veto=False, veto_ts_threshold=-0.002, trend_sentiment=False, min_agents=2, min_buy_score=0.28),
+    BacktestConfig("Trend sentiment",   atr_stop=1.5, atr_target=3.0, strict_veto=True,  trend_sentiment=True,  min_agents=2, min_buy_score=0.28),
+    BacktestConfig("All fixes",         atr_stop=2.5, atr_target=5.0, strict_veto=False, veto_ts_threshold=-0.002, trend_sentiment=True,  min_agents=2, min_buy_score=0.28),
+    BacktestConfig("3-agent filter",    atr_stop=2.5, atr_target=5.0, strict_veto=False, veto_ts_threshold=-0.002, trend_sentiment=True,  min_agents=3, min_buy_score=0.28),
+    BacktestConfig("High conviction",   atr_stop=2.5, atr_target=5.0, strict_veto=False, veto_ts_threshold=-0.002, trend_sentiment=True,  min_agents=3, min_buy_score=0.35),
+    BacktestConfig("Veto off",          atr_stop=2.5, atr_target=5.0, strict_veto=False, veto_ts_threshold= 99.0, trend_sentiment=True,  min_agents=2, min_buy_score=0.28),
 ]
 
 
@@ -118,7 +126,7 @@ def sim_technical(row, prev_row, config) -> tuple[str, float]:
     return "NEUTRAL", 0.45
 
 
-def sim_macro(row, strict_veto: bool) -> tuple[str, float, bool]:
+def sim_macro(row, cfg: BacktestConfig) -> tuple[str, float, bool]:
     close_4h  = row.get("close_4h",  np.nan)
     ema50_4h  = row.get("ema50_4h",  np.nan)
     ema200_4h = row.get("ema200_4h", np.nan)
@@ -129,14 +137,13 @@ def sim_macro(row, strict_veto: bool) -> tuple[str, float, bool]:
 
     bear_ema_cross = close_4h < ema200_4h and ema50_4h < ema200_4h
 
-    if strict_veto:
-        # Original: veto any time both EMAs confirm bear
+    if cfg.strict_veto:
         if bear_ema_cross:
             return "SELL", 0.80, True
     else:
-        # Relaxed: also require strong negative trend strength
-        # Filters out shallow pullbacks that temporarily dip below EMA
-        if bear_ema_cross and ts < -0.005:
+        # Relaxed: require EMA cross + trend_strength below configurable threshold
+        # veto_ts_threshold=99.0 effectively disables the veto entirely
+        if bear_ema_cross and ts < cfg.veto_ts_threshold:
             return "SELL", 0.80, True
 
     if close_4h > ema200_4h and ema50_4h > ema200_4h:
@@ -173,7 +180,7 @@ def sim_whale(row) -> tuple[str, float]:
     return "NEUTRAL", 0.50
 
 
-def sim_orchestrator(signals: dict, min_agents: int) -> tuple[str, float, bool]:
+def sim_orchestrator(signals: dict, cfg: BacktestConfig) -> tuple[str, float, bool]:
     macro_sig, macro_conf, bear_veto = signals["macro"]
     if bear_veto:
         return "HOLD", 0.0, True
@@ -189,9 +196,9 @@ def sim_orchestrator(signals: dict, min_agents: int) -> tuple[str, float, bool]:
         elif sig == "SELL":
             sell_count += 1; sell_score += w * conf
 
-    if buy_count >= min_agents and buy_score > 0.28 and buy_score > sell_score:
+    if buy_count >= cfg.min_agents and buy_score > cfg.min_buy_score and buy_score > sell_score:
         return "BUY",  round(buy_score, 3), False
-    if sell_count >= min_agents and sell_score > 0.28 and sell_score > buy_score:
+    if sell_count >= cfg.min_agents and sell_score > cfg.min_buy_score and sell_score > buy_score:
         return "SELL", round(sell_score, 3), False
     return "HOLD", round(max(buy_score, sell_score), 3), False
 
@@ -238,7 +245,7 @@ def run_config(df: pd.DataFrame, symbol: str, cfg: BacktestConfig) -> dict:
 
         # Simulate agents
         tech_sig, tech_conf           = sim_technical(row, prev_row, sym_config)
-        macro_sig, macro_conf, b_veto = sim_macro(row, cfg.strict_veto)
+        macro_sig, macro_conf, b_veto = sim_macro(row, cfg)
         sent_sig, sent_conf           = sim_sentiment(row, cfg.trend_sentiment)
         whale_sig, whale_conf         = sim_whale(row)
 
@@ -250,7 +257,7 @@ def run_config(df: pd.DataFrame, symbol: str, cfg: BacktestConfig) -> dict:
             "risk":      ("NEUTRAL", 0.85),
         }
 
-        action, conf, veto = sim_orchestrator(signals, cfg.min_agents)
+        action, conf, veto = sim_orchestrator(signals, cfg)
 
         if veto:   vetoes += 1
         if action == "BUY":   buys  += 1

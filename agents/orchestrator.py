@@ -55,8 +55,10 @@ Your job:
 5. Output a final TradeDecision
 
 Output a JSON object with exactly these keys:
+  buy_agent_count   : integer — count of agents whose signal field = "BUY" exactly
+  sell_agent_count  : integer — count of agents whose signal field = "SELL" exactly
   action            : "BUY" | "SELL" | "HOLD"
-  confidence        : float 0.0–1.0
+  confidence        : float 0.0-1.0
   reasoning         : 2-3 sentences explaining the decision and any conflicts
   position_size_pct : float (from risk agent, or null if HOLD/SELL)
   stop_loss_price   : float (from risk agent, or null)
@@ -65,12 +67,16 @@ Output a JSON object with exactly these keys:
   veto_reason       : string or null
   overrides         : list of strings describing any agent signals you are overriding and why
 
-Rules:
-- If macro=BEAR and any agent says BUY → veto_triggered=true, action=HOLD
-- Require confidence >= 0.55 to act (BUY or SELL); below that → HOLD
-- If risk agent says ok_to_trade=false → action=HOLD regardless
-- If 3+ agents align → confidence can be 0.7+
-- If only 1-2 agents align → cap confidence at 0.6
+Rules — follow in strict order:
+1. Count explicit BUY signals and explicit SELL signals from the agent list.
+   Count ONLY agents whose "signal" field equals "BUY" or "SELL" exactly.
+   A NEUTRAL signal does NOT count toward either direction, even if its metrics look bearish/bullish.
+2. If fewer than 3 agents explicitly signal the same direction → action=HOLD immediately.
+   Do not read between the lines. Do not infer from metrics. Count the signal field only.
+3. If macro=BEAR and any agent explicitly says BUY → veto_triggered=true, action=HOLD.
+4. If risk agent says ok_to_trade=false → action=HOLD.
+5. Require weighted confidence >= 0.55 to act; below that → HOLD.
+6. If 3+ agents explicitly align → confidence can be 0.7+.
 - Return ONLY the JSON object, no markdown, no extra text."""
 
 
@@ -126,6 +132,18 @@ Produce your final TradeDecision JSON."""
             raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
 
         result = json.loads(raw)
+
+        # ── Hard enforce 3-agent minimum (Python-side guard) ──────────────────
+        from schemas.signals import SignalType as _ST
+        _buy_count  = sum(1 for s in signals if s.signal == _ST.BUY)
+        _sell_count = sum(1 for s in signals if s.signal == _ST.SELL)
+        proposed    = result.get("action", "HOLD")
+        if proposed == "BUY"  and _buy_count  < 3:
+            result["action"] = "HOLD"
+            result["reasoning"] = f"[Guard] Only {_buy_count}/5 agents signal BUY (need 3). " + result.get("reasoning", "")
+        if proposed == "SELL" and _sell_count < 3:
+            result["action"] = "HOLD"
+            result["reasoning"] = f"[Guard] Only {_sell_count}/5 agents signal SELL (need 3). " + result.get("reasoning", "")
 
         # ── Build votes list ──────────────────────────────────────────────────
         agent_weights = {
