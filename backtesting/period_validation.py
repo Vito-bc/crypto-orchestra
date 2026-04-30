@@ -40,6 +40,7 @@ from backtesting.backtest import (
     macd_buy_ok,
     macd_sell_ok,
 )
+from tools.price_levels import get_levels
 
 WARMUP_DAYS = 60
 SYMBOLS     = ["BTC-USD", "ETH-USD"]
@@ -210,6 +211,13 @@ def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
         }
 
         action, conf, veto = sim_orchestrator(signals)
+
+        # S/R filter: BUY only when price is near a key support level
+        # This is the entry timing improvement — avoids mid-range entries
+        if action == "BUY" and not veto:
+            levels = get_levels(df, i, lookback=150, n_swing=5)
+            if not levels["at_support"]:
+                action = "HOLD"   # good signal, wrong timing
 
         if action == "SELL" and position:
             ct = close_position(position, price, row["time"], "SIGNAL", symbol)

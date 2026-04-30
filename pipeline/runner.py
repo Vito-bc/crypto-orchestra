@@ -34,7 +34,8 @@ from agents.technical_agent  import TechnicalAgent
 from agents.whale_agent      import WhaleAgent
 from notifications.telegram  import send_telegram_message
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
-from tools.price_data        import get_snapshot
+from tools.price_data        import get_raw_df, get_snapshot
+from tools.price_levels      import get_levels_from_snapshot
 
 # Minimum candle body confirmation: current 1h close must be moving
 # in the same direction as the signal before we act.
@@ -171,6 +172,33 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
 
     elapsed_total = time.time() - t0
     print(f"[Orchestra] Decision ready in {elapsed_total:.1f}s total")
+
+    # ── Support/Resistance filter ─────────────────────────────────────────────
+    # BUY only when price is near a key support level. This is the highest-ROI
+    # filter: eliminates mid-range entries where price has no nearby floor.
+    if decision.action == TradeAction.BUY:
+        raw_df = get_raw_df(asset)
+        if raw_df is not None:
+            levels = get_levels_from_snapshot(raw_df)
+            if not levels["at_support"]:
+                sup    = levels.get("nearest_support")
+                dist   = levels.get("dist_to_support")
+                reason = (f"nearest support ${sup:,.2f} is {dist:.1f}x ATR away" if sup and dist
+                          else "no support level detected nearby")
+                print(f"[Filter] S/R check FAILED for BUY — {reason}. Downgrading to HOLD.")
+                decision = TradeDecision(
+                    asset=asset, timestamp=decision.timestamp,
+                    action=TradeAction.HOLD,
+                    confidence=decision.confidence * 0.6,
+                    reasoning=f"[S/R filter] Price not at support ({reason}). " + decision.reasoning,
+                    votes=decision.votes, overrides=decision.overrides + [f"BUY blocked: {reason}."],
+                    veto_triggered=decision.veto_triggered, veto_reason=decision.veto_reason,
+                    position_size_pct=None, stop_loss_price=None, take_profit_price=None,
+                )
+            else:
+                sup  = levels.get("nearest_support")
+                dist = levels.get("dist_to_support")
+                print(f"[Filter] S/R check PASSED — at support ${sup:,.2f} ({dist:.1f}x ATR). BUY confirmed.")
 
     # ── Entry momentum filter ─────────────────────────────────────────────────
     # Only act if the current 1h candle is already moving in signal direction.

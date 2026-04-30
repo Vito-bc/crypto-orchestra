@@ -38,6 +38,17 @@ def normalize_symbol(asset: str) -> str:
     return _SYMBOL_MAP.get(asset.upper(), asset)
 
 
+def get_raw_df(asset: str, lookback_days: int = 90) -> "pd.DataFrame | None":
+    """Return the full 1h indicator DataFrame (for S/R level detection)."""
+    import pandas as pd
+    symbol    = normalize_symbol(asset)
+    signal_df = prepare_timeframe_df(symbol, "1h", lookback_days)
+    trend_df  = prepare_timeframe_df(symbol, "4h", lookback_days)
+    if signal_df is None or trend_df is None:
+        return None
+    return attach_higher_timeframe_context(signal_df, trend_df)
+
+
 def get_snapshot(asset: str, lookback_days: int = 90) -> dict | None:
     """
     Return a fully computed indicator snapshot for the given asset.
