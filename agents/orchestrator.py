@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,18 +120,49 @@ Agent reports:
 
 Produce your final TradeDecision JSON."""
 
-        message = self.client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            temperature=0,
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        raw = message.content[0].text
-        if raw.strip().startswith("```"):
-            raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        from agents.base_agent import BaseAgent as _Base
+        import re as _re
 
-        result = json.loads(raw)
+        retry_suffix = (
+            "\n\nIMPORTANT: Your previous response could not be parsed as JSON. "
+            "Return ONLY a raw JSON object — no markdown, no explanation, just the JSON."
+        )
+        last_exc: Exception = RuntimeError("No attempts made")
+        result: dict = {}
+
+        for attempt in range(2):
+            prompt = user_prompt if attempt == 0 else user_prompt + retry_suffix
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=1024,
+                temperature=0,
+                system=_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            try:
+                result = _Base._extract_json(message.content[0].text)
+                break
+            except (json.JSONDecodeError, ValueError) as exc:
+                last_exc = exc
+                if attempt == 0:
+                    print("[Orchestrator] JSON parse failed, retrying...", file=__import__("sys").stderr)
+        else:
+            raise ValueError(f"Orchestrator returned invalid JSON after 2 attempts: {last_exc}")
+
+        # Sanitize action field
+        _valid_actions = {"BUY", "SELL", "HOLD"}
+        raw_action = str(result.get("action", "HOLD")).upper().strip()
+        result["action"] = raw_action if raw_action in _valid_actions else "HOLD"
+
+        # Sanitize confidence
+        try:
+            result["confidence"] = max(0.0, min(1.0, float(result.get("confidence", 0.3))))
+        except (TypeError, ValueError):
+            result["confidence"] = 0.3
+
+        # Sanitize reasoning
+        if not isinstance(result.get("reasoning"), str) or not result["reasoning"].strip():
+            result["reasoning"] = "No reasoning provided."
 
         # ── Hard enforce 3-agent minimum (Python-side guard) ──────────────────
         from schemas.signals import SignalType as _ST
@@ -165,7 +196,7 @@ Produce your final TradeDecision JSON."""
 
         return TradeDecision(
             asset=asset,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             action=TradeAction(result["action"]),
             confidence=float(result["confidence"]),
             position_size_pct=result.get("position_size_pct"),
