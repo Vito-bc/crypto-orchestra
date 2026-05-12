@@ -7,3 +7,4 @@ anthropic
 pydantic
 httpx
 python-dotenv
+coinbase-advanced-py
