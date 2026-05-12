@@ -1,16 +1,12 @@
 """
 Risk Management Agent.
 
-Does NOT produce a directional signal — it answers "how much" and "with
-what stops", not "whether to trade".
+Answers both "whether to trade" and "how much / with what stops".
 
-Reads:
-  - Current ATR for stop/target calculation
-  - Existing position state (to prevent over-exposure)
-  - Portfolio-level daily loss limit from .env
+Returns signal=BUY when ok_to_trade=True (conditions are safe to enter),
+signal=NEUTRAL when ok_to_trade=False (blocks the trade).
 
-Returns signal=NEUTRAL always, but populates metrics with:
-  position_size_pct, stop_loss_price, take_profit_price, ok_to_trade
+Metrics always include: position_size_pct, stop_loss_price, take_profit_price, ok_to_trade
 """
 
 from __future__ import annotations
@@ -111,15 +107,16 @@ Evaluate risk and produce your JSON output."""
 
         result = self._ask_claude_json(_SYSTEM, user_prompt)
 
+        ok = bool(result.get("ok_to_trade", False))
         return AgentSignal(
             agent=self.name,
             asset=asset,
             timestamp=self._now(),
-            signal=SignalType.NEUTRAL,
+            signal=SignalType.BUY if ok else SignalType.NEUTRAL,
             confidence=float(result.get("confidence", 0.5)),
             reasoning=result.get("reasoning", ""),
             metrics={
-                "ok_to_trade":       result.get("ok_to_trade", False),
+                "ok_to_trade":       ok,
                 "position_size_pct": result.get("position_size_pct", trade_size),
                 "stop_loss_price":   result.get("stop_loss_price"),
                 "take_profit_price": result.get("take_profit_price"),
