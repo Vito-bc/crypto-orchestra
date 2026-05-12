@@ -1,16 +1,16 @@
 """
-Multi-Period Validation — does the best config hold across market regimes?
+Fee Comparison Backtest — quantifies the impact of limit-order maker fees.
 
-Tests the "3-agent filter" config on 4 distinct market periods:
-  Oct-Dec 2024  BULL RUN   — training period (should match tuning results)
-  Jan-Mar 2024  BULL 2     — another bull, tests generalization
-  Apr-Jun 2024  CORRECTION — post-ATH selloff, tests bear resilience
-  Jul-Sep 2024  RANGING    — sideways chop, tests false-signal filtering
+Runs the same 4-period validation under three fee scenarios:
+  A. Backtest legacy  : 0.6% entry + 0.6% exit = 1.2% round-trip
+  B. Market orders    : 0.4% entry + 0.4% exit = 0.8% round-trip (taker)
+  C. Limit orders     : 0.2% entry + 0.4% exit = 0.6% round-trip (maker in, taker out)
 
-Also shows buy-and-hold benchmark for each period.
+All other parameters are identical to period_validation.py so the fee impact
+is the only variable being changed.
 
 Usage:
-    python backtesting/period_validation.py
+    python backtesting/fee_comparison.py
 """
 
 from __future__ import annotations
@@ -29,12 +29,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backtesting.backtest import (
-    FEE_RATE,
     START_BALANCE,
     TRADE_SIZE_PCT,
     attach_higher_timeframe_context,
     calculate_indicators,
-    close_position,
     get_signal,
     get_symbol_config,
     macd_buy_ok,
@@ -45,6 +43,21 @@ from tools.price_levels import get_levels
 WARMUP_DAYS = 60
 SYMBOLS     = ["BTC-USD", "ETH-USD"]
 
+# ── Fee scenarios ─────────────────────────────────────────────────────────────
+@dataclass
+class FeeScenario:
+    name:       str
+    entry_fee:  float   # fraction per side on entry
+    exit_fee:   float   # fraction per side on exit
+    label:      str
+
+SCENARIOS = [
+    FeeScenario("legacy",  0.006, 0.006, "Legacy 1.2%RT"),
+    FeeScenario("market",  0.004, 0.004, "Market 0.8%RT"),
+    FeeScenario("limit",   0.002, 0.004, "Limit  0.6%RT"),
+]
+
+# ── Strategy constants (same as period_validation.py) ────────────────────────
 WEIGHTS = {
     "macro":     0.30,
     "technical": 0.25,
@@ -52,28 +65,23 @@ WEIGHTS = {
     "sentiment": 0.15,
     "risk":      0.10,
 }
-
-# Best config from tuning — 3-agent filter + all fixes
-BEST_ATR_STOP      = 2.5   # was 2.0 — slightly wider stop reduces premature exits
-BEST_ATR_TARGET    = 4.0
 VETO_TS_THRESHOLD  = -0.002
 MIN_AGENTS         = 3
 MIN_BUY_SCORE      = 0.28
-CANDLE_BODY_MIN    = 0.002  # 0.2% — require rising candle at entry (winners avg +0.77% vs losers -0.22%)
-
+BEST_ATR_STOP      = 2.0
+BEST_ATR_TARGET    = 4.0
 
 @dataclass
 class Period:
     name:  str
-    label: str    # regime description
+    label: str
     start: str
     end:   str
 
-
 PERIODS = [
-    Period("Oct-Dec 2024", "BULL RUN  (training)",   "2024-10-01", "2024-12-31"),
-    Period("Jul-Sep 2024", "RANGING   (sideways)",   "2024-07-01", "2024-09-30"),
-    Period("Jan-Mar 2025", "POST-ATH CORRECTION",    "2025-01-01", "2025-03-31"),
+    Period("Oct-Dec 2024", "BULL RUN  (training)",  "2024-10-01", "2024-12-31"),
+    Period("Jul-Sep 2024", "RANGING   (sideways)",  "2024-07-01", "2024-09-30"),
+    Period("Jan-Mar 2025", "POST-ATH CORRECTION",   "2025-01-01", "2025-03-31"),
     Period("Jun-Aug 2025", "SUMMER 2025",            "2025-06-01", "2025-08-31"),
 ]
 
@@ -99,7 +107,7 @@ def fetch_range(symbol: str, timeframe: str, start: str, end: str) -> pd.DataFra
     return df
 
 
-# ── Agent simulators (same as agent_backtest_tune.py) ────────────────────────
+# ── Agent simulators ──────────────────────────────────────────────────────────
 
 def sim_technical(row, prev_row, config) -> tuple[str, float]:
     signal = get_signal(row, prev_row, config)
@@ -113,8 +121,8 @@ def sim_technical(row, prev_row, config) -> tuple[str, float]:
 
 
 def sim_macro(row) -> tuple[str, float, bool]:
-    close_4h  = row.get("close_4h",  np.nan)
-    ema50_4h  = row.get("ema50_4h",  np.nan)
+    close_4h  = row.get("close_4h", np.nan)
+    ema50_4h  = row.get("ema50_4h", np.nan)
     ema200_4h = row.get("ema200_4h", np.nan)
     ts        = row.get("trend_strength_4h", 0) or 0
     if any(pd.isna(v) for v in [close_4h, ema50_4h, ema200_4h]):
@@ -129,10 +137,10 @@ def sim_macro(row) -> tuple[str, float, bool]:
 
 def sim_sentiment(row) -> tuple[str, float]:
     mom = row.get("momentum_20", 0) or 0
-    if mom > 8:    return "BUY",  0.55
-    if mom > 3:    return "BUY",  0.45
-    if mom < -8:   return "SELL", 0.55
-    if mom < -3:   return "SELL", 0.45
+    if mom > 8:   return "BUY",  0.55
+    if mom > 3:   return "BUY",  0.45
+    if mom < -8:  return "SELL", 0.55
+    if mom < -3:  return "SELL", 0.45
     return "NEUTRAL", 0.40
 
 
@@ -145,7 +153,7 @@ def sim_whale(row) -> tuple[str, float]:
     return "NEUTRAL", 0.50
 
 
-def sim_orchestrator(signals: dict, bull_mode: bool = False) -> tuple[str, float, bool]:
+def sim_orchestrator(signals: dict) -> tuple[str, float, bool]:
     _, _, bear_veto = signals["macro"]
     if bear_veto:
         return "HOLD", 0.0, True
@@ -154,7 +162,7 @@ def sim_orchestrator(signals: dict, bull_mode: bool = False) -> tuple[str, float
     for agent, val in signals.items():
         sig, conf = val[0], val[1]
         w = WEIGHTS.get(agent, 0.1)
-        if sig == "BUY":   buy_count += 1; buy_score  += w * conf
+        if sig == "BUY":    buy_count += 1; buy_score  += w * conf
         elif sig == "SELL": sell_count += 1; sell_score += w * conf
     if buy_count >= MIN_AGENTS and buy_score > MIN_BUY_SCORE and buy_score > sell_score:
         return "BUY",  round(buy_score, 3), False
@@ -163,9 +171,31 @@ def sim_orchestrator(signals: dict, bull_mode: bool = False) -> tuple[str, float
     return "HOLD", round(max(buy_score, sell_score), 3), False
 
 
-# ── Single period run ─────────────────────────────────────────────────────────
+# ── Local close with configurable fees ───────────────────────────────────────
 
-def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
+def _close(position: dict, price: float, time, reason: str,
+           exit_fee: float) -> dict:
+    """Like backtest.close_position() but with an explicit exit_fee rate."""
+    gross_value  = position["qty"] * price
+    fee_paid     = gross_value * exit_fee
+    net_returned = gross_value - fee_paid
+    pnl_usd      = net_returned - position["cost"]
+    pnl_pct      = (price - position["entry"]) / position["entry"]
+    hold_hours   = (pd.Timestamp(time) - pd.Timestamp(position["entry_time"])).total_seconds() / 3600
+    return {
+        "type": "CLOSE", "side": "LONG",
+        "entry": position["entry"], "exit": price,
+        "pnl_usd": pnl_usd, "pnl_pct": pnl_pct,
+        "exit_time": time, "entry_time": position["entry_time"],
+        "hold_hours": hold_hours, "reason": reason,
+        "net_returned": net_returned,
+    }
+
+
+# ── Single period under one fee scenario ─────────────────────────────────────
+
+def run_period(df: pd.DataFrame, symbol: str, period: Period,
+               scenario: FeeScenario) -> dict:
     sym_config = get_symbol_config(symbol)
     balance    = START_BALANCE
     position   = None
@@ -193,7 +223,7 @@ def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
             hit_max    = sym_config.get("max_hold_hours") and held_h >= sym_config["max_hold_hours"]
             if hit_stop or hit_target or hit_max:
                 reason = "STOP_LOSS" if hit_stop else ("TAKE_PROFIT" if hit_target else "MAX_HOLD")
-                ct = close_position(position, price, row["time"], reason, symbol)
+                ct = _close(position, price, row["time"], reason, scenario.exit_fee)
                 balance += ct["net_returned"]; trades.append(ct); position = None
                 continue
 
@@ -201,7 +231,6 @@ def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
         macro_sig, macro_conf, b_veto = sim_macro(row)
         sent_sig,  sent_conf          = sim_sentiment(row)
         whale_sig, whale_conf         = sim_whale(row)
-
         signals = {
             "macro":     (macro_sig, macro_conf, b_veto),
             "technical": (tech_sig,  tech_conf),
@@ -209,25 +238,22 @@ def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
             "whale":     (whale_sig, whale_conf),
             "risk":      ("NEUTRAL", 0.85),
         }
-
         action, conf, veto = sim_orchestrator(signals)
 
-        # S/R filter: BUY only when price is near a key support level
-        # This is the entry timing improvement — avoids mid-range entries
         if action == "BUY" and not veto:
             levels = get_levels(df, i, lookback=150, n_swing=5)
             if not levels["at_support"]:
-                action = "HOLD"   # good signal, wrong timing
+                action = "HOLD"
 
         if action == "SELL" and position:
-            ct = close_position(position, price, row["time"], "SIGNAL", symbol)
+            ct = _close(position, price, row["time"], "SIGNAL", scenario.exit_fee)
             balance += ct["net_returned"]; trades.append(ct); position = None
             continue
         if position:
             continue
         if action == "BUY":
             usd = balance * TRADE_SIZE_PCT
-            fee = usd * FEE_RATE
+            fee = usd * scenario.entry_fee
             if usd + fee > balance:
                 continue
             balance -= usd + fee
@@ -236,13 +262,13 @@ def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
                 "cost": usd, "entry_time": row["time"],
                 "stop_price":   price - row["atr"] * BEST_ATR_STOP,
                 "target_price": price + row["atr"] * BEST_ATR_TARGET,
-                "entry_context": {},
             }
             trades.append({"type": "OPEN", "side": "LONG", "symbol": symbol,
                            "price": price, "time": row["time"]})
 
     if position:
-        ct = close_position(position, df["close"].iloc[-1], df["time"].iloc[-1], "END_OF_TEST", symbol)
+        ct = _close(position, df["close"].iloc[-1], df["time"].iloc[-1],
+                    "END_OF_TEST", scenario.exit_fee)
         balance += ct["net_returned"]; trades.append(ct)
 
     closed = [t for t in trades if t["type"] == "CLOSE"]
@@ -260,24 +286,16 @@ def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
         dd = (peak - val) / peak
         if dd > max_dd: max_dd = dd
 
-    sl_count = sum(1 for t in closed if t["reason"] == "STOP_LOSS")
-    tp_count = sum(1 for t in closed if t["reason"] == "TAKE_PROFIT")
-
-    # Buy-and-hold benchmark
     bah_return = (df["close"].iloc[-1] - df["close"].iloc[0]) / df["close"].iloc[0] * 100
-
     return {
         "period":        period.name,
         "regime":        period.label,
         "return":        total_return,
         "bah_return":    bah_return,
-        "vs_bah":        total_return - bah_return,
         "trades":        len(closed),
         "win_rate":      win_rate,
         "profit_factor": profit_factor,
         "max_drawdown":  max_dd * 100,
-        "stop_losses":   sl_count,
-        "take_profits":  tp_count,
         "avg_win_usd":   avg_win,
         "avg_loss_usd":  avg_loss,
     }
@@ -286,54 +304,85 @@ def run_period(df: pd.DataFrame, symbol: str, period: Period) -> dict:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("\nCrypto Orchestra -- Multi-Period Validation")
-    print("Config: 3-agent filter + trend sentiment + wider stops (2.0x/4.0x)")
-    print("=" * 75)
+    print("\nCrypto Orchestra -- Fee Comparison Backtest")
+    print("Comparing: Legacy 1.2%RT  |  Market orders 0.8%RT  |  Limit orders 0.6%RT")
+    print("All other parameters identical (3-agent filter, 2x/4x ATR stops, S/R gate)")
+
+    # Pre-fetch all data (avoid re-downloading per scenario)
+    cache: dict[tuple, tuple] = {}
+    for symbol in SYMBOLS:
+        for period in PERIODS:
+            key = (symbol, period.start, period.end)
+            sf = fetch_range(symbol, "1h", period.start, period.end)
+            tf = fetch_range(symbol, "4h", period.start, period.end)
+            cache[key] = (sf, tf)
 
     for symbol in SYMBOLS:
-        print(f"\n{'='*75}")
+        print(f"\n{'='*85}")
         print(f"  {symbol}")
-        print(f"{'='*75}")
-        print(f"  {'Period':<16} {'Regime':<26} {'Return':>7} {'B&H':>7} {'vs B&H':>7} {'WR':>6} {'PF':>5} {'Trades':>7} {'DD':>5}")
-        print(f"  {'-'*73}")
+        print(f"{'='*85}")
+        print(f"  {'Period':<16} {'Regime':<26} {'Legacy':>8} {'Market':>8} {'Limit':>8}  {'Trades':>6}  {'WR':>5}  Verdict")
+        print(f"  {'-'*83}")
 
-        all_results = []
+        all_by_scenario: dict[str, list] = {s.name: [] for s in SCENARIOS}
+
         for period in PERIODS:
-            signal_df = fetch_range(symbol, "1h", period.start, period.end)
-            trend_df  = fetch_range(symbol, "4h", period.start, period.end)
+            key = (symbol, period.start, period.end)
+            signal_df, trend_df = cache[key]
+
             if signal_df is None or trend_df is None:
-                print(f"  {period.name:<16}  No data available.")
+                print(f"  {period.name:<16}  No data.")
                 continue
 
+            from backtesting.backtest import attach_higher_timeframe_context
             df = attach_higher_timeframe_context(signal_df, trend_df)
             start_ts = pd.Timestamp(period.start, tz="UTC")
             df["time"] = pd.to_datetime(df["time"], utc=True)
             df = df[df["time"] >= start_ts].reset_index(drop=True)
 
-            r = run_period(df, symbol, period)
-            all_results.append(r)
+            results = {}
+            for sc in SCENARIOS:
+                r = run_period(df, symbol, period, sc)
+                results[sc.name] = r
+                all_by_scenario[sc.name].append(r)
 
-            bah_str = f"{r['bah_return']:+.1f}%"
-            vs_str  = f"{r['vs_bah']:+.1f}%"
-            verdict = "PASS" if r["return"] > 0 else ("CLOSE" if r["return"] > -0.5 else "FAIL")
+            r_leg = results["legacy"]
+            r_mkt = results["market"]
+            r_lim = results["limit"]
+            trades = r_lim["trades"]
+            wr     = r_lim["win_rate"]
+
+            # Verdict based on limit scenario
+            verdict = "PASS" if r_lim["return"] > 0 else ("CLOSE" if r_lim["return"] > -0.5 else "FAIL")
+            # Delta labels: show improvement over legacy
+            delta_mkt = r_mkt["return"] - r_leg["return"]
+            delta_lim = r_lim["return"] - r_leg["return"]
 
             print(
-                f"  {r['period']:<16} {r['regime']:<26} "
-                f"{r['return']:>+6.2f}% {bah_str:>7} {vs_str:>7} "
-                f"{r['win_rate']:>5.1f}% "
-                f"{r['profit_factor']:>5.2f} "
-                f"{r['trades']:>7} "
-                f"{r['max_drawdown']:>4.1f}%  {verdict}"
+                f"  {period.name:<16} {period.label:<26} "
+                f"{r_leg['return']:>+7.2f}% "
+                f"{r_mkt['return']:>+7.2f}% "
+                f"{r_lim['return']:>+7.2f}%  "
+                f"{trades:>6}  "
+                f"{wr:>4.0f}%  {verdict}"
             )
 
-        if all_results:
-            print(f"  {'-'*73}")
-            avg_ret = sum(r["return"] for r in all_results) / len(all_results)
-            avg_wr  = sum(r["win_rate"] for r in all_results) / len(all_results)
-            avg_pf  = sum(r["profit_factor"] for r in all_results) / len(all_results)
-            print(f"  {'AVERAGE':<16} {'across all periods':<26} {avg_ret:>+6.2f}%  {'':>7} {'':>7} {avg_wr:>5.1f}% {avg_pf:>5.2f}")
+        # Averages
+        print(f"  {'-'*83}")
+        for sc in SCENARIOS:
+            res = all_by_scenario[sc.name]
+            if res:
+                avg = sum(r["return"] for r in res) / len(res)
+                avg_wr = sum(r["win_rate"] for r in res) / len(res)
+                avg_pf = sum(r["profit_factor"] for r in res) / len(res)
+                avg_dd = sum(r["max_drawdown"] for r in res) / len(res)
+                label = f"AVG ({sc.label})"
+                print(f"  {label:<42} {avg:>+7.2f}%  WR {avg_wr:.0f}%  PF {avg_pf:.2f}  DD {avg_dd:.1f}%")
 
-    print(f"\n{'='*75}")
-    print("  B&H = Buy and Hold benchmark for the period")
-    print("  vs B&H = system return minus buy-and-hold (positive = outperformed)")
-    print("  PASS = profitable  |  CLOSE = <0.5% loss  |  FAIL = >0.5% loss")
+    print(f"\n{'='*85}")
+    print("  Legend:")
+    print("  Legacy  = 0.6% entry + 0.6% exit (1.2% round-trip) — original backtest assumption")
+    print("  Market  = 0.4% entry + 0.4% exit (0.8% round-trip) — Coinbase taker fee")
+    print("  Limit   = 0.2% entry + 0.4% exit (0.6% round-trip) — maker entry via limit order")
+    print("  PASS = profitable | CLOSE = <0.5% loss | FAIL = >0.5% loss")
+    print("  Verdict based on Limit scenario (the one we actually trade)")
