@@ -131,15 +131,24 @@ def _append_history(record: dict) -> None:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def open_position_from_order(order: "PendingOrder", fill_price: float) -> Position:  # type: ignore[name-defined]
+    from pipeline.limit_orders import ATR_STOP_MULT, ATR_TARGET_MULT
+
     pct     = order.position_size_pct or DEFAULT_POS_PCT
     qty_usd = round(PAPER_BALANCE * pct, 2)
+
+    # Reconstruct ATR from the original limit order, then re-anchor stop/target
+    # to the actual fill price. Without this, a gap-down fill (fill < limit)
+    # puts the stop above the entry price — an immediate false trigger.
+    atr        = (order.limit_price - order.stop_price) / ATR_STOP_MULT
+    stop_price  = round(fill_price - ATR_STOP_MULT  * atr, 2)
+    target_price = round(fill_price + ATR_TARGET_MULT * atr, 2)
 
     pos = Position(
         id=order.id,
         asset=order.asset,
         entry_price=round(fill_price, 2),
-        stop_price=order.stop_price,
-        target_price=order.target_price,
+        stop_price=stop_price,
+        target_price=target_price,
         qty_usd=qty_usd,
         entry_time=datetime.now(timezone.utc).isoformat(),
         order_id=order.id,
