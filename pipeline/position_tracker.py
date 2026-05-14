@@ -37,7 +37,9 @@ TAKER_FEE_RATE       = 0.004   # 0.4% exit  (market/taker)
 PAPER_BALANCE        = 10_000  # USD paper capital
 DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
 
-MAX_HOLD_HOURS       = 72      # force-close after 3 days
+# Per-asset max hold (backtests: 88% of wins are MAX_HOLD; 48h+ degrades results)
+MAX_HOLD_HOURS_BY_ASSET = {"ETH-USD": 8, "BTC-USD": 12}
+MAX_HOLD_HOURS          = 12   # default fallback
 
 # Trailing stop parameters (tuned via backtesting/trailing_stop_tune.py)
 BREAK_EVEN_PCT       = 0.005   # +0.5% above entry → stop moves to break-even
@@ -75,7 +77,8 @@ class Position:
         return (datetime.now(timezone.utc) - t0).total_seconds() / 3600
 
     def is_max_hold(self) -> bool:
-        return self.held_hours() >= MAX_HOLD_HOURS
+        limit = MAX_HOLD_HOURS_BY_ASSET.get(self.asset, MAX_HOLD_HOURS)
+        return self.held_hours() >= limit
 
     def check_exit(self, current_price: float) -> Optional[str]:
         if current_price <= self.stop_price:
