@@ -18,4 +18,4 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Settings $settings -RunLevel Highest -Force | Out-Null
 
 Write-Host "Registered: $taskName — runs daily at 09:00 AM"
-Write-Host "To run now: Start-ScheduledTask -TaskName '$taskName'"
+Write-Host "To run now: Start-ScheduledTask -TaskName $taskName"
