@@ -215,9 +215,7 @@ def get_signal(row, prev_row, config):
     volume_ok = config["min_volume_ratio"] < row["volume_ratio"] < config["max_volume_ratio"]
 
     buy_signals = 0
-    rsi_ok = row["rsi"] < config["buy_rsi_max"]
     macd_ok = macd_buy_ok(row, config)
-    bb_ok = row["bb_pct"] < config["buy_bb_pct_max"]
     if row["rsi"] < config["buy_rsi_max"]:
         buy_signals += 1
     if macd_ok:
@@ -410,11 +408,6 @@ def run_backtest(symbol, timeframe="1h", days=365):
 
         if position:
             held_hours = (pd.Timestamp(row["time"]) - pd.Timestamp(position["entry_time"])).total_seconds() / 3600
-
-            if position["side"] == "LONG":
-                pnl_pct = (price - position["entry"]) / position["entry"]
-            else:
-                pnl_pct = (position["entry"] - price) / position["entry"]
 
             if position["side"] == "LONG":
                 break_even_trigger_atr = config.get("break_even_trigger_atr")

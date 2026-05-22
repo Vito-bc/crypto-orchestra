@@ -17,4 +17,4 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Lint
-        run: ruff check . --select E,F,W --ignore E501
+        run: ruff check .

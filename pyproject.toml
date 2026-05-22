@@ -1,0 +1,13 @@
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501",   # line too long — acceptable in prompts and long strings
+    "E402",   # module import not at top — intentional: sys.path set before local imports
+    "E701",   # multiple statements on one line (colon) — used in backtesting for readability
+    "E702",   # multiple statements on one line (semicolon) — used in backtesting
+    "E741",   # ambiguous variable name — `l` is used for "line" in JSONL parsing loops
+    "F821",   # undefined name — forward type references in string annotations are intentional
+]

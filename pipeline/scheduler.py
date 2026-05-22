@@ -13,7 +13,6 @@ Usage:
 
 from __future__ import annotations
 
-import io
 import os
 import sys
 import time
@@ -79,7 +78,7 @@ def main() -> None:
     sys.stderr = _Tee(sys.stderr, SCHEDULER_LOG)
 
     print(f"\n{'='*65}")
-    print(f"CRYPTO ORCHESTRA SCHEDULER")
+    print("CRYPTO ORCHESTRA SCHEDULER")
     print(f"Started: {_now_utc()}")
     print(f"Interval: every {interval_min} minutes")
     print(f"Log: {SCHEDULER_LOG}")
@@ -107,7 +106,6 @@ def main() -> None:
             print(f"[Scheduler] Run #{run_number} FAILED after {elapsed:.1f}s — will retry next interval")
             traceback.print_exc()
 
-        next_run = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
         print(f"[Scheduler] Next run in {interval_min} minutes  (at approx "
               f"{_next_run_time(interval_sec)})")
 
