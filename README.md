@@ -1,5 +1,11 @@
 # Crypto Orchestra
 
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](register_pipeline_task.ps1)
+[![AI](https://img.shields.io/badge/AI-Claude%20Sonnet%204.6-purple)](https://www.anthropic.com/)
+[![Status](https://img.shields.io/badge/status-paper%20trading-orange)](.env.example)
+
 A multi-agent AI trading system for BTC and ETH on Coinbase. Five specialist Claude sub-agents run in parallel every hour, feed signals to an orchestrator, and autonomously place limit orders at support levels with trailing stop management.
 
 ## How It Works
@@ -62,10 +68,20 @@ python pipeline/runner.py ETH-USD
 
 # 5. View P&L dashboard
 python pipeline/dashboard.py
-
-# 6. Start hourly scheduler (Windows — double-click)
-run_scheduler.bat
 ```
+
+### Production Scheduling (Windows)
+
+Register the hourly Task Scheduler job (run once as Administrator):
+
+```powershell
+.\register_pipeline_task.ps1
+.\pipeline\register_daily_summary_task.ps1
+```
+
+The pipeline task runs every 60 minutes, starts automatically on boot, and recovers within one hour after any restart or crash. The daily summary sends a Telegram P&L snapshot at 9 AM.
+
+For a quick manual loop (no Task Scheduler), double-click `run_scheduler.bat`.
 
 ## Going Live on Coinbase
 
@@ -99,9 +115,11 @@ pipeline/
   runner.py            — main hourly pipeline (positions → fills → agents → order)
   limit_orders.py      — limit order lifecycle: place, fill, expire, cancel
   position_tracker.py  — trailing stop, P&L computation, trade history
-  scheduler.py         — production loop with error recovery and log mirroring
   dashboard.py         — ASCII P&L dashboard with equity curve
-  daily_summary.py     — Telegram P&L snapshot (runs at 9 AM via Task Scheduler)
+  daily_summary.py     — Telegram P&L snapshot (9 AM via Task Scheduler)
+  weekly_review.py     — Telegram weekly performance report
+  run_once.bat         — single-shot wrapper used by Task Scheduler
+  scheduler.py         — alternative long-running loop (manual / non-Windows use)
 
 tools/
   price_data.py        — yfinance wrapper with 55-min thread-safe TTL cache
@@ -118,6 +136,10 @@ backtesting/
 
 notifications/
   telegram.py          — Telegram alerts for all trade events
+
+register_pipeline_task.ps1      — register hourly Task Scheduler job (run as admin)
+pipeline/register_daily_summary_task.ps1 — register 9 AM daily summary job
+run_scheduler.bat               — manual long-running loop (alternative to Task Scheduler)
 
 logs/                  — runtime logs (git-ignored)
   agent_decisions.jsonl
