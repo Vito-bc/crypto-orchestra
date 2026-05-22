@@ -66,8 +66,8 @@ def format_limit_order_placed(asset: str, order: "PendingOrder", levels: dict) -
         f"Market now:  ${current:,.2f}",
         f"Stop loss:   ${order.stop_price:,.2f}",
         f"Take profit: ${order.target_price:,.2f}",
-        f"Fee:         0.2% maker (saves 0.4% vs market order)",
-        f"Expires:     24h",
+        "Fee:         0.2% maker (saves 0.4% vs market order)",
+        "Expires:     24h",
     ]
     if order.reasoning:
         lines.append(f"Reason: {order.reasoning[:120]}")
@@ -83,7 +83,7 @@ def format_limit_order_filled(asset: str, order: "PendingOrder", fill_price: flo
         f"Limit was:   ${order.limit_price:,.2f}",
         f"Stop loss:   ${order.stop_price:,.2f}",
         f"Take profit: ${order.target_price:,.2f}",
-        f"Fee paid:    0.2% maker",
+        "Fee paid:    0.2% maker",
     ]
     return "\n".join(lines)
 

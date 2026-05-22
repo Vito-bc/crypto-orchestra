@@ -205,7 +205,7 @@ def section_signal_activity(decisions: list[dict]) -> None:
     for action, count in [("BUY", actions["BUY"]), ("SELL", actions["SELL"]), ("HOLD", actions["HOLD"])]:
         bar = "#" * int(count / total * 30) if total else ""
         print(f"  {action:<6} {count:>4} ({_pct(count, total):>5})  {bar}")
-    print(f"\n  By asset:")
+    print("\n  By asset:")
     for asset, count in assets.most_common():
         print(f"    {asset:<10} {count} decisions")
 
@@ -316,7 +316,7 @@ def main() -> None:
 
     print("\n" + "=" * W)
     print(f"  Logs: {TRADE_HISTORY.parent}")
-    print(f"  Run 'python pipeline/dashboard.py --short' for summary only")
+    print("  Run 'python pipeline/dashboard.py --short' for summary only")
     print("=" * W + "\n")
 
 

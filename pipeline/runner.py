@@ -44,7 +44,6 @@ from notifications.telegram  import (
 )
 from pipeline.limit_orders   import (
     MAKER_FEE_RATE,
-    cancel_open_orders,
     check_and_fill,
     get_open_orders,
     place_limit_order,
@@ -52,7 +51,6 @@ from pipeline.limit_orders   import (
 from pipeline.position_tracker import (
     check_positions,
     open_position_from_order,
-    print_summary,
 )
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
 from tools.price_data        import get_raw_df, get_snapshot

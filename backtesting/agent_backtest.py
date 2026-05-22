@@ -46,7 +46,6 @@ from backtesting.backtest import (
     get_symbol_config,
     macd_buy_ok,
     macd_sell_ok,
-    trend_ok,
 )
 
 # ── Date range ────────────────────────────────────────────────────────────────

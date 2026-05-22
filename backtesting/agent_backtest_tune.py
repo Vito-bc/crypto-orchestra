@@ -348,7 +348,7 @@ if __name__ == "__main__":
         signal_df = fetch_range(symbol, "1h")
         trend_df  = fetch_range(symbol, "4h")
         if signal_df is None or trend_df is None:
-            print(f"  No data."); continue
+            print("  No data."); continue
 
         df = attach_higher_timeframe_context(signal_df, trend_df)
         start_ts = pd.Timestamp(BACKTEST_START, tz="UTC")

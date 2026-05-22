@@ -13,7 +13,6 @@ to .env later (GLASSNODE_API_KEY, WHALE_ALERT_API_KEY).
 from __future__ import annotations
 
 import json
-import os
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 

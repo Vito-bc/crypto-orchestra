@@ -33,7 +33,6 @@ from schemas.signals import (
     AgentSignal,
     AgentVote,
     MarketRegime,
-    SignalType,
     TradeAction,
     TradeDecision,
 )
@@ -121,7 +120,6 @@ Agent reports:
 Produce your final TradeDecision JSON."""
 
         from agents.base_agent import BaseAgent as _Base
-        import re as _re
 
         retry_suffix = (
             "\n\nIMPORTANT: Your previous response could not be parsed as JSON. "

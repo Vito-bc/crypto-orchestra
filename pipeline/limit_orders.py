@@ -115,7 +115,7 @@ def place_limit_order(
     reasoning:         str = "",
 ) -> PendingOrder:
     """Create a limit buy order, send it to Coinbase, and persist it locally."""
-    from exchange.coinbase_client import place_limit_buy, is_dry_run
+    from exchange.coinbase_client import place_limit_buy
     from pipeline.position_tracker import PAPER_BALANCE
 
     order = PendingOrder.create(

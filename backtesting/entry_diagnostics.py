@@ -36,7 +36,6 @@ from backtesting.backtest import (
     get_signal,
     get_symbol_config,
     macd_buy_ok,
-    macd_sell_ok,
 )
 from tools.price_levels import get_levels
 
@@ -272,7 +271,7 @@ if __name__ == "__main__":
         print(f"  Losers   — avg candle body: {avg_candle_loss:+.2f}%  avg RSI: {avg_rsi_loss:.1f}  avg dist-to-support: {avg_dist_loss:.2f}x ATR")
 
     if wins and losses:
-        print(f"\n  Key differences:")
+        print("\n  Key differences:")
         candle_diff = sum(t.get("candle_body_pct", 0) for t in wins) / len(wins) - \
                       sum(t.get("candle_body_pct", 0) for t in losses) / len(losses)
         rsi_diff    = sum(t.get("rsi", 50) for t in wins) / len(wins) - \

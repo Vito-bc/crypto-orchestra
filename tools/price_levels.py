@@ -11,7 +11,6 @@ No lookahead bias — only uses candles before the current index.
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 

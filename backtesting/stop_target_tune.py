@@ -21,7 +21,7 @@ Usage:
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -399,4 +399,4 @@ if __name__ == "__main__":
         print(f"Improvement:   {delta:+.3f}% per period on average")
     print(f"{'='*75}")
     print(f"\nTo apply: update BEST_ATR_STOP={best['stop']} and BEST_ATR_TARGET={best['target']}")
-    print(f"in backtesting/period_validation.py and pipeline/runner.py (risk agent prompt)")
+    print("in backtesting/period_validation.py and pipeline/runner.py (risk agent prompt)")

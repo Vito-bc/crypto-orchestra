@@ -58,7 +58,6 @@ def _fetch_cached(symbol: str, timeframe: str, lookback_days: int):
     Return a cached DataFrame if still fresh, otherwise fetch and cache it.
     Thread-safe: multiple agents can call this concurrently.
     """
-    import pandas as pd
     key = (symbol, timeframe, lookback_days)
     now = datetime.now(timezone.utc)
 

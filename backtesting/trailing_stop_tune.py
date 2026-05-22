@@ -38,7 +38,6 @@ from backtesting.backtest import (
     get_signal,
     get_symbol_config,
     macd_buy_ok,
-    macd_sell_ok,
 )
 from tools.price_levels import get_levels
 
@@ -307,7 +306,7 @@ if __name__ == "__main__":
           f"({best['cfg'].label})")
     delta = best["avg_ret"] - baseline["avg_ret"]
     print(f"Improvement        : {delta:+.3f}% per period on average")
-    print(f"\nCopy these into pipeline/position_tracker.py:")
+    print("\nCopy these into pipeline/position_tracker.py:")
     print(f"  BREAK_EVEN_PCT       = {best['cfg'].break_even_pct}   # {best['cfg'].break_even_pct:.1%}")
     print(f"  TRAIL_ACTIVATION_PCT = {best['cfg'].trail_activation_pct}   # {best['cfg'].trail_activation_pct:.1%}")
     print(f"  TRAIL_PCT            = {best['cfg'].trail_pct}   # {best['cfg'].trail_pct:.1%}")
