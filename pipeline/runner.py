@@ -365,7 +365,7 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
     return decision
 
 
-ASSETS = ["BTC-USD", "ETH-USD"]
+ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
 
 
 def run_all_assets() -> dict[str, TradeDecision]:

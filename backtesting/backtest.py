@@ -11,12 +11,12 @@ from pathlib import Path
 
 FEE_RATE = 0.006
 TRADE_SIZE_PCT = 0.02
-ATR_STOP_MULTIPLIER = 1.5
-ATR_TARGET_MULTIPLIER = 3.0
+ATR_STOP_MULTIPLIER = 2.5
+ATR_TARGET_MULTIPLIER = 4.0
 START_BALANCE = 10000
 MACD_PREV_RATIO_CAP = 0.2
 
-SYMBOLS = ["BTC-USD", "ETH-USD"]
+SYMBOLS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
 
 STRATEGY_CONFIG = {
     "BTC-USD": {
@@ -53,11 +53,45 @@ STRATEGY_CONFIG = {
         "require_local_above_ema50": True,
         "local_ema50_buffer": 1.0,
     },
+    "SOL-USD": {
+        "min_trend_strength": 0.004,
+        "min_volume_ratio": 1.05,
+        "max_volume_ratio": 4.0,
+        "buy_rsi_max": 54,
+        "buy_bb_pct_max": 0.48,
+        "sell_rsi_min": 58,
+        "sell_bb_pct_min": 0.70,
+        "max_hold_hours": 8,
+        "trailing_stop_multiplier": 2.0,
+        "break_even_trigger_atr": None,
+        "trail_activation_multiplier": 1.2,
+        "macd_mode": "refined_momentum",
+        "trend_mode": "ema_or_close_4h",
+        "require_local_above_ema50": True,
+        "local_ema50_buffer": 1.0,
+    },
+    "ZEC-USD": {
+        "min_trend_strength": 0.004,
+        "min_volume_ratio": 1.05,
+        "max_volume_ratio": 5.0,
+        "buy_rsi_max": 53,
+        "buy_bb_pct_max": 0.46,
+        "sell_rsi_min": 58,
+        "sell_bb_pct_min": 0.70,
+        "max_hold_hours": 8,
+        "trailing_stop_multiplier": 2.0,
+        "break_even_trigger_atr": None,
+        "trail_activation_multiplier": 1.2,
+        "macd_mode": "refined_momentum",
+        "trend_mode": "ema_or_close_4h",
+        "require_local_above_ema50": True,
+        "local_ema50_buffer": 1.0,
+    },
 }
 
 
 def get_symbol_config(symbol):
-    return STRATEGY_CONFIG[symbol]
+    return STRATEGY_CONFIG.get(symbol, STRATEGY_CONFIG["ETH-USD"])
 
 
 def macd_buy_ok(row, config):
