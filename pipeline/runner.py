@@ -50,6 +50,7 @@ from pipeline.limit_orders   import (
 )
 from pipeline.position_tracker import (
     check_positions,
+    get_open_positions,
     open_position_from_order,
 )
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
@@ -260,9 +261,20 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
     # level. This earns the maker fee (0.2%) vs taker (0.4%), saving 0.4% per
     # round trip — the margin that was blocking backtest profitability.
     if decision.action == TradeAction.BUY:
-        # Don't stack duplicate orders for the same asset
-        existing = get_open_orders(asset)
-        if existing:
+        # Don't stack if there's already an open position OR a pending order for this asset
+        open_pos = get_open_positions(asset)
+        if open_pos:
+            print(f"[LimitOrder] Already have open position for {asset} — skipping new order.")
+            decision = TradeDecision(
+                asset=asset, timestamp=decision.timestamp,
+                action=TradeAction.HOLD,
+                confidence=decision.confidence,
+                reasoning=f"[Limit] Position already open for {asset}. " + decision.reasoning,
+                votes=decision.votes, overrides=decision.overrides,
+                veto_triggered=decision.veto_triggered, veto_reason=decision.veto_reason,
+                position_size_pct=None, stop_loss_price=None, take_profit_price=None,
+            )
+        elif existing := get_open_orders(asset):
             first = existing[0]
             print(f"[LimitOrder] Already have open order #{first.id} at ${first.limit_price:,.2f} — skipping new order.")
             decision = TradeDecision(
