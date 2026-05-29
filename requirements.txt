@@ -8,3 +8,5 @@ pydantic
 httpx
 python-dotenv
 coinbase-advanced-py
+streamlit
+plotly
