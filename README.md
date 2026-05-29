@@ -5,8 +5,11 @@
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](register_pipeline_task.ps1)
 [![AI](https://img.shields.io/badge/AI-Claude%20Sonnet%204.6-purple)](https://www.anthropic.com/)
 [![Status](https://img.shields.io/badge/status-paper%20trading-orange)](.env.example)
+[![Dashboard](https://img.shields.io/badge/dashboard-live%20demo-00ff88?logo=streamlit&logoColor=white)](https://crypto-orchestra-eqxebsnnbpg8tq6cnqzcro.streamlit.app/)
 
-A multi-agent AI trading system for BTC and ETH on Coinbase. Five specialist Claude sub-agents run in parallel every hour, feed signals to an orchestrator, and autonomously place limit orders at support levels with trailing stop management.
+**[🎼 Live Dashboard →](https://crypto-orchestra-eqxebsnnbpg8tq6cnqzcro.streamlit.app/)**
+
+A multi-agent AI trading system for BTC, ETH, SOL and ZEC on Coinbase. Five specialist Claude sub-agents run in parallel every hour, feed signals to an orchestrator, and autonomously place limit orders at support levels with trailing stop management.
 
 ## How It Works
 
