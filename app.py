@@ -16,9 +16,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
-DEMO_MODE = "--demo" in sys.argv
+_explicit_demo = "--demo" in sys.argv
+_live_trade_file = ROOT / "logs" / "trade_history.jsonl"
+DEMO_MODE = _explicit_demo or not _live_trade_file.exists()
 
-TRADE_FILE    = ROOT / ("demo" if DEMO_MODE else "logs") / "trade_history.jsonl"
+TRADE_FILE     = ROOT / ("demo" if DEMO_MODE else "logs") / "trade_history.jsonl"
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
 DECISIONS_FILE = ROOT / ("demo" if DEMO_MODE else "logs") / "agent_decisions.jsonl"
 
