@@ -197,6 +197,8 @@ def get_long_short_ratio(asset: str) -> dict:
     base_ccy = asset.split("-")[0].upper()
 
     # ── OKX Long/Short Ratio ──────────────────────────────────────────────────
+    # OKX returns [timestamp, ls_ratio] where ls_ratio = long_count / short_count
+    # e.g. 1.61 means 61.7% long, 38.3% short
     if okx_sym:
         try:
             data = _get(
@@ -204,33 +206,17 @@ def get_long_short_ratio(asset: str) -> dict:
                 f"?ccy={base_ccy}&period=1H&limit=1"
             )
             if data and data.get("data"):
-                row       = data["data"][0]
-                long_pct  = float(row[1]) * 100
-                short_pct = float(row[2]) * 100
+                row   = data["data"][0]
+                ratio = float(row[1])
+                long_pct  = ratio / (1 + ratio) * 100
+                short_pct = 100 - long_pct
                 result["long_pct"]  = round(long_pct, 1)
                 result["short_pct"] = round(short_pct, 1)
+                result["source"]    = "OKX"
                 _apply_ls_signal(result)
                 return result
         except Exception as e:
             result["error"] = f"OKX: {e}"
-
-    # ── Bybit fallback ────────────────────────────────────────────────────────
-    bybit_sym = _BYBIT_SYMBOL.get(asset.upper())
-    if bybit_sym:
-        try:
-            data = _get(
-                f"{_BYBIT_BASE}/account-ratio?category=linear"
-                f"&symbol={bybit_sym}&period=1h&limit=1"
-            )
-            if data and data.get("result", {}).get("list"):
-                row       = data["result"]["list"][0]
-                buy_ratio = float(row["buyRatio"])
-                result["long_pct"]  = round(buy_ratio * 100, 1)
-                result["short_pct"] = round((1 - buy_ratio) * 100, 1)
-                _apply_ls_signal(result)
-                return result
-        except Exception as e:
-            result["error"] = (result.get("error") or "") + f" Bybit: {e}"
 
     return result
 
