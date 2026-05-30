@@ -27,6 +27,8 @@ _COINGECKO_URL = (
 _COIN_MAP = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
+    "SOL": "solana",
+    "ZEC": "zcash",
 }
 
 
