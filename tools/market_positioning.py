@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 from urllib.request import urlopen, Request
-from urllib.error import URLError
 
 _HEADERS = {"User-Agent": "CryptoOrchestra/1.0"}
 
