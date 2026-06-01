@@ -64,8 +64,8 @@ _MOMENTUM_THRESHOLD = 0.003   # 0.3% — raised from 0.2%; diagnostics show winn
 _MAX_DIST_TO_SUPPORT_ATR = 5.0
 
 # ── Entry filters (falling-knife protection) ──────────────────────────────────
-_STOP_COOLDOWN_HOURS = 24   # pause after a stop-loss before re-entering same asset
-_VELOCITY_VETO_PCT   = -5.0 # block long entry if asset down > 5% in last 24h
+_BOUNCE_CONFIRMATION_PCT = 2.0  # after stop-loss, price must recover +2% above exit before re-entry
+_VELOCITY_VETO_PCT       = -5.0 # block long entry if asset down > 5% in last 24h
 
 LOG_DIR       = ROOT / "logs"
 DECISIONS_LOG = LOG_DIR / "agent_decisions.jsonl"
@@ -220,13 +220,19 @@ def _check_entry_filters(asset: str) -> tuple[bool, str]:
     Three pre-BUY guards that prevent catching falling knives.
     Returns (allowed, reason_if_blocked).
 
-    1. BTC BEAR veto  — if BTC 4h trend is BEAR, block all alt longs.
-                        Crypto correlation in bear phases is ~0.90+; local alt
-                        bull trends don't hold when BTC is in distribution.
-    2. 24h cooldown   — after a stop-loss on this asset, no re-entry for 24h.
-                        Prevents rapid re-entry into a continuing downmove.
-    3. Velocity veto  — if asset down > 5% in last 24h, no long entry.
-                        Falling-knife signal: price is in active distribution.
+    1. BTC BEAR veto      — if BTC 4h trend is BEAR, block all alt longs.
+                            Crypto correlation in bear phases is ~0.90+; local
+                            alt bull trends don't hold when BTC distributes.
+
+    2. Bounce confirmation — after a stop-loss, only re-enter once price has
+                            recovered >= +2% above the stop-exit price.
+                            This requires real market evidence that the level
+                            held (a genuine reversal), not just a lower tick.
+                            Time-based cooldowns block valid bounce re-entries;
+                            this filter is price-based, not time-based.
+
+    3. Velocity veto      — if asset down > 5% in last 24h, no long entry.
+                            Falling-knife signal: active distribution.
     """
     # 1. BTC correlation veto (skip for BTC itself)
     if asset != "BTC-USD":
@@ -234,26 +240,30 @@ def _check_entry_filters(asset: str) -> tuple[bool, str]:
         if btc and btc.get("trend_4h") == "bear":
             return False, f"BTC BEAR veto — BTC 4h trend is BEAR; blocking alt long for {asset}"
 
-    # 2. 24h cooldown after stop loss on this asset
+    # 2. Bounce confirmation after stop loss
+    # After a stop-loss exit, price must bounce >= +2% above that exit price
+    # before a new long is considered. This proves the level held.
     if TRADE_HISTORY.exists():
         with open(TRADE_HISTORY) as fh:
             lines = fh.readlines()
-        now_utc = datetime.now(timezone.utc)
         for line in reversed(lines[-30:]):
             try:
                 rec = json.loads(line.strip())
             except Exception:
                 continue
             if rec.get("asset") == asset and rec.get("reason") == "STOP_LOSS":
-                exit_dt  = datetime.fromisoformat(rec["exit_time"])
-                elapsed  = (now_utc - exit_dt).total_seconds() / 3600
-                if elapsed < _STOP_COOLDOWN_HOURS:
-                    remaining = _STOP_COOLDOWN_HOURS - elapsed
-                    return False, (
-                        f"24h cooldown — {asset} stopped out {elapsed:.0f}h ago "
-                        f"({remaining:.0f}h remaining)"
-                    )
-                break  # most recent stop found; it's outside cooldown window
+                stop_exit_price = rec["exit_price"]
+                snap = get_snapshot(asset)
+                if snap:
+                    current = snap["close"]
+                    bounce_pct = (current - stop_exit_price) / stop_exit_price * 100
+                    if bounce_pct < _BOUNCE_CONFIRMATION_PCT:
+                        return False, (
+                            f"Bounce confirmation needed — last stop exit ${stop_exit_price:.2f}, "
+                            f"current ${current:.2f} ({bounce_pct:+.1f}%); "
+                            f"need +{_BOUNCE_CONFIRMATION_PCT:.0f}% above stop exit to confirm reversal"
+                        )
+                break  # found most recent stop for this asset
 
     # 3. Velocity veto — price falling > 5% in last 24h
     raw_df = get_raw_df(asset)
