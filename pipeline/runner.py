@@ -391,6 +391,18 @@ def run_all_assets() -> dict[str, TradeDecision]:
 
 
 if __name__ == "__main__":
+    # When launched via pythonw.exe (Task Scheduler, no console), redirect
+    # stdout+stderr to scheduler.log so runs are always visible in the log file.
+    import os as _os
+    _is_pythonw = _os.path.basename(sys.executable).lower() == "pythonw.exe"
+    if _is_pythonw:
+        import io
+        _log_path = ROOT / "logs" / "scheduler.log"
+        _log_path.parent.mkdir(exist_ok=True)
+        _log_fh = open(_log_path, "a", encoding="utf-8", buffering=1)
+        sys.stdout = io.TextIOWrapper(_log_fh.buffer, encoding="utf-8", line_buffering=True)
+        sys.stderr = sys.stdout
+
     if len(sys.argv) > 1:
         run_pipeline(sys.argv[1])
     else:
