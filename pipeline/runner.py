@@ -49,6 +49,7 @@ from pipeline.limit_orders   import (
     place_limit_order,
 )
 from pipeline.position_tracker import (
+    TRADE_HISTORY,
     check_positions,
     get_open_positions,
     open_position_from_order,
@@ -61,6 +62,10 @@ from tools.price_levels      import get_levels_from_snapshot
 _MOMENTUM_THRESHOLD = 0.003   # 0.3% — raised from 0.2%; diagnostics show winners avg +0.77%, losers avg -0.22%
 # Maximum ATR distance to support where we'll still place a limit order
 _MAX_DIST_TO_SUPPORT_ATR = 5.0
+
+# ── Entry filters (falling-knife protection) ──────────────────────────────────
+_STOP_COOLDOWN_HOURS = 24   # pause after a stop-loss before re-entering same asset
+_VELOCITY_VETO_PCT   = -5.0 # block long entry if asset down > 5% in last 24h
 
 LOG_DIR       = ROOT / "logs"
 DECISIONS_LOG = LOG_DIR / "agent_decisions.jsonl"
@@ -208,6 +213,63 @@ def _check_pending_fills(asset: str, current_price: float) -> None:
         send_telegram_message(format_position_opened(pos))
 
 
+# ── Entry filters (falling-knife protection) ──────────────────────────────────
+
+def _check_entry_filters(asset: str) -> tuple[bool, str]:
+    """
+    Three pre-BUY guards that prevent catching falling knives.
+    Returns (allowed, reason_if_blocked).
+
+    1. BTC BEAR veto  — if BTC 4h trend is BEAR, block all alt longs.
+                        Crypto correlation in bear phases is ~0.90+; local alt
+                        bull trends don't hold when BTC is in distribution.
+    2. 24h cooldown   — after a stop-loss on this asset, no re-entry for 24h.
+                        Prevents rapid re-entry into a continuing downmove.
+    3. Velocity veto  — if asset down > 5% in last 24h, no long entry.
+                        Falling-knife signal: price is in active distribution.
+    """
+    # 1. BTC correlation veto (skip for BTC itself)
+    if asset != "BTC-USD":
+        btc = get_snapshot("BTC-USD")
+        if btc and btc.get("trend_4h") == "bear":
+            return False, f"BTC BEAR veto — BTC 4h trend is BEAR; blocking alt long for {asset}"
+
+    # 2. 24h cooldown after stop loss on this asset
+    if TRADE_HISTORY.exists():
+        with open(TRADE_HISTORY) as fh:
+            lines = fh.readlines()
+        now_utc = datetime.now(timezone.utc)
+        for line in reversed(lines[-30:]):
+            try:
+                rec = json.loads(line.strip())
+            except Exception:
+                continue
+            if rec.get("asset") == asset and rec.get("reason") == "STOP_LOSS":
+                exit_dt  = datetime.fromisoformat(rec["exit_time"])
+                elapsed  = (now_utc - exit_dt).total_seconds() / 3600
+                if elapsed < _STOP_COOLDOWN_HOURS:
+                    remaining = _STOP_COOLDOWN_HOURS - elapsed
+                    return False, (
+                        f"24h cooldown — {asset} stopped out {elapsed:.0f}h ago "
+                        f"({remaining:.0f}h remaining)"
+                    )
+                break  # most recent stop found; it's outside cooldown window
+
+    # 3. Velocity veto — price falling > 5% in last 24h
+    raw_df = get_raw_df(asset)
+    if raw_df is not None and len(raw_df) >= 25:
+        close_now = float(raw_df["close"].iloc[-1])
+        close_24h = float(raw_df["close"].iloc[-25])
+        chg_24h   = (close_now - close_24h) / close_24h * 100
+        if chg_24h <= _VELOCITY_VETO_PCT:
+            return False, (
+                f"Velocity veto — {asset} down {chg_24h:.1f}% in 24h; "
+                "no long entry into active distribution"
+            )
+
+    return True, ""
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
@@ -261,9 +323,21 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
     # level. This earns the maker fee (0.2%) vs taker (0.4%), saving 0.4% per
     # round trip — the margin that was blocking backtest profitability.
     if decision.action == TradeAction.BUY:
+        # ── Entry filters: BTC veto, cooldown, velocity ────────────────────────
+        _entry_ok, _block_reason = _check_entry_filters(asset)
+        if not _entry_ok:
+            print(f"[EntryFilter] BLOCKED — {_block_reason}")
+            decision = TradeDecision(
+                asset=asset, timestamp=decision.timestamp,
+                action=TradeAction.HOLD,
+                confidence=decision.confidence,
+                reasoning=f"[EntryFilter] {_block_reason}. " + decision.reasoning,
+                votes=decision.votes, overrides=decision.overrides,
+                veto_triggered=decision.veto_triggered, veto_reason=decision.veto_reason,
+                position_size_pct=None, stop_loss_price=None, take_profit_price=None,
+            )
         # Don't stack if there's already an open position OR a pending order for this asset
-        open_pos = get_open_positions(asset)
-        if open_pos:
+        elif get_open_positions(asset):
             print(f"[LimitOrder] Already have open position for {asset} — skipping new order.")
             decision = TradeDecision(
                 asset=asset, timestamp=decision.timestamp,
