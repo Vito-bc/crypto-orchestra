@@ -121,7 +121,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     # Redirect stdout+stderr to log when running under pythonw.exe (Task Scheduler)
-    import os as _os, io as _io, traceback as _tb
+    import os as _os
+    import io as _io
+    import traceback as _tb
     _log_path = ROOT / "logs" / "daily_summary.log"
     _log_path.parent.mkdir(exist_ok=True)
     _is_pythonw = _os.path.basename(sys.executable).lower() == "pythonw.exe"

@@ -140,8 +140,8 @@ class OrchestratorAgent:
             _eff_buy_threshold = 0.45
             _eff_size_mult     = 0.50
             _regime_label      = "LOCAL_RALLY"
-            print(f"[Orchestrator] LOCAL_RALLY mode — BEAR regime but local recovery detected. "
-                  f"Threshold 0.45 (fixed from 0.65 — macro SELL weight made 0.65 unreachable), size 50%.")
+            print("[Orchestrator] LOCAL_RALLY mode — BEAR regime but local recovery detected. "
+                  "Threshold 0.45 (fixed from 0.65 — macro SELL weight made 0.65 unreachable), size 50%.")
         elif macro_bear:
             # Full bear, no local recovery — hard veto
             veto               = True

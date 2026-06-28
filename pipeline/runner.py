@@ -309,7 +309,6 @@ def _calc_btc_correlation(asset: str, hours: int = 720) -> float | None:
     if asset_df is None or btc_df is None:
         return None
     try:
-        import pandas as _pd
         a_ret = asset_df["close"].iloc[-hours:].pct_change().dropna()
         b_ret = btc_df["close"].iloc[-hours:].pct_change().dropna()
         n = min(len(a_ret), len(b_ret))

@@ -11,7 +11,6 @@ Metrics always include: position_size_pct, stop_loss_price, take_profit_price, o
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path

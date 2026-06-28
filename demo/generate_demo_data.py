@@ -29,7 +29,6 @@ ASSET_ATR_PCT = {
 def gen_trades():
     trades = []
     current_date = START_DATE
-    balance = 10000.0
 
     scenario = [
         ("BTC-USD", True,  "TAKE_PROFIT", 8),

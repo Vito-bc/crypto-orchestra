@@ -15,7 +15,6 @@ Run:
 import sys
 from pathlib import Path
 import pandas as pd
-import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -268,7 +267,7 @@ def main():
     print(f"\n  Avg return across assets: {total_ret:+.2f}%")
     print(f"  Total trades:             {total_trades}")
     print(f"  Breakout agent entries:   {total_br}")
-    print(f"\n  BTC buy-hold for same period: +38%")
+    print("\n  BTC buy-hold for same period: +38%")
     print("=" * 65)
 
 
