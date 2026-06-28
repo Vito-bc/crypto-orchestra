@@ -23,10 +23,12 @@ History: logs/trade_history.jsonl
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 ROOT           = Path(__file__).resolve().parents[1]
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
@@ -37,14 +39,21 @@ TAKER_FEE_RATE       = 0.004   # 0.4% exit  (market/taker)
 PAPER_BALANCE        = 10_000  # USD paper capital
 DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
 
-# Per-asset max hold (backtests: 88% of wins are MAX_HOLD; 48h+ degrades results)
-MAX_HOLD_HOURS_BY_ASSET = {"ETH-USD": 8, "BTC-USD": 12}
-MAX_HOLD_HOURS          = 12   # default fallback
+# Per-asset max hold — extended to match crypto momentum duration (Liu & Tsyvinski 2021:
+# momentum lasts 1-4 weeks). Short 8-12h holds lost to 0.6% fee drag every trade.
+MAX_HOLD_HOURS_BY_ASSET = {"ETH-USD": 24, "BTC-USD": 48}
+MAX_HOLD_HOURS          = 36   # default fallback for SOL/ZEC
 
-# Trailing stop parameters (tuned via backtesting/trailing_stop_tune.py)
-BREAK_EVEN_PCT       = 0.005   # +0.5% above entry → stop moves to break-even
-TRAIL_ACTIVATION_PCT = 0.005   # +0.5% above entry → trailing stop activates
-TRAIL_PCT            = 0.008   # trail 0.8% below high-water mark
+# Trailing stop parameters — widened to survive normal 1h volatility before trend develops.
+# Previous 0.5% break-even was within hourly noise, stopping out positions before any move.
+BREAK_EVEN_PCT       = 0.015   # +1.5% above entry → stop moves to break-even
+TRAIL_ACTIVATION_PCT = 0.020   # +2.0% above entry → trailing stop activates
+TRAIL_PCT            = 0.015   # trail 1.5% below high-water mark
+
+# Hold extension: instead of force-closing at MAX_HOLD, re-evaluate and optionally extend.
+# Research (Liu & Tsyvinski 2021): crypto momentum lasts 1-4 weeks, not 8h.
+MAX_EXTENSIONS  = 3   # max extensions per position (total: base + 3×8 = 32-36h)
+EXTENSION_HOURS = 8   # each approved extension adds this many hours
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -60,7 +69,9 @@ class Position:
     entry_time:      str
     order_id:        str
     status:          str        # OPEN | CLOSED
-    high_water_mark: Optional[float] = None   # highest price seen since open
+    high_water_mark:          Optional[float] = None   # highest price seen since open
+    extensions_used:          int            = 0      # hold extensions granted so far
+    extension_trailing_stop:  Optional[float] = None  # ATR-anchored stop added during extensions
     # Populated on close
     exit_price:      Optional[float] = None
     exit_time:       Optional[str]   = None
@@ -74,15 +85,34 @@ class Position:
 
     def held_hours(self) -> float:
         t0 = datetime.fromisoformat(self.entry_time)
+        if t0.tzinfo is None:  # guard against legacy records without UTC offset
+            t0 = t0.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - t0).total_seconds() / 3600
 
+    def effective_hold_limit(self) -> float:
+        """Base max-hold + hours granted via extensions so far."""
+        base = MAX_HOLD_HOURS_BY_ASSET.get(self.asset, MAX_HOLD_HOURS)
+        return base + self.extensions_used * EXTENSION_HOURS
+
+    def needs_extension_review(self) -> bool:
+        """Current hold window elapsed AND extensions still available → re-evaluate."""
+        return (
+            self.extensions_used < MAX_EXTENSIONS
+            and self.held_hours() >= self.effective_hold_limit()
+        )
+
     def is_max_hold(self) -> bool:
-        limit = MAX_HOLD_HOURS_BY_ASSET.get(self.asset, MAX_HOLD_HOURS)
-        return self.held_hours() >= limit
+        """All extensions exhausted AND time exceeded → force close."""
+        return (
+            self.extensions_used >= MAX_EXTENSIONS
+            and self.held_hours() >= self.effective_hold_limit()
+        )
 
     def check_exit(self, current_price: float) -> Optional[str]:
         if current_price <= self.stop_price:
             return "STOP_LOSS"
+        if self.extension_trailing_stop and current_price <= self.extension_trailing_stop:
+            return "STOP_LOSS"  # ATR trailing stop hit during extended hold
         if current_price >= self.target_price:
             return "TAKE_PROFIT"
         if self.is_max_hold():
@@ -121,8 +151,24 @@ def _load_raw() -> list[dict]:
 
 
 def _save_raw(positions: list[dict]) -> None:
+    """
+    Atomic write: serialize to a temp file in the same directory, then
+    os.replace() — a POSIX-atomic rename on the same filesystem.
+    If the process crashes mid-write the original file is untouched.
+    """
     POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    POSITIONS_FILE.write_text(json.dumps(positions, indent=2), encoding="utf-8")
+    data = json.dumps(positions, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=POSITIONS_FILE.parent, prefix=".pos_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp, POSITIONS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _append_history(record: dict) -> None:
@@ -232,10 +278,17 @@ def close_position(pos: Position, exit_price: float, reason: str) -> dict:
     return record
 
 
-def check_positions(asset: str, current_price: float) -> list[dict]:
+def check_positions(
+    asset: str,
+    current_price: float,
+    on_extension_review: Optional[Callable[["Position"], bool]] = None,
+) -> list[dict]:
     """
     1. Update high-water mark and trailing stop for every open position.
-    2. Close any positions that hit their stop / target / max-hold.
+    2. At MAX_HOLD: if on_extension_review is provided, call it instead of force-closing.
+       The callback receives the Position, may set pos.extension_trailing_stop,
+       and returns True (extend) or False (close).
+    3. Close any positions that hit their stop / target / exhausted max-hold.
     Returns list of closed trade records.
     """
     raw     = _load_raw()
@@ -270,6 +323,23 @@ def check_positions(asset: str, current_price: float) -> list[dict]:
         reason = pos.check_exit(current_price)
         if reason:
             to_close.append((pos, reason))
+        elif pos.needs_extension_review():
+            if on_extension_review is not None and on_extension_review(pos):
+                # Extension granted — save new extension count + ATR stop
+                r["extensions_used"] = pos.extensions_used + 1
+                if pos.extension_trailing_stop is not None:
+                    r["extension_trailing_stop"] = pos.extension_trailing_stop
+                changed = True
+                new_limit = MAX_HOLD_HOURS_BY_ASSET.get(asset, MAX_HOLD_HOURS) + r["extensions_used"] * EXTENSION_HOURS
+                print(
+                    f"[Position] HOLD EXTENDED #{pos.id} ({asset}) — "
+                    f"ext #{r['extensions_used']}/{MAX_EXTENSIONS}  "
+                    f"new limit {new_limit:.0f}h"
+                    + (f"  ext-stop ${pos.extension_trailing_stop:,.2f}"
+                       if pos.extension_trailing_stop else "")
+                )
+            else:
+                to_close.append((pos, "MAX_HOLD"))
 
     if changed:
         _save_raw(raw)

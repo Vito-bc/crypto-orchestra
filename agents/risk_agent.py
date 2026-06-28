@@ -49,13 +49,16 @@ Rules:
 
 
 def _load_position_state(asset: str) -> dict:
-    # asset-specific state file: BTC-USD → paper_position_btc.json
-    base = asset.upper().replace("-USD", "").replace("/USDT", "").replace("/USD", "").lower()
-    state_file = ROOT / "logs" / f"paper_position_{base}.json"
-    if state_file.exists():
-        with open(state_file) as f:
-            return json.load(f)
-    return {"status": "FLAT"}
+    # Read live position state from the authoritative open_positions.json
+    # (old per-asset flat files were never updated by the live system — always returned FLAT)
+    try:
+        from pipeline.position_tracker import get_open_positions
+        positions = get_open_positions(asset)
+        if positions:
+            return {"status": "LONG", "count": len(positions)}
+    except Exception:
+        pass
+    return {"status": "FLAT", "count": 0}
 
 
 class RiskAgent(BaseAgent):

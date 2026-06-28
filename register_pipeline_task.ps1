@@ -1,22 +1,18 @@
 # Registers the hourly pipeline task.
 # Run ONCE as Administrator.
 #
-# Changes from old setup:
-#   - Runs runner.py directly (single shot) instead of scheduler.py (loop)
-#   - Trigger: every 60 minutes (Task Scheduler handles repetition)
-#   - StartWhenAvailable: if machine was off at trigger time, runs ASAP on next boot
-#   - RestartCount: 3 retries on failure, 5 min apart
-#   - MultipleInstances: IgnoreNew (no double runs)
+# Runs python.exe directly (no cmd/bat wrapper) to avoid PATH issues in Task Scheduler.
+# Trigger: every 60 minutes, StartWhenAvailable so missed runs catch up on next boot.
 
 $repoRoot  = Split-Path -Parent $MyInvocation.MyCommand.Path
-$batFile   = Join-Path $repoRoot "pipeline\run_once.bat"
+$python    = Join-Path $repoRoot "venv\Scripts\pythonw.exe"
 $taskName  = "CryptoOrchestra-AgentPipeline"
 
-if (-not (Test-Path $batFile)) { Write-Error "Wrapper not found: $batFile"; exit 1 }
+if (-not (Test-Path $python)) { Write-Error "Python not found: $python"; exit 1 }
 
 $action = New-ScheduledTaskAction `
-    -Execute       "cmd.exe" `
-    -Argument      "/c `"$batFile`"" `
+    -Execute          $python `
+    -Argument         "pipeline\runner.py" `
     -WorkingDirectory $repoRoot
 
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 1)

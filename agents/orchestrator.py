@@ -39,44 +39,74 @@ from schemas.signals import (
 
 _SYSTEM = """You are the chief trading decision engine for Crypto Orchestra.
 
-You receive structured JSON reports from 5 specialist agents:
-  - technical  : RSI, MACD, Bollinger Bands, EMA trend
-  - macro      : market regime classification (BULL/BEAR/RANGING) — acts as VETO
-  - sentiment  : Fear & Greed + news headlines
-  - whale      : on-chain volume flows and exchange pressure
-  - risk       : position sizing, stop/target levels, portfolio exposure
+You receive structured JSON reports from 6 specialist agents AND a pre-computed composite
+confidence score. The composite score is the primary quantitative signal — Python enforces
+the action based on it. Your role is qualitative: detect vetoes, explain conflicts, extract
+risk levels.
 
-Your job:
-1. Check for MACRO VETO first — if macro regime is BEAR, final action must be SELL or HOLD, never BUY
-2. Count how many agents signal BUY vs SELL vs NEUTRAL
-3. Weigh each signal by its confidence and domain relevance
-4. Identify and explicitly note any conflicts between agents
-5. Output a final TradeDecision
+Agents (directional voters):
+  - macro      : market regime (BULL/BEAR/RANGING) — hard veto authority; BTC dominance
+  - technical  : RSI, MACD, Bollinger Bands, EMA trend, ADX trend-strength, VWAP, CVD
+  - whale      : OI, funding rates, L/S ratio, Coinbase premium (institutional)
+  - news       : asset-specific news — delisting, hack, regulatory; CRITICAL VETO authority
+  - sentiment  : Fear & Greed + general crypto headlines
+  - breakout   : deterministic EMA50 crossover detector (first 1-4 candles only, no LLM)
+
+Gate agents (not in composite score, enforced as hard gates before order):
+  - risk       : position sizing, stop/target levels, ATR volatility gate — ok_to_trade=false → HOLD
 
 Output a JSON object with exactly these keys:
-  buy_agent_count   : integer — count of agents whose signal field = "BUY" exactly
-  sell_agent_count  : integer — count of agents whose signal field = "SELL" exactly
-  action            : "BUY" | "SELL" | "HOLD"
-  confidence        : float 0.0-1.0
-  reasoning         : 2-3 sentences explaining the decision and any conflicts
-  position_size_pct : float (from risk agent, or null if HOLD/SELL)
+  action            : "BUY" | "SELL" | "HOLD"  (your recommendation; Python may override via score)
+  confidence        : float 0.0-1.0  (reflect the composite score level provided)
+  reasoning         : 2-3 sentences explaining key signals, conflicts, and your recommendation
+  position_size_pct : float (take from risk agent output; Python will scale it by score tier)
   stop_loss_price   : float (from risk agent, or null)
   take_profit_price : float (from risk agent, or null)
   veto_triggered    : true | false
   veto_reason       : string or null
-  overrides         : list of strings describing any agent signals you are overriding and why
+  overrides         : list of strings noting any conflicts or signals you are discounting
 
 Rules — follow in strict order:
-1. Count explicit BUY signals and explicit SELL signals from the agent list.
-   Count ONLY agents whose "signal" field equals "BUY" or "SELL" exactly.
-   A NEUTRAL signal does NOT count toward either direction, even if its metrics look bearish/bullish.
-2. If fewer than 3 agents explicitly signal the same direction → action=HOLD immediately.
-   Do not read between the lines. Do not infer from metrics. Count the signal field only.
-3. If macro=BEAR and any agent explicitly says BUY → veto_triggered=true, action=HOLD.
-4. If risk agent says ok_to_trade=false → action=HOLD.
-5. Require weighted confidence >= 0.55 to act; below that → HOLD.
-6. If 3+ agents explicitly align → confidence can be 0.7+.
-- Return ONLY the JSON object, no markdown, no extra text."""
+1. If macro=FULL_BEAR (no local recovery) → veto_triggered=true, action=HOLD.
+   If macro=LOCAL_RALLY (BEAR + local recovery) → allow BUY with threshold 0.65 and 50% size
+   (or 0.45 if breakout_mode=true in the prompt).
+2. If risk agent ok_to_trade=false → action=HOLD.
+3. Use the composite score AND the regime label AND breakout_mode flag as your primary signals:
+   BULL/RANGING normal:   score >= 0.45 → recommend BUY
+   BULL/RANGING breakout: score >= 0.35 → recommend BUY (early momentum entry)
+   LOCAL_RALLY normal:    score >= 0.65 → recommend BUY
+   LOCAL_RALLY breakout:  score >= 0.45 → recommend BUY (breakout in bear local rally)
+   score <= -0.35 → recommend SELL (any regime)
+   between        → recommend HOLD
+4. When breakout_mode=true: mention "Early EMA50 breakout entry" in reasoning.
+5. A high composite score (>= 0.75) means strong alignment — Python will automatically
+   scale position size up to 2x. Do not inflate position_size_pct yourself.
+6. In LOCAL_RALLY mode: note the bear market context in reasoning. Python halves size automatically.
+7. Confidence should mirror the composite score (e.g. score 0.60 → confidence ~0.60).
+
+Return ONLY the JSON object, no markdown, no extra text."""
+
+# ── Scoring constants ──────────────────────────────────────────────────────────
+_AGENT_WEIGHTS: dict = {
+    "macro":     0.26,
+    "technical": 0.21,
+    "whale":     0.17,
+    "news":      0.12,
+    "sentiment": 0.08,
+    "breakout":  0.16,   # early EMA50 crossover detector — fires only in 1-4 candle window
+    "risk":      0.00,   # GATE ONLY — ok_to_trade enforced as hard veto, not a directional vote
+}
+_BUY_THRESHOLD  =  0.45   # composite score floor for BUY
+_SELL_THRESHOLD = -0.35   # composite score ceiling for SELL
+
+# position_size_pct = risk_agent_base × multiplier, capped at _MAX_POSITION_PCT
+_SIZE_TIERS: list[tuple[float, float]] = [
+    (0.75, 2.00),   # very strong alignment → 2× base size
+    (0.65, 1.50),   # strong alignment      → 1.5×
+    (0.55, 1.25),   # good alignment        → 1.25×
+    (0.45, 1.00),   # threshold             → 1× (base)
+]
+_MAX_POSITION_PCT = 0.12  # hard cap: never exceed 12% of portfolio per trade
 
 
 class OrchestratorAgent:
@@ -88,15 +118,103 @@ class OrchestratorAgent:
         self.client = anthropic.Anthropic(api_key=api_key)
 
     def decide(self, asset: str, signals: list[AgentSignal]) -> TradeDecision:
-        # ── Pre-check: macro veto ─────────────────────────────────────────────
-        macro_signal = next((s for s in signals if s.agent == AgentName.MACRO), None)
-        veto         = macro_signal is not None and macro_signal.regime == MarketRegime.BEAR
+        # ── Pre-check: macro regime tier ─────────────────────────────────────
+        # Three tiers instead of a binary veto:
+        #   BULL/RANGING  → threshold 0.45, 100% size  (normal)
+        #   LOCAL_RALLY   → threshold 0.65,  50% size  (bear + local recovery)
+        #   FULL_BEAR     → hard veto, no entries       (bear, no recovery signal)
+        macro_signal   = next((s for s in signals if s.agent == AgentName.MACRO), None)
+        macro_bear     = macro_signal is not None and macro_signal.regime == MarketRegime.BEAR
+        local_recovery = (
+            macro_signal is not None
+            and macro_signal.metrics is not None
+            and bool(macro_signal.metrics.get("local_recovery", False))
+        )
+
+        if macro_bear and local_recovery:
+            # Bear market but price > EMA50_4h or 7d > +5% — allow with higher bar.
+            # Threshold lowered from 0.65 to 0.45: macro (w=0.26) votes SELL in LOCAL_RALLY,
+            # making 0.65 arithmetically unreachable (max composite ~0.58). The BEAR context
+            # is already captured by 50% size reduction and the regime label itself.
+            veto               = False
+            _eff_buy_threshold = 0.45
+            _eff_size_mult     = 0.50
+            _regime_label      = "LOCAL_RALLY"
+            print(f"[Orchestrator] LOCAL_RALLY mode — BEAR regime but local recovery detected. "
+                  f"Threshold 0.45 (fixed from 0.65 — macro SELL weight made 0.65 unreachable), size 50%.")
+        elif macro_bear:
+            # Full bear, no local recovery — hard veto
+            veto               = True
+            _eff_buy_threshold = _BUY_THRESHOLD
+            _eff_size_mult     = 1.0
+            _regime_label      = "FULL_BEAR"
+        else:
+            # Bull or ranging — normal operation
+            veto               = False
+            _eff_buy_threshold = _BUY_THRESHOLD
+            _eff_size_mult     = 1.0
+            _regime_label      = "BULL"
+
+        # ── Breakout mode: lower threshold when EMA50 just crossed (1-4 candles) ─
+        # BreakoutAgent fires BUY only in the first 4 candles after EMA50 crossover.
+        # When it fires, we can enter early before RSI overbought + VWAP extension.
+        from schemas.signals import SignalType as _ST_early
+        breakout_signal = next((s for s in signals if s.agent == AgentName.BREAKOUT), None)
+        _breakout_active = (
+            not veto
+            and breakout_signal is not None
+            and breakout_signal.signal == _ST_early.BUY
+            and breakout_signal.confidence >= 0.60
+        )
+        if _breakout_active:
+            if _regime_label == "LOCAL_RALLY":
+                _eff_buy_threshold = 0.30   # reduced from 0.45 (LOCAL_RALLY breakout)
+            else:
+                _eff_buy_threshold = 0.35   # reduced from 0.45 (BULL/RANGING)
+            print(
+                f"[Orchestrator] BREAKOUT MODE — EMA50 crossover {breakout_signal.metrics.get('candles_above_ema50', '?')} "
+                f"candle(s) ago, conf={breakout_signal.confidence:.0%}. "
+                f"Threshold -> {_eff_buy_threshold:.2f} ({_regime_label})"
+            )
+
+        # ── Pre-check: asset news critical veto ───────────────────────────────
+        news_signal = next((s for s in signals if s.agent == AgentName.NEWS), None)
+        news_critical_veto = (
+            news_signal is not None
+            and news_signal.metrics is not None
+            and bool(news_signal.metrics.get("critical_veto", False))
+        )
+        if news_critical_veto:
+            veto_reason = news_signal.metrics.get("veto_reason") or news_signal.reasoning
+            print(f"[Orchestrator] NEWS CRITICAL VETO — {veto_reason}")
+            return TradeDecision(
+                asset=asset,
+                timestamp=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+                action=TradeAction("HOLD"),
+                confidence=0.0,
+                reasoning=f"[NewsVeto] {veto_reason}",
+                votes=[],
+                overrides=[f"News critical veto: {veto_reason}"],
+                veto_triggered=True,
+                veto_reason=veto_reason,
+            )
 
         # ── Risk agent constraints ────────────────────────────────────────────
         risk_signal = next((s for s in signals if s.agent == AgentName.RISK), None)
         ok_to_trade = True
         if risk_signal and risk_signal.metrics:
             ok_to_trade = bool(risk_signal.metrics.get("ok_to_trade", True))
+
+        # ── Composite score (computed in Python; passed to LLM for context) ───
+        # Score = Σ(confidence × weight × direction) for all agents
+        # BUY=+1, SELL=-1, NEUTRAL=0. Range: -1.0 to +1.0.
+        from schemas.signals import SignalType as _ST
+        composite_score = sum(
+            s.confidence * _AGENT_WEIGHTS.get(s.agent.value, 0.10) * (
+                1 if s.signal == _ST.BUY else -1 if s.signal == _ST.SELL else 0
+            )
+            for s in signals
+        )
 
         # ── Build prompt ──────────────────────────────────────────────────────
         reports = []
@@ -110,14 +228,21 @@ class OrchestratorAgent:
                 "metrics":    s.metrics,
             })
 
+        _breakout_threshold_note = (
+            f"BREAKOUT MODE: threshold lowered to {_eff_buy_threshold:.2f} (EMA50 crossover {breakout_signal.metrics.get('candles_above_ema50', '?')} candle(s) ago)"
+            if _breakout_active else "normal"
+        )
         user_prompt = f"""Asset: {asset}
+Macro regime:      {_regime_label}  (FULL_BEAR=hard veto | LOCAL_RALLY=threshold 0.65 size 50% | BULL=normal)
 Macro veto active: {veto}
 Risk ok_to_trade:  {ok_to_trade}
+Breakout mode:     {_breakout_threshold_note}
+Composite score:   {composite_score:+.3f}  (BUY >= {_eff_buy_threshold} · SELL <= {_SELL_THRESHOLD} · else HOLD)
 
 Agent reports:
 {json.dumps(reports, indent=2)}
 
-Produce your final TradeDecision JSON."""
+Detect vetoes, explain key signals and conflicts, extract stop/target from risk agent."""
 
         from agents.base_agent import BaseAgent as _Base
 
@@ -162,32 +287,65 @@ Produce your final TradeDecision JSON."""
         if not isinstance(result.get("reasoning"), str) or not result["reasoning"].strip():
             result["reasoning"] = "No reasoning provided."
 
-        # ── Hard enforce 3-agent minimum (Python-side guard) ──────────────────
-        from schemas.signals import SignalType as _ST
-        _buy_count  = sum(1 for s in signals if s.signal == _ST.BUY)
-        _sell_count = sum(1 for s in signals if s.signal == _ST.SELL)
-        proposed    = result.get("action", "HOLD")
-        if proposed == "BUY"  and _buy_count  < 3:
+        # ── Score-based action enforcement (replaces hard vote count) ────────
+        proposed = result.get("action", "HOLD")
+        if proposed == "BUY" and composite_score < _eff_buy_threshold:
             result["action"] = "HOLD"
-            result["reasoning"] = f"[Guard] Only {_buy_count}/5 agents signal BUY (need 3). " + result.get("reasoning", "")
-        if proposed == "SELL" and _sell_count < 3:
+            result["reasoning"] = (
+                f"[Score {composite_score:+.3f} < {_eff_buy_threshold} ({_regime_label})] "
+                "Composite score below BUY threshold. "
+                + result.get("reasoning", "")
+            )
+        elif proposed == "SELL" and composite_score > _SELL_THRESHOLD:
             result["action"] = "HOLD"
-            result["reasoning"] = f"[Guard] Only {_sell_count}/5 agents signal SELL (need 3). " + result.get("reasoning", "")
+            result["reasoning"] = (
+                f"[Score {composite_score:+.3f} > {_SELL_THRESHOLD}] Composite score above SELL threshold. "
+                + result.get("reasoning", "")
+            )
+
+        # ── BTC Dominance altcoin multiplier ─────────────────────────────────
+        alt_mult = 1.0
+        if macro_signal and macro_signal.metrics and asset != "BTC-USD":
+            alt_mult = float(macro_signal.metrics.get("altcoin_multiplier", 1.0))
+            if alt_mult != 1.0:
+                print(
+                    f"[Orchestrator] BTC dominance {macro_signal.metrics.get('btc_dominance', '?'):.1f}% "
+                    f"-> alt multiplier {alt_mult:.2f}x for {asset}"
+                )
+
+        # ── Confidence-scaled position sizing ─────────────────────────────────
+        # Higher composite score → bigger position, up to 2× base, capped at 12%.
+        # Then apply altcoin_multiplier from BTC dominance regime.
+        if result.get("action") == "BUY":
+            base_size  = float(result.get("position_size_pct") or 0.05)
+            multiplier = next(
+                (mult for min_s, mult in _SIZE_TIERS if composite_score >= min_s),
+                1.0,
+            )
+            # _eff_size_mult = 0.5 in LOCAL_RALLY mode (bear market risk reduction)
+            scaled_size = min(base_size * multiplier * alt_mult * _eff_size_mult, _MAX_POSITION_PCT)
+            result["position_size_pct"] = round(scaled_size, 4)
+            size_info = (
+                f" [LOCAL_RALLY: size x{_eff_size_mult}]" if _eff_size_mult < 1.0 else ""
+            )
+            if multiplier > 1.0 or alt_mult != 1.0 or _eff_size_mult < 1.0:
+                print(
+                    f"[Orchestrator] Score {composite_score:+.2f} -> {multiplier:.2f}x score, "
+                    f"{alt_mult:.2f}x BTC-dom, {_eff_size_mult:.2f}x regime: "
+                    f"{base_size:.1%} -> {scaled_size:.1%}"
+                )
+                result["reasoning"] += (
+                    f" [Size {multiplier:.2f}x(score) x {alt_mult:.2f}x(dom)"
+                    f"{size_info} -> {scaled_size:.1%}]"
+                )
 
         # ── Build votes list ──────────────────────────────────────────────────
-        agent_weights = {
-            AgentName.MACRO:      0.30,
-            AgentName.TECHNICAL:  0.25,
-            AgentName.WHALE:      0.20,
-            AgentName.SENTIMENT:  0.15,
-            AgentName.RISK:       0.10,
-        }
         votes = [
             AgentVote(
                 agent=s.agent,
                 signal=s.signal,
                 confidence=s.confidence,
-                weight_applied=agent_weights.get(s.agent, 0.1),
+                weight_applied=_AGENT_WEIGHTS.get(s.agent.value, 0.1),
             )
             for s in signals
         ]

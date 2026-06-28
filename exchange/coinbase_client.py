@@ -52,6 +52,15 @@ def is_dry_run() -> bool:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _make_order_id(client_order_id: str | None = None) -> str:
+    """
+    Return a unique order id.  Uses the full UUID (without hyphens) so there
+    are 128 bits of randomness — the 8-char truncation had only 32 bits and a
+    birthday collision becomes likely at ~65k orders.
+    """
+    return client_order_id or uuid.uuid4().hex   # 32 hex chars, no hyphens
+
+
 def place_limit_buy(
     product_id: str,
     quote_size_usd: float,
@@ -68,7 +77,7 @@ def place_limit_buy(
         limit_price:     limit price in USD
         client_order_id: idempotency key (our internal order id)
     """
-    oid = client_order_id or str(uuid.uuid4())[:8]
+    oid = _make_order_id(client_order_id)
 
     if _DRY_RUN:
         print(f"[Coinbase DRY] limit BUY  {product_id}  ${quote_size_usd:.2f} @ ${limit_price:,.2f}  id={oid}")
@@ -90,6 +99,11 @@ def place_limit_buy(
         },
     )
     order_id = resp.get("order_id") or resp.get("success_response", {}).get("order_id", "")
+    if not order_id:
+        raise RuntimeError(
+            f"Coinbase returned no order_id for {product_id} BUY — "
+            f"order may not have been placed. Raw response keys: {list(resp.keys())}"
+        )
     print(f"[Coinbase LIVE] limit BUY placed  {product_id}  {base_size} @ ${limit_price:,.2f}  order_id={order_id}")
     return order_id
 
@@ -156,7 +170,7 @@ def place_market_sell(
         base_size_coins: amount in base currency (e.g. 0.05 ETH)
         client_order_id: idempotency key
     """
-    oid = client_order_id or str(uuid.uuid4())[:8]
+    oid = _make_order_id(client_order_id)
 
     if _DRY_RUN:
         print(f"[Coinbase DRY] market SELL {product_id}  {base_size_coins:.6f} coins  id={oid}")
@@ -174,5 +188,10 @@ def place_market_sell(
         },
     )
     order_id = resp.get("order_id") or resp.get("success_response", {}).get("order_id", "")
+    if not order_id:
+        raise RuntimeError(
+            f"Coinbase returned no order_id for {product_id} SELL — "
+            f"exit may not have been placed. Raw response keys: {list(resp.keys())}"
+        )
     print(f"[Coinbase LIVE] market SELL placed  {product_id}  {base_size_coins:.6f} coins  order_id={order_id}")
     return order_id

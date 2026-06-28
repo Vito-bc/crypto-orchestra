@@ -21,6 +21,8 @@ Exchange integration (DRY_RUN=true by default):
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -33,7 +35,7 @@ ORDERS_FILE = ROOT / "logs" / "pending_orders.json"
 ORDER_TTL_HOURS = 24    # unfilled orders are cancelled after this
 MAKER_FEE_RATE  = 0.002  # 0.2% Coinbase maker fee per side
 ATR_STOP_MULT   = 2.5
-ATR_TARGET_MULT = 4.0
+ATR_TARGET_MULT = 2.0   # reduced from 4.0 — 4x ATR unreachable in 8-48h hold (0% TP hits)
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -78,7 +80,10 @@ class PendingOrder:
         )
 
     def is_expired(self) -> bool:
-        return datetime.now(timezone.utc) >= datetime.fromisoformat(self.expires_at)
+        expires = datetime.fromisoformat(self.expires_at)
+        if expires.tzinfo is None:  # guard against legacy records without UTC offset
+            expires = expires.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= expires
 
     def would_fill(self, current_price: float) -> bool:
         """Limit BUY fills when price drops to or below the limit price (dry-run simulation)."""
@@ -101,8 +106,20 @@ def _load_raw() -> list[dict]:
 
 
 def _save_raw(orders: list[dict]) -> None:
+    """Atomic write — temp file + os.replace() so a crash never corrupts the orders file."""
     ORDERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ORDERS_FILE.write_text(json.dumps(orders, indent=2), encoding="utf-8")
+    data = json.dumps(orders, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=ORDERS_FILE.parent, prefix=".ord_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp, ORDERS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

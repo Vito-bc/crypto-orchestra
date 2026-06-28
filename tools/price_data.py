@@ -13,6 +13,7 @@ so data is always fresh on each run but never re-downloaded within a run.
 
 from __future__ import annotations
 
+import math
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -156,4 +157,9 @@ def get_snapshot(asset: str, lookback_days: int = 90) -> dict | None:
         "bb_ok":             bool(comps.get("bb_ok",     False)),
         "volume_ok":         bool(comps.get("volume_ok", False)),
         "buy_ready":         bool(comps.get("buy_ready", False)),
+        "adx_1h":            float(row["adx"]) if "adx" in row.index and not math.isnan(float(row["adx"])) else 0.0,
+        "vwap_1h":           float(row["vwap"]) if "vwap" in row.index and not math.isnan(float(row["vwap"])) else None,
+        "cvd_24h":           float(row["cvd_24h"]) if "cvd_24h" in row.index and not math.isnan(float(row["cvd_24h"])) else None,
+        "cvd_6h_ago":        float(df.iloc[-7]["cvd_24h"]) if len(df) > 7 and "cvd_24h" in df.columns and not math.isnan(float(df.iloc[-7]["cvd_24h"])) else None,
+        "ewma_vol_daily":    float(row["ewma_vol"]) if "ewma_vol" in row.index and not math.isnan(float(row["ewma_vol"])) else None,
     }

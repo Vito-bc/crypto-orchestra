@@ -28,7 +28,12 @@ from agents.base_agent import BaseAgent
 from schemas.signals import AgentName, AgentSignal, SignalType
 from tools.onchain_data import get_onchain_metrics
 from tools.funding_data import get_funding_rate
-from tools.market_positioning import get_open_interest, get_long_short_ratio, get_binance_funding_rate
+from tools.market_positioning import (
+    get_coinbase_premium,
+    get_open_interest,
+    get_long_short_ratio,
+    get_binance_funding_rate,
+)
 
 _SYSTEM = """You are a crypto market positioning and whale flow analyst.
 
@@ -58,6 +63,11 @@ Output a JSON object with exactly these keys:
 - Retail >70% long: slight SELL lean (adds 0.05 to SELL) — crowd is usually wrong at extremes
 - Retail >70% short: slight BUY lean (adds 0.05 to BUY) — short squeeze risk
 
+--- COINBASE PREMIUM INDEX (for BTC-USD only — institutional US demand proxy) ---
+- Premium > +0.05%: US institutions buying aggressively → add 0.05 to BUY confidence
+- Premium < -0.05%: selling pressure from US side → add 0.05 to SELL confidence
+- For non-BTC assets: ignore this signal (not applicable)
+
 --- WHEN OI DATA UNAVAILABLE ---
 Fall back to funding rate as primary signal (original behavior).
 
@@ -74,6 +84,7 @@ class WhaleAgent(BaseAgent):
         oi       = get_open_interest(asset)
         ls_ratio = get_long_short_ratio(asset)
         bin_fund = get_binance_funding_rate(asset)
+        cb_prem  = get_coinbase_premium(asset)
 
         user_prompt = f"""Asset: {asset}
 
@@ -99,14 +110,20 @@ Retail short:    {ls_ratio.get('short_pct', 50):.1f}%
 L/S signal:      {ls_ratio.get('signal', 'NEUTRAL')}
 Analysis:        {ls_ratio.get('interpretation', 'N/A')}
 
---- 4. MACRO FLOW (Tertiary) ---
+--- 4. COINBASE PREMIUM INDEX (BTC-USD Institutional Demand) ---
+Premium:         {cb_prem.get('premium_pct', 0.0):+.4f}%
+Signal:          {cb_prem.get('signal', 'NEUTRAL')}
+Analysis:        {cb_prem.get('interpretation', 'N/A')}
+{f"CB Premium error: {cb_prem.get('error')}" if cb_prem.get('error') else ''}
+
+--- 5. MACRO FLOW (Tertiary) ---
 BTC dominance:   {metrics.get('btc_dominance', 'N/A')}%
 Volume/MCap:     {metrics.get('volume_market_ratio', 'N/A')}
 24h price chg:   {metrics.get('price_change_24h', 'N/A')}%
 7d price chg:    {metrics.get('price_change_7d', 'N/A')}%
 Exchange note:   {metrics.get('exchange_note', 'N/A')}
 
-Analyze all four sources using the priority hierarchy and produce your JSON output."""
+Analyze all five sources using the priority hierarchy and produce your JSON output."""
 
         result = self._ask_claude_json(_SYSTEM, user_prompt)
 
@@ -127,7 +144,9 @@ Analyze all four sources using the priority hierarchy and produce your JSON outp
                 "long_pct":          ls_ratio.get("long_pct"),
                 "short_pct":         ls_ratio.get("short_pct"),
                 "ls_signal":         ls_ratio.get("signal"),
-                "btc_dominance":     metrics.get("btc_dominance"),
-                "volume_mcap_ratio": metrics.get("volume_market_ratio"),
+                "btc_dominance":       metrics.get("btc_dominance"),
+                "volume_mcap_ratio":   metrics.get("volume_market_ratio"),
+                "coinbase_premium_pct": cb_prem.get("premium_pct"),
+                "coinbase_premium_sig": cb_prem.get("signal"),
             },
         )

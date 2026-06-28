@@ -2,41 +2,33 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from urllib import parse, request
+from urllib.error import URLError
 
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
-ENV_PATH = ROOT / ".env"
-
-
-def load_env_file() -> None:
-    if not ENV_PATH.exists():
-        return
-
-    for raw_line in ENV_PATH.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+load_dotenv(ROOT / ".env")
 
 
 def get_telegram_config() -> tuple[str | None, str | None]:
-    load_env_file()
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    token   = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     return token, chat_id
 
 
 def send_telegram_message(text: str) -> bool:
+    """
+    Send a Telegram message.  Always returns bool — never raises.
+    A Telegram failure must never crash the trading pipeline.
+    """
     token, chat_id = get_telegram_config()
     if not token or not chat_id:
         return False
 
+    # Token is in the URL path — never log the full URL; log only the endpoint name.
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = parse.urlencode(
         {
@@ -49,10 +41,18 @@ def send_telegram_message(text: str) -> bool:
     req = request.Request(url, data=payload, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
-    with request.urlopen(req, timeout=15) as response:
-        body = response.read().decode("utf-8")
-        data = json.loads(body)
-        return bool(data.get("ok"))
+    try:
+        with request.urlopen(req, timeout=15) as response:
+            body = response.read().decode("utf-8")
+            data = json.loads(body)
+            return bool(data.get("ok"))
+    except URLError as exc:
+        # Do NOT log `url` here — it contains the bot token.
+        print(f"[Telegram] Network error: {exc.reason}", file=sys.stderr)
+        return False
+    except Exception as exc:
+        print(f"[Telegram] Unexpected error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return False
 
 
 def format_limit_order_placed(asset: str, order: "PendingOrder", levels: dict) -> str:  # type: ignore[name-defined]

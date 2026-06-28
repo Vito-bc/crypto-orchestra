@@ -44,7 +44,16 @@ def _load_open() -> list[dict]:
 def _load_decisions() -> list[dict]:
     if not DECISIONS_LOG.exists():
         return []
-    return [json.loads(l) for l in DECISIONS_LOG.read_text(encoding="utf-8").strip().splitlines() if l.strip()]
+    results = []
+    for line in DECISIONS_LOG.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            results.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass  # skip malformed lines
+    return results
 
 
 def build_summary() -> str:
@@ -111,4 +120,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Redirect stdout+stderr to log when running under pythonw.exe (Task Scheduler)
+    import os as _os, io as _io, traceback as _tb
+    _log_path = ROOT / "logs" / "daily_summary.log"
+    _log_path.parent.mkdir(exist_ok=True)
+    _is_pythonw = _os.path.basename(sys.executable).lower() == "pythonw.exe"
+    if _is_pythonw:
+        _lf = open(_log_path, "a", encoding="utf-8", buffering=1)
+        sys.stdout = _io.TextIOWrapper(_lf.buffer, encoding="utf-8", line_buffering=True)
+        sys.stderr = sys.stdout
+    try:
+        main()
+    except Exception:
+        _tb.print_exc()
+        sys.exit(1)

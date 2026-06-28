@@ -43,20 +43,24 @@ def _get_interval() -> int:
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 class _Tee:
-    """Write to both console and log file simultaneously."""
+    """
+    Write to both console and log file simultaneously.
+    Keeps a single open file handle — avoids open()/close() on every print statement,
+    which was adding hundreds of unnecessary syscalls per scheduler run.
+    """
     def __init__(self, stream, log_path: Path):
         self._stream = stream
-        self._log    = log_path
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_fh = log_path.open("a", encoding="utf-8", buffering=1)
 
     def write(self, msg: str) -> None:
         self._stream.write(msg)
         self._stream.flush()
-        with self._log.open("a", encoding="utf-8") as f:
-            f.write(msg)
+        self._log_fh.write(msg)
 
     def flush(self) -> None:
         self._stream.flush()
+        self._log_fh.flush()
 
 
 def _now_utc() -> str:

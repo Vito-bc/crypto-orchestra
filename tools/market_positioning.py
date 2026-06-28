@@ -269,3 +269,96 @@ def get_binance_funding_rate(asset: str) -> dict:
     except Exception as e:
         result["error"] = str(e)
     return result
+
+
+def get_coinbase_premium(asset: str = "BTC-USD") -> dict:
+    """
+    Coinbase Premium Index — price difference BTC/USD on Coinbase vs BTC/USDT on Binance.
+
+    Positive premium = US institutional / ETF market-maker buying aggressively.
+    Negative premium = selling pressure from US side.
+
+    Source: CoinGlass public API (no auth required).
+    Only meaningful for BTC-USD; returns NEUTRAL with note for other assets.
+    """
+    result = {
+        "premium_pct": 0.0,
+        "signal": "NEUTRAL",
+        "interpretation": "Coinbase premium data unavailable.",
+        "source": None,
+        "error": None,
+    }
+
+    if asset.upper() != "BTC-USD":
+        result["interpretation"] = f"Coinbase premium only relevant for BTC-USD (not {asset})."
+        return result
+
+    try:
+        data = _get("https://open-api.coinglass.com/public/v2/indicator/coinbase_premium_index")
+        if data and isinstance(data, dict) and data.get("data"):
+            rows = data["data"]
+            if isinstance(rows, list) and len(rows) >= 2:
+                latest = rows[-1]
+                prev   = rows[-2]
+                prem   = float(latest.get("premium", 0))
+                trend  = prem - float(prev.get("premium", 0))
+
+                result["premium_pct"] = round(prem, 4)
+                result["source"]      = "CoinGlass"
+
+                if prem > 0.05:
+                    result["signal"]        = "BUY"
+                    result["interpretation"] = (
+                        f"Coinbase premium +{prem:.3f}% — US institutions buying aggressively. "
+                        f"Trend: {'rising' if trend > 0 else 'falling'}"
+                    )
+                elif prem < -0.05:
+                    result["signal"]        = "SELL"
+                    result["interpretation"] = (
+                        f"Coinbase premium {prem:.3f}% — selling pressure from US market. "
+                        f"Trend: {'rising' if trend > 0 else 'falling'}"
+                    )
+                else:
+                    result["interpretation"] = (
+                        f"Coinbase premium {prem:+.3f}% — neutral US institutional positioning."
+                    )
+    except Exception as e:
+        result["error"] = str(e)
+
+    return result
+
+
+def get_okx_funding_rate(asset: str) -> dict:
+    """
+    OKX perpetual funding rate, annualized for leverage detection.
+
+    Thresholds (research-based):
+      > 20% annualized → crowded longs, unwind risk — block long entry
+      8–20%            → neutral / normal carry
+      < -8% annualized → forced short covering — bullish contrarian signal
+
+    Returns None for assets without OKX perpetuals (e.g. ZEC).
+    """
+    result = {
+        "rate_pct": 0.0, "annualized_pct": 0.0,
+        "signal": "NEUTRAL", "source": None, "error": None,
+    }
+    okx_sym = _OKX_SYMBOL.get(asset.upper())
+    if not okx_sym:
+        return {**result, "error": f"No OKX perpetual for {asset}"}
+    try:
+        data = _get(f"{_OKX_BASE}/public/funding-rate?instId={okx_sym}")
+        if data and data.get("data"):
+            rate = float(data["data"][0]["fundingRate"])
+            # 3 settlements/day (8h intervals) × 365 days
+            ann  = rate * 3 * 365 * 100
+            result["rate_pct"]       = round(rate * 100, 6)
+            result["annualized_pct"] = round(ann, 2)
+            result["source"]         = "OKX"
+            if ann > 20.0:
+                result["signal"] = "SELL"    # leverage chase — wait for unwind
+            elif ann < -8.0:
+                result["signal"] = "BUY"     # capitulation shorts — contrarian long
+    except Exception as e:
+        result["error"] = str(e)
+    return result

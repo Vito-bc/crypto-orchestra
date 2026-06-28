@@ -4,7 +4,7 @@
 import pandas as pd
 import numpy as np
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, EMAIndicator
+from ta.trend import MACD, EMAIndicator, ADXIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 from pathlib import Path
 
@@ -12,7 +12,7 @@ from pathlib import Path
 FEE_RATE = 0.006
 TRADE_SIZE_PCT = 0.02
 ATR_STOP_MULTIPLIER = 2.5
-ATR_TARGET_MULTIPLIER = 4.0
+ATR_TARGET_MULTIPLIER = 2.0   # reduced from 4.0 — 4x ATR was unreachable in short holds
 START_BALANCE = 10000
 MACD_PREV_RATIO_CAP = 0.2
 
@@ -27,7 +27,7 @@ STRATEGY_CONFIG = {
         "buy_bb_pct_max": 0.48,
         "sell_rsi_min": 58,
         "sell_bb_pct_min": 0.70,
-        "max_hold_hours": 12,
+        "max_hold_hours": 48,
         "trailing_stop_multiplier": 1.0,
         "break_even_trigger_atr": 1.0,
         "trail_activation_multiplier": None,
@@ -44,7 +44,7 @@ STRATEGY_CONFIG = {
         "buy_bb_pct_max": 0.50,
         "sell_rsi_min": 58,
         "sell_bb_pct_min": 0.70,
-        "max_hold_hours": 8,
+        "max_hold_hours": 24,
         "trailing_stop_multiplier": 2.0,
         "break_even_trigger_atr": None,
         "trail_activation_multiplier": 1.2,
@@ -61,7 +61,7 @@ STRATEGY_CONFIG = {
         "buy_bb_pct_max": 0.48,
         "sell_rsi_min": 58,
         "sell_bb_pct_min": 0.70,
-        "max_hold_hours": 8,
+        "max_hold_hours": 36,
         "trailing_stop_multiplier": 2.0,
         "break_even_trigger_atr": None,
         "trail_activation_multiplier": 1.2,
@@ -78,7 +78,7 @@ STRATEGY_CONFIG = {
         "buy_bb_pct_max": 0.46,
         "sell_rsi_min": 58,
         "sell_bb_pct_min": 0.70,
-        "max_hold_hours": 8,
+        "max_hold_hours": 36,
         "trailing_stop_multiplier": 2.0,
         "break_even_trigger_atr": None,
         "trail_activation_multiplier": 1.2,
@@ -193,6 +193,33 @@ def calculate_indicators(df):
     df["ema50"] = EMAIndicator(df["close"], window=50).ema_indicator()
     df["ema200"] = EMAIndicator(df["close"], window=200).ema_indicator()
     df["trend"] = np.where(df["ema50"] > df["ema200"], "bull", "bear")
+
+    adx_ind = ADXIndicator(df["high"], df["low"], df["close"], window=14)
+    df["adx"] = adx_ind.adx()
+
+    # VWAP — daily session-anchored (resets each UTC day)
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    if "time" in df.columns:
+        dates = pd.to_datetime(df["time"]).dt.date
+        tp_vol = typical_price * df["volume"]
+        df["vwap"] = tp_vol.groupby(dates).cumsum() / df["volume"].groupby(dates).cumsum().replace(0, np.nan)
+    else:
+        # Fallback: rolling 24-bar VWAP
+        tp_vol = typical_price * df["volume"]
+        df["vwap"] = tp_vol.rolling(24).sum() / df["volume"].rolling(24).sum()
+
+    # CVD — Cumulative Volume Delta approximation from candle data
+    # Buy pressure ≈ volume * (close - low) / range; Sell pressure ≈ volume * (high - close) / range
+    hl_range = (df["high"] - df["low"]).replace(0, np.nan)
+    buy_vol = df["volume"] * (df["close"] - df["low"]) / hl_range
+    sell_vol = df["volume"] * (df["high"] - df["close"]) / hl_range
+    df["cvd_delta"] = (buy_vol - sell_vol).fillna(0)
+    df["cvd_24h"] = df["cvd_delta"].rolling(window=24).sum()
+
+    # EWMA volatility (GARCH-inspired, RiskMetrics λ=0.94 → α=0.06)
+    # Annualised to daily by ×√24 for 1h bars
+    returns = df["close"].pct_change().fillna(0)
+    df["ewma_vol"] = returns.ewm(alpha=0.06, adjust=False).std() * np.sqrt(24)
 
     swing_high = df["high"].rolling(window=50).max()
     swing_low = df["low"].rolling(window=50).min()

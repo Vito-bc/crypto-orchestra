@@ -28,6 +28,8 @@ class AgentName(str, Enum):
     SENTIMENT   = "sentiment"
     WHALE       = "whale"
     RISK        = "risk"
+    NEWS        = "news"
+    BREAKOUT    = "breakout"
 
 
 class MarketRegime(str, Enum):
