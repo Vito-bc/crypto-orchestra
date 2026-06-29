@@ -34,8 +34,8 @@ ORDERS_FILE = ROOT / "logs" / "pending_orders.json"
 
 ORDER_TTL_HOURS = 24    # unfilled orders are cancelled after this
 MAKER_FEE_RATE  = 0.002  # 0.2% Coinbase maker fee per side
-ATR_STOP_MULT   = 2.5
-ATR_TARGET_MULT = 2.0   # reduced from 4.0 — 4x ATR unreachable in 8-48h hold (0% TP hits)
+ATR_STOP_MULT   = 2.0
+ATR_TARGET_MULT = 3.5   # R:R = 1.75 — scanner shows ZEC profitable, BTC near breakeven
 
 
 # ── Data model ────────────────────────────────────────────────────────────────

@@ -11,8 +11,8 @@ from pathlib import Path
 
 FEE_RATE = 0.006
 TRADE_SIZE_PCT = 0.02
-ATR_STOP_MULTIPLIER = 2.5
-ATR_TARGET_MULTIPLIER = 2.0   # reduced from 4.0 — 4x ATR was unreachable in short holds
+ATR_STOP_MULTIPLIER = 2.0
+ATR_TARGET_MULTIPLIER = 3.5
 START_BALANCE = 10000
 MACD_PREV_RATIO_CAP = 0.2
 
@@ -44,7 +44,7 @@ STRATEGY_CONFIG = {
         "buy_bb_pct_max": 0.50,
         "sell_rsi_min": 58,
         "sell_bb_pct_min": 0.70,
-        "max_hold_hours": 24,
+        "max_hold_hours": 36,
         "trailing_stop_multiplier": 2.0,
         "break_even_trigger_atr": None,
         "trail_activation_multiplier": 1.2,
@@ -651,6 +651,7 @@ def run_backtest(symbol, timeframe="1h", days=365):
         "symbol": symbol,
         "return": total_return,
         "trades": len(closed_trades),
+        "trade_records": closed_trades,   # full list for Monte Carlo / analysis
         "win_rate": win_rate,
         "profit_factor": profit_factor,
         "max_drawdown": max_dd * 100,

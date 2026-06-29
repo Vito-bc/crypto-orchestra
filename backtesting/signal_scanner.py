@@ -1,0 +1,471 @@
+"""
+Signal Scanner — scans historical periods for when the system WOULD have fired.
+
+No Claude API calls. Uses the backtest engine + breakout logic to show exactly:
+  - Which candles had valid BUY conditions (trend, MACD, RSI, volume, EMA crossover)
+  - How the 4h trend filter and volume hard gate would have blocked false entries
+  - What the P&L would have been if we entered at each signal
+
+Answers: "Would the system have fired during the Trump rally?"
+
+Usage:
+    python backtesting/signal_scanner.py trump_rally
+    python backtesting/signal_scanner.py trump_rally --asset BTC-USD
+    python backtesting/signal_scanner.py aug_crash
+"""
+
+from __future__ import annotations
+
+import sys
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import yfinance as yf
+from backtesting.backtest import (
+    attach_higher_timeframe_context,
+    STRATEGY_CONFIG,
+    ATR_STOP_MULTIPLIER,
+    ATR_TARGET_MULTIPLIER,
+    FEE_RATE,
+)
+from ta.momentum import RSIIndicator
+from ta.trend import MACD, EMAIndicator, ADXIndicator
+from ta.volatility import AverageTrueRange, BollingerBands
+
+# ── Periods ───────────────────────────────────────────────────────────────────
+
+PERIODS = {
+    "trump_rally": {
+        "label":  "Trump Rally  (Nov 5 2024 – Jan 20 2025)",
+        "start":  "2024-11-05",
+        "end":    "2025-01-20",
+        "warmup": "2024-08-01",   # download from here for indicator warmup
+        "btc_move": "+60%  ($68k -> $109k)",
+    },
+    "aug_crash": {
+        "label":  "August 2024 Flash Crash  (Jul 20 – Sep 1 2024)",
+        "start":  "2024-07-20",
+        "end":    "2024-09-01",
+        "warmup": "2024-04-01",
+        "btc_move": "-32%  ($68k -> $49k crash and recovery)",
+    },
+    "q1_2025_bear": {
+        "label":  "Q1 2025 Bear  (Jan 20 – Apr 1 2025)",
+        "start":  "2025-01-20",
+        "end":    "2025-04-01",
+        "warmup": "2024-10-01",
+        "btc_move": "-28%  ($109k -> $78k)",
+    },
+    "current": {
+        "label":  "Current Bear  (Mar 1 – Jun 28 2025)",
+        "start":  "2025-03-01",
+        "end":    "2025-06-28",
+        "warmup": "2024-12-01",
+        "btc_move": "~-23%  ($90k -> $60k)",
+    },
+}
+
+ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
+
+# Breakout parameters (must match live breakout_agent.py)
+_MIN_VOL_RATIO        = 0.8
+_VOL_SPIKE_RATIO      = 1.3
+_MIN_ADX              = 20.0
+_MAX_RSI_AT_CROSS     = 65.0
+_MAX_PCT_ABOVE_EMA    = 4.0
+_MAX_CANDLES_SINCE    = 4
+_MIN_CONDITIONS       = 3
+
+
+# ── Signal detection ──────────────────────────────────────────────────────────
+
+def _detect_breakout_signal(df: pd.DataFrame, i: int) -> dict | None:
+    """
+    Check if row `i` in `df` represents a valid breakout BUY signal.
+    Mirrors the logic in agents/breakout_agent.py exactly.
+    Returns None if no signal, or a dict with signal details.
+    """
+    if i < 12:
+        return None
+
+    close_arr = df["close"].values
+    ema50_arr = df["ema50"].values
+
+    # Count consecutive candles above EMA50 (look back up to row i)
+    candles_above      = 0
+    crossed_from_below = False
+    look_back          = min(12, i + 1)
+
+    for j in range(i, i - look_back, -1):
+        if close_arr[j] > ema50_arr[j]:
+            candles_above += 1
+        else:
+            if candles_above > 0:
+                crossed_from_below = True
+            break
+
+    if not crossed_from_below or candles_above == 0 or candles_above > _MAX_CANDLES_SINCE:
+        return None
+
+    row       = df.iloc[i]
+    cross_row = df.iloc[i - candles_above + 1] if i >= candles_above else df.iloc[0]
+
+    def _safe(col):
+        try:
+            v = float(row[col]) if col in row.index else None
+            return None if v is None or (v != v) else v  # NaN check
+        except Exception:
+            return None
+
+    vol_ratio    = _safe("volume_ratio") or 1.0
+    adx_now      = _safe("adx") or 0.0
+    close_now    = _safe("close") or 0.0
+    ema50_now    = _safe("ema50") or 1.0
+    close_4h     = _safe("close_4h")
+    ema50_4h     = _safe("ema50_4h")
+    cvd_24h      = _safe("cvd_24h") or 0.0
+    pct_above    = (close_now - ema50_now) / ema50_now * 100
+
+    rsi_at_cross = float(cross_row["rsi"]) if "rsi" in cross_row.index else 50.0
+
+    # Hard gates
+    if vol_ratio < _MIN_VOL_RATIO:
+        return {"blocked": "vol_gate", "vol_ratio": round(vol_ratio, 2)}
+
+    if close_4h is not None and ema50_4h is not None and close_4h < ema50_4h:
+        return {"blocked": "4h_trend", "close_4h": round(close_4h, 2), "ema50_4h": round(ema50_4h, 2)}
+
+    # Scored conditions
+    conditions = [
+        rsi_at_cross < _MAX_RSI_AT_CROSS,
+        adx_now >= _MIN_ADX,
+        vol_ratio >= _VOL_SPIKE_RATIO,
+        cvd_24h > 0,
+        pct_above < _MAX_PCT_ABOVE_EMA,
+    ]
+    n_met = sum(conditions)
+
+    if n_met < _MIN_CONDITIONS:
+        return {"blocked": "conditions", "n_met": n_met}
+
+    confidence = min(0.57 + 0.08 * n_met, 0.89)
+
+    return {
+        "signal":       "BUY",
+        "candles_above": candles_above,
+        "n_conditions": n_met,
+        "confidence":   round(confidence, 2),
+        "rsi_at_cross": round(rsi_at_cross, 1),
+        "adx":          round(adx_now, 1),
+        "vol_ratio":    round(vol_ratio, 2),
+        "pct_above":    round(pct_above, 2),
+        "close_4h":     round(close_4h, 2) if close_4h else None,
+        "ema50_4h":     round(ema50_4h, 2) if ema50_4h else None,
+        "blocked":      None,
+    }
+
+
+def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
+                    max_hold_hours: int) -> dict:
+    """
+    Simulate what would have happened if we entered at entry_i.
+    Uses ATR-based stop/target and max_hold.
+    """
+    atr         = float(df.iloc[entry_i]["atr"])
+    stop_price  = round(entry_price - ATR_STOP_MULTIPLIER * atr, 2)
+    target_price = round(entry_price + ATR_TARGET_MULTIPLIER * atr, 2)
+
+    for j in range(entry_i + 1, min(entry_i + max_hold_hours + 1, len(df))):
+        row = df.iloc[j]
+        low  = float(row["low"])
+        high = float(row["high"])
+
+        if low <= stop_price:
+            gross   = stop_price * (1 - FEE_RATE)
+            net_pnl = (gross - entry_price * (1 + FEE_RATE)) / entry_price * 100
+            return {"reason": "STOP_LOSS", "exit_price": stop_price,
+                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
+
+        if high >= target_price:
+            gross   = target_price * (1 - FEE_RATE)
+            net_pnl = (gross - entry_price * (1 + FEE_RATE)) / entry_price * 100
+            return {"reason": "TAKE_PROFIT", "exit_price": target_price,
+                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
+
+    # Max hold
+    exit_price = float(df.iloc[min(entry_i + max_hold_hours, len(df) - 1)]["close"])
+    gross      = exit_price * (1 - FEE_RATE)
+    net_pnl    = (gross - entry_price * (1 + FEE_RATE)) / entry_price * 100
+    return {"reason": "MAX_HOLD", "exit_price": round(exit_price, 2),
+            "hold_h": max_hold_hours, "pnl_pct": round(net_pnl, 2)}
+
+
+# ── Per-asset scanner ─────────────────────────────────────────────────────────
+
+def _download_and_compute(asset: str, start: str, end: str, interval: str) -> pd.DataFrame | None:
+    """Download OHLCV from yfinance and attach all technical indicators."""
+    try:
+        raw = yf.download(asset, start=start, end=end, interval=interval,
+                          progress=False, auto_adjust=True)
+        if raw is None or raw.empty:
+            return None
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+        raw.columns = [c.lower() for c in raw.columns]
+        raw.index   = pd.to_datetime(raw.index, utc=True)
+        raw         = raw.dropna(subset=["close", "open", "high", "low", "volume"])
+        if len(raw) < 20:
+            return None
+
+        df = raw.copy()
+        c  = df["close"]
+
+        # RSI
+        df["rsi"] = RSIIndicator(c, window=14).rsi()
+
+        # MACD
+        m = MACD(c, window_slow=26, window_fast=12, window_sign=9)
+        df["macd"]      = m.macd()
+        df["macd_signal"] = m.macd_signal()
+        df["macd_diff"] = m.macd_diff()
+
+        # EMA
+        df["ema50"]  = EMAIndicator(c, window=50).ema_indicator()
+        df["ema200"] = EMAIndicator(c, window=200).ema_indicator()
+
+        # ATR
+        df["atr"] = AverageTrueRange(df["high"], df["low"], c, window=14).average_true_range()
+
+        # Bollinger
+        bb = BollingerBands(c, window=20, window_dev=2)
+        df["bb_pct"] = bb.bollinger_pband()
+
+        # Volume ratio (20-period rolling mean)
+        df["vol_ma"] = df["volume"].rolling(20).mean()
+        df["volume_ratio"] = df["volume"] / df["vol_ma"]
+
+        # ADX
+        df["adx"] = ADXIndicator(df["high"], df["low"], c, window=14).adx()
+
+        # CVD proxy (sum of signed volume over 24 candles)
+        df["signed_vol"] = df["volume"] * np.where(c > c.shift(1), 1, -1)
+        periods_24h = 24 if interval == "1h" else 6
+        df["cvd_24h"] = df["signed_vol"].rolling(periods_24h).sum()
+
+        # VWAP (rolling daily reset approximation)
+        df["vwap"] = (df["volume"] * (df["high"] + df["low"] + c) / 3).cumsum() / df["volume"].cumsum()
+
+        # EWMA volatility
+        df["ret"] = c.pct_change()
+        df["ewma_vol"] = df["ret"].ewm(span=20).std() * np.sqrt(24)
+
+        # Required by attach_higher_timeframe_context
+        df["time"]  = df.index
+        df["trend"] = np.where(df["ema50"] > df["ema200"], "bull", "bear")
+
+        return df.dropna(subset=["rsi", "ema50", "atr"])
+    except Exception as exc:
+        print(f"    indicator error: {exc}")
+        return None
+
+
+def scan_asset(asset: str, period: dict) -> dict:
+    print(f"\n  Downloading {asset} data (warmup from {period['warmup']})...")
+
+    sig_df   = _download_and_compute(asset, period["warmup"], period["end"], "1h")
+    trend_df = _download_and_compute(asset, period["warmup"], period["end"], "4h")
+
+    if sig_df is None or trend_df is None:
+        print(f"  {asset}: no data")
+        return {}
+
+    df       = attach_higher_timeframe_context(sig_df, trend_df)
+    # merge_asof returns integer index — restore DatetimeIndex from the "time" column
+    if "time" in df.columns:
+        df.index = pd.to_datetime(df["time"], utc=True)
+
+    config   = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
+    max_hold = config.get("max_hold_hours", 36)
+
+    # Slice to the actual replay window (after warmup)
+    start_ts  = pd.Timestamp(period["start"], tz="UTC")
+    df_period = df[df.index >= start_ts].copy()
+
+    if df_period.empty:
+        print(f"  {asset}: no data in period window")
+        return {}
+
+    print(f"  {asset}: {len(df_period)} hourly candles in period")
+
+    signals     = []
+    blocked_vol = 0
+    blocked_4h  = 0
+    blocked_cond = 0
+    skip_until  = -1   # don't double-enter
+
+    # We need to operate on the full df (for lookback), but filter output to period
+    full_len   = len(df)
+    period_start_idx = df.index.get_loc(df_period.index[0]) if not df_period.empty else 0
+
+    for i in range(period_start_idx, full_len):
+        if i < skip_until:
+            continue
+
+        result = _detect_breakout_signal(df, i)
+        if result is None:
+            continue
+
+        ts    = df.index[i]
+        price = float(df.iloc[i]["close"])
+
+        if result.get("blocked") == "vol_gate":
+            blocked_vol += 1
+            continue
+        elif result.get("blocked") == "4h_trend":
+            blocked_4h += 1
+            continue
+        elif result.get("blocked") == "conditions":
+            blocked_cond += 1
+            continue
+
+        # Valid BUY signal — simulate the trade
+        trade = _simulate_trade(df, i, price, max_hold)
+
+        record = {
+            "timestamp":    ts.strftime("%Y-%m-%d %H:%M"),
+            "price":        round(price, 2),
+            "signal":       result,
+            "trade":        trade,
+        }
+        signals.append(record)
+        skip_until = i + trade["hold_h"] + 1   # don't re-enter mid-hold
+
+    return {
+        "asset":        asset,
+        "candles":      len(df_period),
+        "signals":      signals,
+        "blocked_vol":  blocked_vol,
+        "blocked_4h":   blocked_4h,
+        "blocked_cond": blocked_cond,
+    }
+
+
+# ── Reporting ─────────────────────────────────────────────────────────────────
+
+def print_report(period_key: str, period: dict, all_results: dict) -> None:
+    print("\n" + "=" * 70)
+    print(f"SIGNAL SCANNER — {period['label']}")
+    print(f"BTC reference: {period['btc_move']}")
+    print("=" * 70)
+
+    total_signals = sum(len(r.get("signals", [])) for r in all_results.values())
+    total_wins    = sum(1 for r in all_results.values()
+                        for s in r.get("signals", [])
+                        if s["trade"]["pnl_pct"] > 0)
+    total_pnl     = sum(s["trade"]["pnl_pct"]
+                        for r in all_results.values()
+                        for s in r.get("signals", []))
+
+    print(f"\nSummary across all assets:")
+    print(f"  Total BUY signals:    {total_signals}")
+    if total_signals:
+        print(f"  Win rate:             {total_wins/total_signals:.1%}")
+        print(f"  Avg P&L per trade:    {total_pnl/total_signals:+.2f}% of position")
+        print(f"  Total P&L (sum):      {total_pnl:+.2f}%")
+
+    for asset, r in all_results.items():
+        if not r:
+            continue
+        sigs = r.get("signals", [])
+        print(f"\n{'-'*70}")
+        print(f"  {asset}  ({len(sigs)} signals  |  "
+              f"blocked: vol={r['blocked_vol']}  4h={r['blocked_4h']}  cond={r['blocked_cond']})")
+
+        if not sigs:
+            print("    No signals fired in this period.")
+            continue
+
+        wins   = [s for s in sigs if s["trade"]["pnl_pct"] > 0]
+        losses = [s for s in sigs if s["trade"]["pnl_pct"] <= 0]
+        avg_pnl = sum(s["trade"]["pnl_pct"] for s in sigs) / len(sigs)
+
+        print(f"  Win rate: {len(wins)}/{len(sigs)} = {len(wins)/len(sigs):.1%}    "
+              f"Avg P&L: {avg_pnl:+.2f}%")
+
+        print(f"\n  {'Timestamp':<18} {'Price':>10}  {'Signal':>7}  "
+              f"{'Conf':>5}  {'Exit':>12}  {'Hold':>5}  {'P&L':>8}")
+        print(f"  {'-'*18} {'-'*10}  {'-'*7}  {'-'*5}  {'-'*12}  {'-'*5}  {'-'*8}")
+
+        for s in sigs:
+            sig  = s["signal"]
+            tr   = s["trade"]
+            pnl  = tr["pnl_pct"]
+            sign = "+" if pnl >= 0 else ""
+            icon = "WIN " if pnl > 0 else "LOSS"
+            print(f"  {s['timestamp']:<18} ${s['price']:>9,.2f}  {icon:>7}  "
+                  f"{sig['confidence']:>4.0%}  "
+                  f"{tr['reason']:>12}  {tr['hold_h']:>4}h  "
+                  f"{sign}{pnl:>6.2f}%")
+
+    print("\n" + "=" * 70)
+    print("KEY FINDINGS:")
+    if total_signals == 0:
+        print("  System correctly stayed in HOLD throughout this period.")
+        print("  No false breakout entries — all filters working correctly.")
+    else:
+        wr = total_wins / total_signals
+        if wr >= 0.55:
+            print(f"  POSITIVE: {wr:.0%} win rate — system edges positive in this regime.")
+        elif wr >= 0.40:
+            print(f"  MIXED: {wr:.0%} win rate — marginal edge, fee drag matters.")
+        else:
+            print(f"  CAUTION: {wr:.0%} win rate — system struggles in this regime.")
+
+        total_blk = sum(r.get("blocked_4h", 0) + r.get("blocked_vol", 0)
+                        for r in all_results.values())
+        if total_blk > 0:
+            print(f"  Filters blocked {total_blk} false signals "
+                  f"(4h trend + volume gates working correctly).")
+
+    print("=" * 70)
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
+        print("Usage: python backtesting/signal_scanner.py <period> [--asset ASSET]")
+        print(f"Periods: {list(PERIODS.keys())}")
+        sys.exit(0)
+
+    period_key = sys.argv[1]
+    if period_key not in PERIODS:
+        print(f"Unknown period '{period_key}'. Available: {list(PERIODS.keys())}")
+        sys.exit(1)
+
+    asset_arg = next((sys.argv[i + 1] for i, a in enumerate(sys.argv)
+                      if a == "--asset" and i + 1 < len(sys.argv)), None)
+    assets    = [asset_arg] if asset_arg else ASSETS
+    period    = PERIODS[period_key]
+
+    print(f"\nSIGNAL SCANNER — {period['label']}")
+    print(f"Assets: {assets}  |  No Claude API calls needed.\n")
+
+    all_results = {}
+    for asset in assets:
+        result = scan_asset(asset, period)
+        if result:
+            all_results[asset] = result
+
+    print_report(period_key, period, all_results)
+
+
+if __name__ == "__main__":
+    main()
