@@ -34,8 +34,20 @@ ORDERS_FILE = ROOT / "logs" / "pending_orders.json"
 
 ORDER_TTL_HOURS = 24    # unfilled orders are cancelled after this
 MAKER_FEE_RATE  = 0.002  # 0.2% Coinbase maker fee per side
-ATR_STOP_MULT   = 2.0
-ATR_TARGET_MULT = 3.5   # R:R = 1.75 — scanner shows ZEC profitable, BTC near breakeven
+
+# Per-asset ATR multipliers — tuned from full_year signal scanner (371 trades).
+# ETH/SOL use wider stops to avoid intraday wick stop-outs while maintaining R:R ≥ 1.75.
+_ASSET_ATR: dict[str, tuple[float, float]] = {
+    "BTC-USD": (2.0, 3.5),   # stop, target — R:R = 1.75
+    "ETH-USD": (2.5, 4.5),   # stop, target — R:R = 1.80
+    "SOL-USD": (2.5, 4.5),   # stop, target — R:R = 1.80
+    "ZEC-USD": (2.0, 3.5),   # stop, target — R:R = 1.75
+}
+_DEFAULT_ATR = (2.0, 3.5)
+
+
+def _atr_mults(asset: str) -> tuple[float, float]:
+    return _ASSET_ATR.get(asset, _DEFAULT_ATR)
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -69,8 +81,8 @@ class PendingOrder:
             id=str(uuid.uuid4())[:8],
             asset=asset,
             limit_price=round(limit_price, 2),
-            stop_price=round(limit_price - ATR_STOP_MULT   * atr, 2),
-            target_price=round(limit_price + ATR_TARGET_MULT * atr, 2),
+            stop_price=round(limit_price - _atr_mults(asset)[0] * atr, 2),
+            target_price=round(limit_price + _atr_mults(asset)[1] * atr, 2),
             position_size_pct=position_size_pct,
             placed_at=now.isoformat(),
             expires_at=(now + timedelta(hours=ttl_hours)).isoformat(),

@@ -30,8 +30,6 @@ import yfinance as yf
 from backtesting.backtest import (
     attach_higher_timeframe_context,
     STRATEGY_CONFIG,
-    ATR_STOP_MULTIPLIER,
-    ATR_TARGET_MULTIPLIER,
     FEE_RATE,
 )
 from ta.momentum import RSIIndicator
@@ -69,9 +67,26 @@ PERIODS = {
         "warmup": "2024-12-01",
         "btc_move": "~-23%  ($90k -> $60k)",
     },
+    "full_year": {
+        "label":  "Full Year  (Aug 2024 – Jun 2025)",
+        "start":  "2024-08-01",
+        "end":    "2025-06-28",
+        "warmup": "2024-07-02",   # max lookback for yfinance 1h — covers all 3 regimes
+        "btc_move": "Multi-regime: crash -> +60% rally -> -28% bear",
+    },
 }
 
 ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
+
+# Per-asset ATR multipliers — tuned for each asset's volatility structure.
+# ETH/SOL have high intraday wicks that hit tight stops before the trend develops;
+# wider stops + proportionally larger targets keeps R:R ≥ 1.75.
+ASSET_PARAMS = {
+    "BTC-USD": {"atr_stop": 2.0, "atr_target": 3.5},   # R:R = 1.75 — clean mover
+    "ETH-USD": {"atr_stop": 2.5, "atr_target": 4.5},   # R:R = 1.80 — wick-heavy
+    "SOL-USD": {"atr_stop": 2.5, "atr_target": 4.5},   # R:R = 1.80 — wick-heavy
+    "ZEC-USD": {"atr_stop": 2.0, "atr_target": 3.5},   # R:R = 1.75 — clean mover
+}
 
 # Breakout parameters (must match live breakout_agent.py)
 _MIN_VOL_RATIO        = 0.8
@@ -175,14 +190,14 @@ def _detect_breakout_signal(df: pd.DataFrame, i: int) -> dict | None:
 
 
 def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
-                    max_hold_hours: int) -> dict:
+                    max_hold_hours: int, atr_stop: float, atr_target: float) -> dict:
     """
     Simulate what would have happened if we entered at entry_i.
     Uses ATR-based stop/target and max_hold.
     """
-    atr         = float(df.iloc[entry_i]["atr"])
-    stop_price  = round(entry_price - ATR_STOP_MULTIPLIER * atr, 2)
-    target_price = round(entry_price + ATR_TARGET_MULTIPLIER * atr, 2)
+    atr          = float(df.iloc[entry_i]["atr"])
+    stop_price   = round(entry_price - atr_stop * atr, 2)
+    target_price = round(entry_price + atr_target * atr, 2)
 
     for j in range(entry_i + 1, min(entry_i + max_hold_hours + 1, len(df))):
         row = df.iloc[j]
@@ -293,8 +308,11 @@ def scan_asset(asset: str, period: dict) -> dict:
     if "time" in df.columns:
         df.index = pd.to_datetime(df["time"], utc=True)
 
-    config   = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
-    max_hold = config.get("max_hold_hours", 36)
+    config     = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
+    max_hold   = config.get("max_hold_hours", 36)
+    params     = ASSET_PARAMS.get(asset, ASSET_PARAMS["BTC-USD"])
+    atr_stop   = params["atr_stop"]
+    atr_target = params["atr_target"]
 
     # Slice to the actual replay window (after warmup)
     start_ts  = pd.Timestamp(period["start"], tz="UTC")
@@ -347,7 +365,7 @@ def scan_asset(asset: str, period: dict) -> dict:
             continue
 
         # Valid BUY signal — simulate the trade
-        trade = _simulate_trade(df, i, price, max_hold)
+        trade = _simulate_trade(df, i, price, max_hold, atr_stop, atr_target)
         if trade["reason"] == "STOP_LOSS":
             recent_stop_ts.append(ts)
 
@@ -368,6 +386,8 @@ def scan_asset(asset: str, period: dict) -> dict:
         "blocked_4h":       blocked_4h,
         "blocked_cond":     blocked_cond,
         "blocked_whipsaw":  blocked_whipsaw,
+        "atr_stop":         atr_stop,
+        "atr_target":       atr_target,
     }
 
 
@@ -399,8 +419,12 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
             continue
         sigs = r.get("signals", [])
         print(f"\n{'-'*70}")
-        bw = r.get("blocked_whipsaw", 0)
+        bw         = r.get("blocked_whipsaw", 0)
+        atr_stop   = r.get("atr_stop", 2.0)
+        atr_target = r.get("atr_target", 3.5)
+        rr         = atr_target / atr_stop
         print(f"  {asset}  ({len(sigs)} signals  |  "
+              f"stop={atr_stop}x  target={atr_target}x  R:R={rr:.2f}  |  "
               f"blocked: vol={r['blocked_vol']}  4h={r['blocked_4h']}  "
               f"cond={r['blocked_cond']}  whipsaw={bw})")
 

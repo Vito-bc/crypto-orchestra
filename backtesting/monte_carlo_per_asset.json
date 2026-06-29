@@ -1,0 +1,105 @@
+{
+  "period": "full_year",
+  "assets": {
+    "BTC-USD": {
+      "n_trades": 96,
+      "atr_stop": 2.0,
+      "atr_target": 3.5,
+      "mc_2pct": {
+        "n_trades": 96,
+        "n_sims": 10000,
+        "position_size": 0.02,
+        "win_rate": 0.3541666666666667,
+        "avg_win_pct": 1.068529411764706,
+        "avg_loss_pct": -2.111774193548387,
+        "expectancy_pct": -0.9854166666666666,
+        "final_median": 9812.83019591022,
+        "final_p5": 9756.269064800286,
+        "final_p95": 9870.14574134348,
+        "ruin_pct": 0.0,
+        "dd_median_pct": -1.8860342658093054,
+        "dd_p5_pct": -2.4363253901585002,
+        "dd_p95_pct": -1.3286457120423139,
+        "dd_worst_pct": -3.041860034091251,
+        "max_loss_run_median": 8.0,
+        "max_loss_run_p95": 14.0,
+        "max_loss_run_worst": 31
+      }
+    },
+    "ETH-USD": {
+      "n_trades": 84,
+      "atr_stop": 2.5,
+      "atr_target": 4.5,
+      "mc_2pct": {
+        "n_trades": 84,
+        "n_sims": 10000,
+        "position_size": 0.02,
+        "win_rate": 0.44047619047619047,
+        "avg_win_pct": 2.16027027027027,
+        "avg_loss_pct": -2.8457446808510634,
+        "expectancy_pct": -0.6407142857142858,
+        "final_median": 9891.511873600351,
+        "final_p5": 9810.925650548717,
+        "final_p95": 9975.321671766493,
+        "ruin_pct": 0.0,
+        "dd_median_pct": -1.232808514204383,
+        "dd_p5_pct": -1.9751526297208104,
+        "dd_p95_pct": -0.579317169352256,
+        "dd_worst_pct": -3.0246481511709145,
+        "max_loss_run_median": 6.0,
+        "max_loss_run_p95": 11.0,
+        "max_loss_run_worst": 22
+      }
+    },
+    "SOL-USD": {
+      "n_trades": 82,
+      "atr_stop": 2.5,
+      "atr_target": 4.5,
+      "mc_2pct": {
+        "n_trades": 82,
+        "n_sims": 10000,
+        "position_size": 0.02,
+        "win_rate": 0.4024390243902439,
+        "avg_win_pct": 2.2039393939393936,
+        "avg_loss_pct": -3.0873469387755095,
+        "expectancy_pct": -0.9579268292682929,
+        "final_median": 9843.604058396599,
+        "final_p5": 9759.762346924566,
+        "final_p95": 9931.740294569014,
+        "ruin_pct": 0.0,
+        "dd_median_pct": -1.6713478875260874,
+        "dd_p5_pct": -2.4604965990415186,
+        "dd_p95_pct": -0.9017577114933558,
+        "dd_worst_pct": -3.402863503074692,
+        "max_loss_run_median": 7.0,
+        "max_loss_run_p95": 12.0,
+        "max_loss_run_worst": 29
+      }
+    },
+    "ZEC-USD": {
+      "n_trades": 109,
+      "atr_stop": 2.0,
+      "atr_target": 3.5,
+      "mc_2pct": {
+        "n_trades": 109,
+        "n_sims": 10000,
+        "position_size": 0.02,
+        "win_rate": 0.48623853211009177,
+        "avg_win_pct": 3.31320754716981,
+        "avg_loss_pct": -3.7723214285714284,
+        "expectancy_pct": -0.3270642201834862,
+        "final_median": 9927.790347267182,
+        "final_p5": 9801.548204705881,
+        "final_p95": 10058.568702597435,
+        "ruin_pct": 0.0,
+        "dd_median_pct": -1.2104753003874635,
+        "dd_p5_pct": -2.2287795535417447,
+        "dd_p95_pct": -0.5591601260344855,
+        "dd_worst_pct": -3.601413850835046,
+        "max_loss_run_median": 6.0,
+        "max_loss_run_p95": 10.0,
+        "max_loss_run_worst": 20
+      }
+    }
+  }
+}

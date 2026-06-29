@@ -15,6 +15,7 @@ Usage:
     python backtesting/monte_carlo.py
     python backtesting/monte_carlo.py --live-only    # only real paper trades
     python backtesting/monte_carlo.py --size 0.05    # test 5% position size
+    python backtesting/monte_carlo.py --scanner      # per-asset MC from signal scanner (full_year)
 """
 
 from __future__ import annotations
@@ -74,6 +75,115 @@ def _load_backtest_trades(symbols: list[str] | None = None) -> list[dict]:
         except Exception as exc:
             print(f"  {sym}: backtest failed — {exc}")
     return trades
+
+
+# ── Per-asset scanner MC ──────────────────────────────────────────────────────
+
+def run_scanner_monte_carlo(sizes: list[float], period_key: str = "full_year") -> None:
+    """
+    Run signal scanner for `period_key`, then run Monte Carlo per asset.
+    Uses per-asset ATR params from ASSET_PARAMS so results reflect tuned parameters.
+    """
+    from backtesting.signal_scanner import PERIODS, ASSETS, scan_asset
+
+    period = PERIODS.get(period_key)
+    if not period:
+        print(f"Unknown period '{period_key}'")
+        return
+
+    print(f"\nRunning signal scanner: {period['label']}")
+    print("Downloading data and scanning (no Claude API calls)...\n")
+
+    all_results: dict = {}
+    for asset in ASSETS:
+        result = scan_asset(asset, period)
+        if result:
+            all_results[asset] = result
+
+    print("\n" + "=" * 68)
+    print("CRYPTO ORCHESTRA — PER-ASSET MONTE CARLO (scanner data)")
+    print(f"Period:  {period['label']}")
+    print(f"Simulations: {N_SIMS:,}  |  Sizes: {[f'{s:.0%}' for s in sizes]}")
+    print("=" * 68)
+
+    summary_rows = []
+
+    for asset, r in all_results.items():
+        sigs = r.get("signals", [])
+        atr_stop   = r.get("atr_stop", 2.0)
+        atr_target = r.get("atr_target", 3.5)
+        rr         = atr_target / atr_stop
+
+        print(f"\n--- {asset}  (stop={atr_stop}x  target={atr_target}x  R:R={rr:.2f}) ---")
+        print(f"    Signals: {len(sigs)}", end="")
+
+        if len(sigs) < 5:
+            print("  — need 5+ trades for MC, skipping")
+            continue
+
+        returns = np.array([s["trade"]["pnl_pct"] for s in sigs], dtype=float)
+        wins    = int((returns > 0).sum())
+        print(f"  |  Win rate: {wins}/{len(sigs)} = {wins/len(sigs):.1%}"
+              f"  |  Avg P&L: {returns.mean():+.2f}%")
+
+        mc_results = []
+        for size in sizes:
+            mc = run_monte_carlo(returns, position_size_pct=size)
+            mc_results.append(mc)
+
+        _print_asset_mc_table(mc_results)
+        summary_rows.append((asset, returns, mc_results))
+
+    # Summary comparison table
+    if summary_rows:
+        print("\n" + "=" * 68)
+        print("SUMMARY — Expectancy per asset (2% position size)")
+        print(f"{'Asset':<10} {'Trades':>7} {'WinRate':>8} {'AvgPnL':>8} "
+              f"{'Expectancy':>11} {'Verdict':>15}")
+        print("-" * 65)
+        for asset, returns, mc_results in summary_rows:
+            r0    = mc_results[0]
+            label = "EDGE" if r0["expectancy_pct"] > 0 else "no edge"
+            print(f"{asset:<10} {r0['n_trades']:>7} {r0['win_rate']:>7.1%} "
+                  f"{returns.mean():>+7.2f}% {r0['expectancy_pct']:>+10.3f}%  {label:>15}")
+        print("=" * 68)
+
+    # Save JSON
+    out = {
+        "period": period_key,
+        "assets": {
+            asset: {
+                "n_trades": len(all_results[asset].get("signals", [])),
+                "atr_stop": all_results[asset].get("atr_stop"),
+                "atr_target": all_results[asset].get("atr_target"),
+                "mc_2pct": next(
+                    (r for r in mc_results if abs(r["position_size"] - 0.02) < 1e-9), None
+                ),
+            }
+            for asset, _, mc_results in summary_rows
+        }
+    }
+    out_path = ROOT / "backtesting" / "monte_carlo_per_asset.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2)
+    print(f"\nPer-asset results saved to: {out_path}")
+
+
+def _print_asset_mc_table(results: list[dict]) -> None:
+    print(f"    {'Size':<8} {'Median $':>9} {'5th pct':>9} {'Med DD':>8} "
+          f"{'Worst DD':>9} {'Ruin%':>7} {'MaxStreak':>10}")
+    print(f"    {'-'*8} {'-'*9} {'-'*9} {'-'*8} {'-'*9} {'-'*7} {'-'*10}")
+    for r in results:
+        safe   = "OK" if r["ruin_pct"] < 5.0 and abs(r["dd_p5_pct"]) < 25.0 else "RISKY"
+        print(
+            f"    {r['position_size']:.0%}       "
+            f"${r['final_median']:>8,.0f} "
+            f"${r['final_p5']:>8,.0f} "
+            f"{r['dd_median_pct']:>7.1f}% "
+            f"{r['dd_worst_pct']:>8.1f}% "
+            f"{r['ruin_pct']:>6.1f}% "
+            f"{r['max_loss_run_p95']:>9.0f}  [{safe}]"
+        )
 
 
 # ── Monte Carlo engine ────────────────────────────────────────────────────────
@@ -224,9 +334,19 @@ def print_report(results: list[dict], trade_source: str) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    live_only  = "--live-only" in sys.argv
-    size_arg   = next((a for a in sys.argv if a.startswith("--size")), None)
-    extra_size = float(size_arg.split("=")[1]) if size_arg and "=" in size_arg else None
+    use_scanner = "--scanner" in sys.argv
+    live_only   = "--live-only" in sys.argv
+    size_arg    = next((a for a in sys.argv if a.startswith("--size")), None)
+    extra_size  = float(size_arg.split("=")[1]) if size_arg and "=" in size_arg else None
+
+    sizes = [0.02, 0.05]
+    if extra_size and extra_size not in sizes:
+        sizes.append(extra_size)
+    sizes.sort()
+
+    if use_scanner:
+        run_scanner_monte_carlo(sizes)
+        return
 
     # Load trades
     live_trades = _load_live_trades()
@@ -247,12 +367,6 @@ def main() -> None:
 
     returns = np.array([t.get("pnl_pct", 0.0) for t in trades], dtype=float)
     print(f"Total trade sample: {len(returns)} trades")
-
-    # Test multiple position sizes
-    sizes = [0.02, 0.05]
-    if extra_size and extra_size not in sizes:
-        sizes.append(extra_size)
-    sizes.sort()
 
     results = []
     for size in sizes:
