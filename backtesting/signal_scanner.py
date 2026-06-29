@@ -17,7 +17,6 @@ Usage:
 from __future__ import annotations
 
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -373,7 +372,7 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
                         for r in all_results.values()
                         for s in r.get("signals", []))
 
-    print(f"\nSummary across all assets:")
+    print("\nSummary across all assets:")
     print(f"  Total BUY signals:    {total_signals}")
     if total_signals:
         print(f"  Win rate:             {total_wins/total_signals:.1%}")
@@ -393,7 +392,7 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
             continue
 
         wins   = [s for s in sigs if s["trade"]["pnl_pct"] > 0]
-        losses = [s for s in sigs if s["trade"]["pnl_pct"] <= 0]
+        [s for s in sigs if s["trade"]["pnl_pct"] <= 0]
         avg_pnl = sum(s["trade"]["pnl_pct"] for s in sigs) / len(sigs)
 
         print(f"  Win rate: {len(wins)}/{len(sigs)} = {len(wins)/len(sigs):.1%}    "

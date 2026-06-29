@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,7 +42,6 @@ from backtesting.backtest import (
     get_signal,
     get_symbol_config,
     evaluate_entry_components,
-    prepare_timeframe_df,
 )
 
 # ── Replay periods ────────────────────────────────────────────────────────────
@@ -224,7 +223,7 @@ def run_replay(
     # Build replay timeline
     start_ts = pd.Timestamp(period["start"], tz="UTC")
     end_ts   = pd.Timestamp(period["end"],   tz="UTC")
-    step     = timedelta(hours=step_hours)
+    timedelta(hours=step_hours)
 
     # Use the first asset's 1h index as the timeline
     first_df = list(asset_data.values())[0][0]
