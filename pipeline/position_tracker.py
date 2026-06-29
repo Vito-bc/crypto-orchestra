@@ -41,7 +41,7 @@ DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
 
 # Per-asset max hold — extended to match crypto momentum duration (Liu & Tsyvinski 2021:
 # momentum lasts 1-4 weeks). Short 8-12h holds lost to 0.6% fee drag every trade.
-MAX_HOLD_HOURS_BY_ASSET = {"ETH-USD": 24, "BTC-USD": 48}
+MAX_HOLD_HOURS_BY_ASSET = {"ETH-USD": 36, "BTC-USD": 48}  # ETH: 24→36 to allow 3.5x ATR target
 MAX_HOLD_HOURS          = 36   # default fallback for SOL/ZEC
 
 # Trailing stop parameters — widened to survive normal 1h volatility before trend develops.
@@ -175,6 +175,37 @@ def _append_history(record: dict) -> None:
     TRADE_HISTORY.parent.mkdir(parents=True, exist_ok=True)
     with TRADE_HISTORY.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def count_recent_stops(asset: str, hours: int = 48) -> int:
+    """Count STOP_LOSS exits for this asset in the last `hours` hours."""
+    if not TRADE_HISTORY.exists():
+        return 0
+    cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
+    count = 0
+    try:
+        for line in TRADE_HISTORY.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("asset") != asset or rec.get("reason") != "STOP_LOSS":
+                continue
+            ts_str = rec.get("closed_at_utc") or rec.get("exit_time") or ""
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts.timestamp() >= cutoff:
+                    count += 1
+            except (ValueError, AttributeError):
+                continue
+    except Exception:
+        pass
+    return count
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ PERIODS = {
         "label":  "August 2024 Flash Crash  (Jul 20 – Sep 1 2024)",
         "start":  "2024-07-20",
         "end":    "2024-09-01",
-        "warmup": "2024-04-01",
+        "warmup": "2024-07-02",   # yfinance 1h limit is 730 days; Apr 2024 is too old
         "btc_move": "-32%  ($68k -> $49k crash and recovery)",
     },
     "q1_2025_bear": {
@@ -75,6 +75,9 @@ ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
 
 # Breakout parameters (must match live breakout_agent.py)
 _MIN_VOL_RATIO        = 0.8
+# Whipsaw guard (mirrors pipeline/runner.py)
+_WHIPSAW_MAX_STOPS    = 2
+_WHIPSAW_WINDOW_H     = 48   # 2-day window: rapid consecutive stops signal choppy conditions
 _VOL_SPIKE_RATIO      = 1.3
 _MIN_ADX              = 20.0
 _MAX_RSI_AT_CROSS     = 65.0
@@ -303,11 +306,13 @@ def scan_asset(asset: str, period: dict) -> dict:
 
     print(f"  {asset}: {len(df_period)} hourly candles in period")
 
-    signals     = []
-    blocked_vol = 0
-    blocked_4h  = 0
-    blocked_cond = 0
-    skip_until  = -1   # don't double-enter
+    signals          = []
+    blocked_vol      = 0
+    blocked_4h       = 0
+    blocked_cond     = 0
+    blocked_whipsaw  = 0
+    skip_until       = -1   # don't double-enter
+    recent_stop_ts: list[pd.Timestamp] = []  # timestamps of recent stop losses
 
     # We need to operate on the full df (for lookback), but filter output to period
     full_len   = len(df)
@@ -334,8 +339,17 @@ def scan_asset(asset: str, period: dict) -> dict:
             blocked_cond += 1
             continue
 
+        # Whipsaw guard — block if 2+ stops hit in the last 48h (rapid-fire losses = choppy market)
+        cutoff = ts - pd.Timedelta(hours=_WHIPSAW_WINDOW_H)
+        recent_stop_ts = [t for t in recent_stop_ts if t >= cutoff]
+        if len(recent_stop_ts) >= _WHIPSAW_MAX_STOPS:
+            blocked_whipsaw += 1
+            continue
+
         # Valid BUY signal — simulate the trade
         trade = _simulate_trade(df, i, price, max_hold)
+        if trade["reason"] == "STOP_LOSS":
+            recent_stop_ts.append(ts)
 
         record = {
             "timestamp":    ts.strftime("%Y-%m-%d %H:%M"),
@@ -347,12 +361,13 @@ def scan_asset(asset: str, period: dict) -> dict:
         skip_until = i + trade["hold_h"] + 1   # don't re-enter mid-hold
 
     return {
-        "asset":        asset,
-        "candles":      len(df_period),
-        "signals":      signals,
-        "blocked_vol":  blocked_vol,
-        "blocked_4h":   blocked_4h,
-        "blocked_cond": blocked_cond,
+        "asset":            asset,
+        "candles":          len(df_period),
+        "signals":          signals,
+        "blocked_vol":      blocked_vol,
+        "blocked_4h":       blocked_4h,
+        "blocked_cond":     blocked_cond,
+        "blocked_whipsaw":  blocked_whipsaw,
     }
 
 
@@ -384,8 +399,10 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
             continue
         sigs = r.get("signals", [])
         print(f"\n{'-'*70}")
+        bw = r.get("blocked_whipsaw", 0)
         print(f"  {asset}  ({len(sigs)} signals  |  "
-              f"blocked: vol={r['blocked_vol']}  4h={r['blocked_4h']}  cond={r['blocked_cond']})")
+              f"blocked: vol={r['blocked_vol']}  4h={r['blocked_4h']}  "
+              f"cond={r['blocked_cond']}  whipsaw={bw})")
 
         if not sigs:
             print("    No signals fired in this period.")
@@ -427,11 +444,14 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
         else:
             print(f"  CAUTION: {wr:.0%} win rate — system struggles in this regime.")
 
-        total_blk = sum(r.get("blocked_4h", 0) + r.get("blocked_vol", 0)
-                        for r in all_results.values())
+        total_blk = sum(
+            r.get("blocked_4h", 0) + r.get("blocked_vol", 0) + r.get("blocked_whipsaw", 0)
+            for r in all_results.values()
+        )
+        whipsaw_blk = sum(r.get("blocked_whipsaw", 0) for r in all_results.values())
         if total_blk > 0:
-            print(f"  Filters blocked {total_blk} false signals "
-                  f"(4h trend + volume gates working correctly).")
+            wstr = f" (incl. {whipsaw_blk} by whipsaw guard)" if whipsaw_blk else ""
+            print(f"  Filters blocked {total_blk} false signals{wstr}.")
 
     print("=" * 70)
 

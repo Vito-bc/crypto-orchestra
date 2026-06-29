@@ -54,6 +54,7 @@ from pipeline.limit_orders   import (
 from pipeline.position_tracker import (
     TRADE_HISTORY,
     check_positions,
+    count_recent_stops,
     get_open_positions,
     open_position_from_order,
 )
@@ -71,6 +72,8 @@ _MAX_DIST_TO_SUPPORT_ATR = 5.0
 # Replaces fixed 2% which was too tight for high-vol assets (ZEC 50% crash) and too loose for BTC.
 _BOUNCE_CONFIRMATION_ATR = 1.5
 _VELOCITY_VETO_PCT           = -5.0  # block long entry if asset down > 5% in last 24h
+_WHIPSAW_STOP_LIMIT          = 2     # block entry if this many stops hit in lookback window
+_WHIPSAW_LOOKBACK_H          = 96    # 4-day window: whipsaw clusters span days at trend tops
 _CORR_FULL_VETO_THRESHOLD    = 0.65  # 30d corr >= this → BTC BEAR veto applies in full
 _CORR_PARTIAL_VETO_THRESHOLD = 0.35  # 30d corr >= this → 50% size cut, entry still allowed
 _FUNDING_BLOCK_ANNUALIZED    = 20.0  # block long if OKX funding > 20% annualized (leverage chase)
@@ -411,6 +414,14 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
                 f"Velocity veto — {asset} down {chg_24h:.1f}% in 24h; "
                 "no long entry into active distribution"
             ), size_modifier
+
+    # 5. Whipsaw guard — 2+ stops in 96h means choppy market regardless of regime
+    stop_count = count_recent_stops(asset, hours=_WHIPSAW_LOOKBACK_H)
+    if stop_count >= _WHIPSAW_STOP_LIMIT:
+        return False, (
+            f"Whipsaw guard — {asset} hit {stop_count} stop-losses in last "
+            f"{_WHIPSAW_LOOKBACK_H}h; waiting for cleaner price action before re-entry"
+        ), size_modifier
 
     return True, "", size_modifier
 
