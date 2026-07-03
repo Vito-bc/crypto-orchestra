@@ -10,14 +10,13 @@ the system needs:
 
 DRY_RUN mode (default: true in .env):
   All methods log what they WOULD do and return synthetic IDs.
-  Set DRY_RUN=false in .env (and add real API keys) to go live.
+  Set DRY_RUN=false in .env to go live.
 
 Coinbase API key setup:
-  1. Go to https://www.coinbase.com/settings/api
-  2. Create a key with "Trade" permission for ETH-USD and BTC-USD
-  3. Copy the API Key name and private key into .env:
-       COINBASE_API_KEY=organizations/xxx/apiKeys/yyy
-       COINBASE_API_SECRET=-----BEGIN EC PRIVATE KEY-----\n...
+  1. Go to coinbase.com/settings/api
+  2. Create key with "Trade" + "View" permissions, Ed25519 algorithm
+  3. Download the JSON file and place it at project root as cdp_api_key.json
+  4. Set DRY_RUN=false in .env when ready to trade live
 """
 
 from __future__ import annotations
@@ -30,20 +29,28 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
-_DRY_RUN    = os.getenv("DRY_RUN", "true").lower() not in ("false", "0", "no")
-_API_KEY    = os.getenv("COINBASE_API_KEY", "")
-_API_SECRET = os.getenv("COINBASE_API_SECRET", "")
+_DRY_RUN  = os.getenv("DRY_RUN", "true").lower() not in ("false", "0", "no")
+_KEY_FILE = ROOT / "cdp_api_key.json"
 
 
 def _get_client():
-    """Return a live RESTClient. Raises if keys are missing."""
-    if not _API_KEY or not _API_SECRET:
+    """Return a live RESTClient using the CDP JSON key file (ECDSA format)."""
+    if not _KEY_FILE.exists():
         raise RuntimeError(
-            "COINBASE_API_KEY and COINBASE_API_SECRET must be set in .env to trade live.\n"
-            "Set DRY_RUN=true to paper-trade without API keys."
+            f"Coinbase key file not found: {_KEY_FILE}\n"
+            "Download cdp_api_key.json from coinbase.com/settings/api (ECDSA algorithm) "
+            "and place it at the project root."
         )
     from coinbase.rest import RESTClient
-    return RESTClient(api_key=_API_KEY, api_secret=_API_SECRET)
+    return RESTClient(key_file=str(_KEY_FILE))
+
+
+def _parse_balance(account) -> tuple[str, float]:
+    """Parse account balance from coinbase-advanced-py v1.x response (dict or object)."""
+    ab = account.get("available_balance", {}) if isinstance(account, dict) else getattr(account, "available_balance", {})
+    if isinstance(ab, dict):
+        return ab.get("currency", ""), float(ab.get("value", 0))
+    return getattr(ab, "currency", ""), float(getattr(ab, "value", 0))
 
 
 def is_dry_run() -> bool:
