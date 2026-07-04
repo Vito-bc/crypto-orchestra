@@ -21,6 +21,7 @@ Run for all assets (default):
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -428,7 +429,7 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
 
 # ── Drawdown circuit breakers ────────────────────────────────────────────────
 
-_PAPER_START        = 10_000.0
+_PAPER_START        = float(os.getenv("LIVE_BALANCE_USD", "10000.0"))
 _DD_HALT_PCT        = 12.0   # drawdown from peak → halt all new trades
 _DD_QUARTER_PCT     =  8.0   # drawdown from peak → 25% position size
 _DD_HALF_PCT        =  5.0   # drawdown from peak → 50% position size

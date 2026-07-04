@@ -64,7 +64,8 @@ class _Tee:
 
 
 def _now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M:%S ET")
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -122,8 +123,9 @@ def main() -> None:
 
 def _next_run_time(interval_sec: int) -> str:
     from datetime import timedelta
-    t = datetime.now(timezone.utc) + timedelta(seconds=interval_sec)
-    return t.strftime("%H:%M UTC")
+    from zoneinfo import ZoneInfo
+    t = datetime.now(ZoneInfo("America/New_York")) + timedelta(seconds=interval_sec)
+    return t.strftime("%H:%M ET")
 
 
 if __name__ == "__main__":

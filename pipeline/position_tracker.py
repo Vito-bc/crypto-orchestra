@@ -36,7 +36,7 @@ TRADE_HISTORY  = ROOT / "logs" / "trade_history.jsonl"
 
 MAKER_FEE_RATE       = 0.002   # 0.2% entry (limit/maker)
 TAKER_FEE_RATE       = 0.004   # 0.4% exit  (market/taker)
-PAPER_BALANCE        = 10_000  # USD paper capital
+PAPER_BALANCE        = int(os.getenv("LIVE_BALANCE_USD", "10000"))  # set LIVE_BALANCE_USD in .env for live trading
 DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
 
 # Per-asset max hold — extended to match crypto momentum duration (Liu & Tsyvinski 2021:
