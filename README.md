@@ -2,14 +2,11 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](register_pipeline_task.ps1)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](update_obsidian.bat)
 [![AI](https://img.shields.io/badge/AI-Claude%20Sonnet%204.6-purple)](https://www.anthropic.com/)
-[![Status](https://img.shields.io/badge/status-paper%20trading-orange)](.env.example)
-[![Dashboard](https://img.shields.io/badge/dashboard-live%20demo-00ff88?logo=streamlit&logoColor=white)](https://crypto-orchestra-eqxebsnnbpg8tq6cnqzcro.streamlit.app/)
+[![Status](https://img.shields.io/badge/status-live%20ready-brightgreen)](.env.example)
 
-**[🎼 Live Dashboard →](https://crypto-orchestra-eqxebsnnbpg8tq6cnqzcro.streamlit.app/)**
-
-A multi-agent AI trading system for BTC, ETH, SOL and ZEC on Coinbase. Five specialist Claude sub-agents run in parallel every hour, feed signals to an orchestrator, and autonomously place limit orders at support levels with trailing stop management.
+A multi-agent AI trading system for BTC, ETH, SOL and ZEC on Coinbase Advanced Trade. Seven specialist Claude sub-agents run in parallel every hour, feed signals to an orchestrator, and autonomously place limit orders at support levels with trailing stop management and a full risk engine.
 
 ## How It Works
 
@@ -17,40 +14,74 @@ A multi-agent AI trading system for BTC, ETH, SOL and ZEC on Coinbase. Five spec
 Every 60 minutes:
   1. Check open positions → close any that hit stop / target / max-hold
   2. Check pending limit orders → fill simulation (paper) or Coinbase poll (live)
-  3. Run 5 sub-agents concurrently:
-       technical  — RSI, MACD, Bollinger Bands, EMA trend
-       macro      — 4h EMA regime (BULL / BEAR / RANGING), acts as veto
-       sentiment  — Fear & Greed index + news headlines
-       whale      — OKX perpetual funding rate + BTC dominance
-       risk       — ATR-based stop/target, portfolio exposure check
+  3. Run 7 sub-agents concurrently:
+       technical   — RSI, MACD, Bollinger Bands, EMA trend
+       macro       — 4h EMA regime (BULL / BEAR / RANGING), acts as veto
+       sentiment   — Fear & Greed index + news headlines
+       whale       — OKX perpetual funding rate + BTC dominance
+       risk        — ATR-based stop/target, portfolio exposure check
+       news        — asset-specific news headlines via web search
+       breakout    — price structure breakout / breakdown detection
   4. Orchestrator (claude-sonnet-4-6) weighs all signals
-  5. BUY (≥3 agents agree) → limit order placed at nearest support level
+  5. BUY → limit order placed at nearest support level (maker fee 0.2%)
   6. Telegram alert sent for every order, fill, open, and close
 ```
 
-## Entry Rules
+## Entry Rules & Risk Engine
 
 | Rule | Value |
 |------|-------|
-| Min agents for BUY | 3 of 5 must explicitly signal BUY |
-| Support gate | Price must be within 1.5x ATR of a known support level |
-| Momentum filter | Candle body > +0.3% required at live entry |
-| Macro veto | BEAR regime blocks all BUY signals |
-| Stop loss | Entry − 2.5x ATR |
-| Take profit | Entry + 4.0x ATR |
-| Max hold | ETH: 8h · BTC: 12h (acts as implicit take-profit) |
+| Min agents for BUY | majority of 7 must agree |
+| Limit order gate | price within 5x ATR of a support level |
+| BTC BEAR veto | corr ≥ 0.65 = full block · corr 0.35–0.65 = 50% size cut |
+| Funding rate veto | OKX annualized funding > 20% → block (crowded longs) |
+| Velocity veto | asset down > 5% in 24h → no long entry |
+| Whipsaw guard | 2+ stops in 96h → block re-entry |
+| Bounce confirmation | must recover +1.5x ATR above last stop-exit |
 | Entry fee | 0.2% maker (limit order) |
 | Exit fee | 0.4% taker (market order) |
 
-## Trailing Stop
+## Per-Asset ATR Parameters
 
-Tuned via grid search across 17 configurations (profit factor 1.12 → 3.15):
+Tuned from full-year signal scanner across 371 trades:
+
+| Asset | Stop | Target | R:R | Rationale |
+|-------|------|--------|-----|-----------|
+| BTC-USD | 2.0x ATR | 3.5x ATR | 1.75 | Tighter stop — BTC has cleaner structure |
+| ETH-USD | 2.5x ATR | 4.5x ATR | 1.80 | Wider stop — absorbs intraday wicks |
+| SOL-USD | 2.5x ATR | 4.5x ATR | 1.80 | Wider stop — high volatility |
+| ZEC-USD | 2.0x ATR | 3.5x ATR | 1.75 | Best walk-forward edge (+0.30% avg OOS) |
+
+## Drawdown Circuit Breakers
+
+| Drawdown from Peak | Action |
+|--------------------|--------|
+| −5% | Position size reduced to 50% |
+| −8% | Position size reduced to 25% |
+| −12% | **All trading HALTED** — manual review required |
+| Daily loss −2% | Position size reduced to 50% |
+
+## Trailing Stop
 
 | Parameter | Value |
 |-----------|-------|
-| Break-even trigger | +0.5% above entry → stop moves to entry |
-| Trail activation | +0.5% above entry |
-| Trail distance | 0.8% below high-water mark |
+| Break-even trigger | +1.5% above entry → stop moves to entry price |
+| Trail activation | +2.0% above entry |
+| Trail distance | 1.5% below high-water mark |
+| Hold extension | Up to 3×8h extensions if 3/5 conditions met + ADX ≥ 20 |
+
+## Walk-Forward Validation
+
+Out-of-sample results across 3 market regimes (Aug 2024 – Jun 2025):
+
+| Asset | W1 Bull | W2 Bear | W3 Bear | Avg OOS | Verdict |
+|-------|---------|---------|---------|---------|---------|
+| ZEC-USD | +2.57% | −0.07% | −1.61% | **+0.30%** | ✅ EDGE |
+| ETH-USD | −0.05% | −1.72% | −0.50% | −0.89% | ⚠ MARGINAL |
+| BTC-USD | −0.01% | −2.53% | −1.06% | −1.20% | ❌ WEAK |
+| SOL-USD | −0.72% | −2.87% | −0.97% | −1.52% | ❌ WEAK |
+
+ZEC is the only asset with genuine out-of-sample edge. Manual per-asset parameter tuning matched or outperformed walk-forward winners on OOS data.
 
 ## Quick Start
 
@@ -58,98 +89,94 @@ Tuned via grid search across 17 configurations (profit factor 1.12 → 3.15):
 # 1. Create and activate virtual environment
 python -m venv venv
 venv\Scripts\activate          # Windows
-source venv/bin/activate       # macOS / Linux
 
 # 2. Install dependencies
 pip install -r requirements.txt
 
 # 3. Copy and fill in environment variables
-copy .env.example .env         # add ANTHROPIC_API_KEY and TELEGRAM_BOT_TOKEN
+copy .env.example .env
 
 # 4. Run the pipeline once (paper trading, no Coinbase keys needed)
-python pipeline/runner.py ETH-USD
+python pipeline/runner.py ZEC-USD
 
-# 5. View P&L dashboard
-python pipeline/dashboard.py
+# 5. Run continuous scheduler (every 60 minutes)
+python pipeline/scheduler.py
 ```
-
-### Production Scheduling (Windows)
-
-Register the hourly Task Scheduler job (run once as Administrator):
-
-```powershell
-.\register_pipeline_task.ps1
-.\pipeline\register_daily_summary_task.ps1
-```
-
-The pipeline task runs every 60 minutes, starts automatically on boot, and recovers within one hour after any restart or crash. The daily summary sends a Telegram P&L snapshot at 9 AM.
-
-For a quick manual loop (no Task Scheduler), double-click `run_scheduler.bat`.
 
 ## Going Live on Coinbase
 
-The Coinbase Advanced Trade API client is built and ready. To switch from paper trading:
-
-1. Create an API key at [coinbase.com/settings/api](https://www.coinbase.com/settings/api) with **Trade** permission for ETH-USD and BTC-USD
-2. Add to `.env`:
+1. Go to [coinbase.com/settings/api](https://www.coinbase.com/settings/api)
+2. Create a key with **Trade + View** permissions, **ECDSA algorithm**
+3. Download the JSON file → place at project root as `cdp_api_key.json`
+4. Set in `.env`:
    ```
-   COINBASE_API_KEY=organizations/xxx/apiKeys/yyy
-   COINBASE_API_SECRET=-----BEGIN EC PRIVATE KEY-----\n...
    DRY_RUN=false
+   LIVE_BALANCE_USD=100    # bot will only use this amount, rest of account untouched
    ```
 
-All orders (limit buys and market sells) will route to Coinbase automatically.
+The system places orders up to `LIVE_BALANCE_USD × position_size_pct` — your full account balance beyond this amount is never touched.
+
+## Obsidian Second Brain
+
+The system auto-generates an Obsidian knowledge vault from all trading data:
+
+```bash
+python backtesting/generate_journal.py   # generate vault manually
+update_obsidian.bat                      # one-click Windows shortcut
+```
+
+A Windows Task Scheduler job runs `update_obsidian.bat` every night at 23:00 automatically. The vault includes trade notes, agent decision logs, backtest summaries, and strategy changelogs — designed to grow into a RAG knowledge base for the orchestrator.
 
 ## Repository Layout
 
 ```
 agents/
-  orchestrator.py      — final decision engine (claude-sonnet-4-6)
-  technical_agent.py   — RSI, MACD, Bollinger Bands, EMA
-  macro_agent.py       — 4h regime classification with veto power
-  sentiment_agent.py   — Fear & Greed + news headlines
-  whale_agent.py       — OKX funding rate (primary), BTC dominance
-  risk_agent.py        — ATR stops, position sizing, exposure check
+  orchestrator.py       — final decision engine (claude-sonnet-4-6)
+  technical_agent.py    — RSI, MACD, Bollinger Bands, EMA
+  macro_agent.py        — 4h regime classification with veto power
+  sentiment_agent.py    — Fear & Greed + news headlines
+  whale_agent.py        — OKX funding rate + BTC dominance
+  risk_agent.py         — ATR stops, position sizing, exposure check
+  asset_news_agent.py   — asset-specific news via web search
+  breakout_agent.py     — price structure breakout detection
 
 exchange/
-  coinbase_client.py   — Coinbase Advanced Trade API wrapper (dry-run safe)
+  coinbase_client.py    — Coinbase Advanced Trade API (ECDSA key file, dry-run safe)
 
 pipeline/
-  runner.py            — main hourly pipeline (positions → fills → agents → order)
-  limit_orders.py      — limit order lifecycle: place, fill, expire, cancel
-  position_tracker.py  — trailing stop, P&L computation, trade history
-  dashboard.py         — ASCII P&L dashboard with equity curve
-  daily_summary.py     — Telegram P&L snapshot (9 AM via Task Scheduler)
-  weekly_review.py     — Telegram weekly performance report
-  run_once.bat         — single-shot wrapper used by Task Scheduler
-  scheduler.py         — alternative long-running loop (manual / non-Windows use)
-
-tools/
-  price_data.py        — yfinance wrapper with 55-min thread-safe TTL cache
-  price_levels.py      — swing high/low support/resistance detection
-  funding_data.py      — OKX public API funding rates (no auth)
+  runner.py             — main hourly pipeline with full risk engine
+  limit_orders.py       — limit order lifecycle: place, fill, expire, cancel
+  position_tracker.py   — trailing stop, hold extension, P&L, trade history
+  scheduler.py          — continuous loop (ET timestamps)
+  dashboard.py          — ASCII P&L dashboard with equity curve
+  daily_summary.py      — Telegram P&L snapshot (9 AM)
+  weekly_review.py      — Telegram weekly performance report
 
 backtesting/
-  backtest.py          — core backtesting engine
-  period_validation.py — 4-period out-of-sample validation
-  fee_comparison.py    — legacy / market / limit fee scenario comparison
-  stop_target_tune.py  — ATR stop/target grid search (13 combinations)
-  trailing_stop_tune.py— trailing stop parameter grid search (17 configs)
-  entry_diagnostics.py — per-trade win/loss pattern analysis
+  signal_scanner.py     — full-year signal scanner with per-asset ATR params
+  monte_carlo.py        — 10,000-sim Monte Carlo per asset
+  walk_forward.py       — 3-window walk-forward optimization (OOS validation)
+  generate_journal.py   — Obsidian vault generator from all system data
+  backtest.py           — core backtesting engine
+
+tools/
+  price_data.py         — yfinance wrapper with 55-min TTL cache
+  price_levels.py       — swing high/low support/resistance detection
+  market_positioning.py — OKX funding rates + BTC dominance
 
 notifications/
-  telegram.py          — Telegram alerts for all trade events
+  telegram.py           — alerts for all trade lifecycle events
 
-register_pipeline_task.ps1      — register hourly Task Scheduler job (run as admin)
-pipeline/register_daily_summary_task.ps1 — register 9 AM daily summary job
-run_scheduler.bat               — manual long-running loop (alternative to Task Scheduler)
+update_obsidian.bat     — regenerate Obsidian vault (runs nightly via Task Scheduler)
 
-logs/                  — runtime logs (git-ignored)
+logs/                   — runtime logs (git-ignored)
   agent_decisions.jsonl
   trade_history.jsonl
   open_positions.json
   pending_orders.json
   scheduler.log
+
+obsidian_vault/         — Obsidian knowledge base (git-ignored, local only)
 ```
 
 ## Environment Variables
@@ -159,21 +186,15 @@ logs/                  — runtime logs (git-ignored)
 | `ANTHROPIC_API_KEY` | Yes | Claude API key |
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | Yes | Chat ID for alerts |
-| `DRY_RUN` | No | `true` (default) = paper trade, `false` = real orders |
-| `COINBASE_API_KEY` | Live only | Coinbase Advanced Trade API key |
-| `COINBASE_API_SECRET` | Live only | Coinbase API private key (PEM) |
-| `TRADE_SIZE_PCT` | No | Position size as fraction of balance (default: 0.02) |
-| `MAX_POSITIONS` | No | Max concurrent open positions (default: 5) |
-
-## Key Backtest Findings
-
-- **Win rate is fixed by entry quality, not stop/target ratio** — all 13 ATR combinations tested showed the same ~20% signal win rate. Actual win rate when trades fire: ~41%.
-- **88% of exits are MAX_HOLD** — support bounces are short; the time limit acts as an implicit take-profit. ETH 8h, BTC 12h is optimal.
-- **Limit orders are required for profitability** — limit fees (0.6% RT) push ETH to +0.02% avg. Market fees (0.8% RT) keep it negative.
-- **Jan–Mar 2025: zero trades** — system correctly avoided the −46% ETH crash by staying in BEAR regime HOLD.
+| `DRY_RUN` | No | `true` (default) = paper trade · `false` = real orders |
+| `LIVE_BALANCE_USD` | No | Capital allocated to the bot (default: 10000) |
+| `SUBAGENT_MODEL` | No | Model for sub-agents (default: claude-haiku-4-5) |
+| `ORCHESTRATOR_MODEL` | No | Model for orchestrator (default: claude-sonnet-4-6) |
 
 ## Security
 
 - Never commit `.env` files or exchange credentials — both are git-ignored.
-- `DRY_RUN=true` by default — no real orders are placed without explicit opt-in.
-- All Coinbase calls are wrapped in a single module (`exchange/coinbase_client.py`) for easy auditing.
+- `cdp_api_key.json` (Coinbase ECDSA key) is git-ignored — local only.
+- `DRY_RUN=true` by default — no real orders without explicit opt-in.
+- `LIVE_BALANCE_USD` caps the bot's spending — rest of account is untouched.
+- All Coinbase calls isolated in `exchange/coinbase_client.py` for easy auditing.
