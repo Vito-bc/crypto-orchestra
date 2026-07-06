@@ -50,7 +50,7 @@ PERIODS = {
         "label":  "August 2024 Flash Crash  (Jul 20 – Sep 1 2024)",
         "start":  "2024-07-20",
         "end":    "2024-09-01",
-        "warmup": "2024-07-02",   # yfinance 1h limit is 730 days; Apr 2024 is too old
+        "warmup": "2024-07-12",   # yfinance 730-day rolling limit; update if too old
         "btc_move": "-32%  ($68k -> $49k crash and recovery)",
     },
     "q1_2025_bear": {
@@ -71,42 +71,99 @@ PERIODS = {
         "label":  "Full Year  (Aug 2024 – Jun 2025)",
         "start":  "2024-08-01",
         "end":    "2025-06-28",
-        "warmup": "2024-07-02",   # max lookback for yfinance 1h — covers all 3 regimes
+        "warmup": "2024-07-12",   # yfinance 730-day rolling limit; update if too old
         "btc_move": "Multi-regime: crash -> +60% rally -> -28% bear",
     },
 }
 
 ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
 
-# Per-asset ATR multipliers — tuned for each asset's volatility structure.
-# ETH/SOL have high intraday wicks that hit tight stops before the trend develops;
-# wider stops + proportionally larger targets keeps R:R ≥ 1.75.
-ASSET_PARAMS = {
-    "BTC-USD": {"atr_stop": 2.0, "atr_target": 3.5},   # R:R = 1.75 — clean mover
-    "ETH-USD": {"atr_stop": 2.5, "atr_target": 4.5},   # R:R = 1.80 — wick-heavy
-    "SOL-USD": {"atr_stop": 2.5, "atr_target": 4.5},   # R:R = 1.80 — wick-heavy
-    "ZEC-USD": {"atr_stop": 2.0, "atr_target": 3.5},   # R:R = 1.75 — clean mover
+# ── Per-asset strategy configs ────────────────────────────────────────────────
+# Each asset gets its own entry conditions. Tweak and re-run signal_scanner
+# to test hypotheses without touching live code.
+#
+# Fields:
+#   atr_stop / atr_target  — ATR multipliers for stop/target
+#   min_conditions         — how many of 5 scored conditions must be met (3–5)
+#   vol_spike_ratio        — volume spike threshold (above this = "volume confirmation")
+#   daily_ema_period       — which daily EMA to use as trend gate: 50 or 200
+#   enabled                — set False to exclude asset from the run
+
+ASSET_CONFIG = {
+    "BTC-USD": {
+        "atr_stop":        2.0, "atr_target": 3.5,  # R:R = 1.75
+        "min_conditions":  4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 50,
+        "enabled": False,  # hypothesis D — BTC consistently weakest, test without it
+    },
+    "ETH-USD": {
+        "atr_stop":        2.5, "atr_target": 4.5,  # R:R = 1.80 — wick-heavy
+        "min_conditions":  4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 50,   # faster trend gate — 200EMA was too slow for ETH
+        "enabled": True,
+    },
+    "SOL-USD": {
+        "atr_stop":        2.5, "atr_target": 4.5,  # R:R = 1.80
+        "min_conditions":  4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 200,
+        "enabled": False,  # hypothesis C — SOL consistently weakest, excluded
+    },
+    "ZEC-USD": {
+        "atr_stop":        2.0, "atr_target": 3.5,  # R:R = 1.75
+        "min_conditions":  4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 200,
+        "enabled": True,
+    },
 }
 
-# Breakout parameters (must match live breakout_agent.py)
-_MIN_VOL_RATIO        = 0.8
-# Whipsaw guard (mirrors pipeline/runner.py)
-_WHIPSAW_MAX_STOPS    = 2
-_WHIPSAW_WINDOW_H     = 48   # 2-day window: rapid consecutive stops signal choppy conditions
-_VOL_SPIKE_RATIO      = 1.3
-_MIN_ADX              = 20.0
-_MAX_RSI_AT_CROSS     = 65.0
-_MAX_PCT_ABOVE_EMA    = 4.0
-_MAX_CANDLES_SINCE    = 4
-_MIN_CONDITIONS       = 3
+# Keep old ASSET_PARAMS alias so backtest.py imports still work
+ASSET_PARAMS = {k: {"atr_stop": v["atr_stop"], "atr_target": v["atr_target"]}
+                for k, v in ASSET_CONFIG.items()}
+
+# Shared hard gates (not per-asset — these are structural, not tunable)
+_MIN_VOL_RATIO     = 0.8
+_WHIPSAW_MAX_STOPS = 2
+_WHIPSAW_WINDOW_H  = 96   # matches runner.py _WHIPSAW_LOOKBACK_H (was 48 — bug fix)
+_MIN_ADX           = 20.0
+_MAX_RSI_AT_CROSS  = 65.0
+_MAX_PCT_ABOVE_EMA = 4.0
+_MAX_CANDLES_SINCE = 4
+
+
+# ── Daily context helper ──────────────────────────────────────────────────────
+
+def _attach_daily_context(signal_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Forward-fill daily EMA50 and EMA200 onto 1h data.
+    Both columns are attached so per-asset configs can choose which to use.
+    """
+    daily_cols = daily_df[["time", "close", "ema50", "ema200"]].copy()
+    daily_cols = daily_cols.rename(columns={
+        "close":  "close_1d",
+        "ema50":  "ema50_1d",
+        "ema200": "ema200_1d",
+    })
+    merged = pd.merge_asof(
+        signal_df.sort_values("time"),
+        daily_cols.sort_values("time"),
+        on="time",
+        direction="backward",
+    )
+    merged.index = signal_df.index
+    return merged
 
 
 # ── Signal detection ──────────────────────────────────────────────────────────
 
-def _detect_breakout_signal(df: pd.DataFrame, i: int) -> dict | None:
+def _detect_breakout_signal(df: pd.DataFrame, i: int, cfg: dict) -> dict | None:
     """
     Check if row `i` in `df` represents a valid breakout BUY signal.
     Mirrors the logic in agents/breakout_agent.py exactly.
+    cfg is the asset's ASSET_CONFIG entry — drives per-asset thresholds.
     Returns None if no signal, or a dict with signal details.
     """
     if i < 12:
@@ -152,6 +209,11 @@ def _detect_breakout_signal(df: pd.DataFrame, i: int) -> dict | None:
 
     rsi_at_cross = float(cross_row["rsi"]) if "rsi" in cross_row.index else 50.0
 
+    # Per-asset thresholds from config
+    vol_spike   = cfg.get("vol_spike_ratio", 1.3)
+    min_cond    = cfg.get("min_conditions",  3)
+    daily_period = cfg.get("daily_ema_period", 200)
+
     # Hard gates
     if vol_ratio < _MIN_VOL_RATIO:
         return {"blocked": "vol_gate", "vol_ratio": round(vol_ratio, 2)}
@@ -159,17 +221,23 @@ def _detect_breakout_signal(df: pd.DataFrame, i: int) -> dict | None:
     if close_4h is not None and ema50_4h is not None and close_4h < ema50_4h:
         return {"blocked": "4h_trend", "close_4h": round(close_4h, 2), "ema50_4h": round(ema50_4h, 2)}
 
+    close_1d   = _safe("close_1d")
+    daily_ema  = _safe(f"ema{daily_period}_1d")
+    if close_1d is not None and daily_ema is not None and close_1d < daily_ema:
+        return {"blocked": "daily_trend", "close_1d": round(close_1d, 2),
+                f"ema{daily_period}_1d": round(daily_ema, 2)}
+
     # Scored conditions
     conditions = [
         rsi_at_cross < _MAX_RSI_AT_CROSS,
         adx_now >= _MIN_ADX,
-        vol_ratio >= _VOL_SPIKE_RATIO,
+        vol_ratio >= vol_spike,
         cvd_24h > 0,
         pct_above < _MAX_PCT_ABOVE_EMA,
     ]
     n_met = sum(conditions)
 
-    if n_met < _MIN_CONDITIONS:
+    if n_met < min_cond:
         return {"blocked": "conditions", "n_met": n_met}
 
     confidence = min(0.57 + 0.08 * n_met, 0.89)
@@ -298,21 +366,26 @@ def scan_asset(asset: str, period: dict) -> dict:
 
     sig_df   = _download_and_compute(asset, period["warmup"], period["end"], "1h")
     trend_df = _download_and_compute(asset, period["warmup"], period["end"], "4h")
+    # Daily data: extend warmup far back so EMA200 (200 trading days ≈ 10 months) is valid.
+    # yfinance daily has no 730-day limit, so "2022-01-01" is safe for any period.
+    daily_df = _download_and_compute(asset, "2022-01-01", period["end"], "1d")
 
     if sig_df is None or trend_df is None:
         print(f"  {asset}: no data")
         return {}
 
     df       = attach_higher_timeframe_context(sig_df, trend_df)
+    if daily_df is not None:
+        df = _attach_daily_context(df, daily_df)
     # merge_asof returns integer index — restore DatetimeIndex from the "time" column
     if "time" in df.columns:
         df.index = pd.to_datetime(df["time"], utc=True)
 
     config     = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
     max_hold   = config.get("max_hold_hours", 36)
-    params     = ASSET_PARAMS.get(asset, ASSET_PARAMS["BTC-USD"])
-    atr_stop   = params["atr_stop"]
-    atr_target = params["atr_target"]
+    asset_cfg  = ASSET_CONFIG.get(asset, ASSET_CONFIG["ZEC-USD"])
+    atr_stop   = asset_cfg["atr_stop"]
+    atr_target = asset_cfg["atr_target"]
 
     # Slice to the actual replay window (after warmup)
     start_ts  = pd.Timestamp(period["start"], tz="UTC")
@@ -327,6 +400,7 @@ def scan_asset(asset: str, period: dict) -> dict:
     signals          = []
     blocked_vol      = 0
     blocked_4h       = 0
+    blocked_daily    = 0
     blocked_cond     = 0
     blocked_whipsaw  = 0
     skip_until       = -1   # don't double-enter
@@ -340,7 +414,7 @@ def scan_asset(asset: str, period: dict) -> dict:
         if i < skip_until:
             continue
 
-        result = _detect_breakout_signal(df, i)
+        result = _detect_breakout_signal(df, i, asset_cfg)
         if result is None:
             continue
 
@@ -352,6 +426,9 @@ def scan_asset(asset: str, period: dict) -> dict:
             continue
         elif result.get("blocked") == "4h_trend":
             blocked_4h += 1
+            continue
+        elif result.get("blocked") == "daily_trend":
+            blocked_daily += 1
             continue
         elif result.get("blocked") == "conditions":
             blocked_cond += 1
@@ -384,6 +461,7 @@ def scan_asset(asset: str, period: dict) -> dict:
         "signals":          signals,
         "blocked_vol":      blocked_vol,
         "blocked_4h":       blocked_4h,
+        "blocked_daily":    blocked_daily,
         "blocked_cond":     blocked_cond,
         "blocked_whipsaw":  blocked_whipsaw,
         "atr_stop":         atr_stop,
@@ -423,10 +501,11 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
         atr_stop   = r.get("atr_stop", 2.0)
         atr_target = r.get("atr_target", 3.5)
         rr         = atr_target / atr_stop
+        bd = r.get("blocked_daily", 0)
         print(f"  {asset}  ({len(sigs)} signals  |  "
               f"stop={atr_stop}x  target={atr_target}x  R:R={rr:.2f}  |  "
               f"blocked: vol={r['blocked_vol']}  4h={r['blocked_4h']}  "
-              f"cond={r['blocked_cond']}  whipsaw={bw})")
+              f"daily={bd}  cond={r['blocked_cond']}  whipsaw={bw})")
 
         if not sigs:
             print("    No signals fired in this period.")
@@ -469,13 +548,18 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
             print(f"  CAUTION: {wr:.0%} win rate — system struggles in this regime.")
 
         total_blk = sum(
-            r.get("blocked_4h", 0) + r.get("blocked_vol", 0) + r.get("blocked_whipsaw", 0)
+            r.get("blocked_4h", 0) + r.get("blocked_vol", 0)
+            + r.get("blocked_daily", 0) + r.get("blocked_whipsaw", 0)
             for r in all_results.values()
         )
+        daily_blk   = sum(r.get("blocked_daily", 0) for r in all_results.values())
         whipsaw_blk = sum(r.get("blocked_whipsaw", 0) for r in all_results.values())
         if total_blk > 0:
-            wstr = f" (incl. {whipsaw_blk} by whipsaw guard)" if whipsaw_blk else ""
-            print(f"  Filters blocked {total_blk} false signals{wstr}.")
+            extras = []
+            if daily_blk:   extras.append(f"{daily_blk} by daily 200MA")
+            if whipsaw_blk: extras.append(f"{whipsaw_blk} by whipsaw guard")
+            estr = f" ({', '.join(extras)})" if extras else ""
+            print(f"  Filters blocked {total_blk} false signals{estr}.")
 
     print("=" * 70)
 
@@ -495,7 +579,9 @@ def main() -> None:
 
     asset_arg = next((sys.argv[i + 1] for i, a in enumerate(sys.argv)
                       if a == "--asset" and i + 1 < len(sys.argv)), None)
-    assets    = [asset_arg] if asset_arg else ASSETS
+    # Respect enabled flag in ASSET_CONFIG; --asset overrides it
+    enabled_assets = [a for a in ASSETS if ASSET_CONFIG.get(a, {}).get("enabled", True)]
+    assets    = [asset_arg] if asset_arg else enabled_assets
     period    = PERIODS[period_key]
 
     print(f"\nSIGNAL SCANNER — {period['label']}")

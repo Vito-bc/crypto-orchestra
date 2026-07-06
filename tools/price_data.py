@@ -112,6 +112,27 @@ def get_raw_df(asset: str, lookback_days: int = 90):
     return attach_higher_timeframe_context(signal_df, trend_df)
 
 
+def get_daily_trend(asset: str) -> dict | None:
+    """
+    Return the latest daily close, 50-day EMA, and 200-day EMA for the asset.
+    Downloads 400 days to ensure EMA200 is fully computed.
+    Returns {"close_1d": float, "ema50_1d": float, "ema200_1d": float} or None.
+    """
+    symbol   = normalize_symbol(asset)
+    daily_df = _fetch_cached(symbol, "1d", 400)
+    if daily_df is None or len(daily_df) < 30:
+        return None
+    try:
+        row = daily_df.iloc[-1]
+        return {
+            "close_1d":  float(row["close"]),
+            "ema50_1d":  float(row["ema50"])  if "ema50"  in row.index else None,
+            "ema200_1d": float(row["ema200"]) if "ema200" in row.index else None,
+        }
+    except Exception:
+        return None
+
+
 def get_snapshot(asset: str, lookback_days: int = 90) -> dict | None:
     """
     Return a fully computed indicator snapshot for the given asset.

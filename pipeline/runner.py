@@ -60,7 +60,7 @@ from pipeline.position_tracker import (
     open_position_from_order,
 )
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
-from tools.price_data        import get_raw_df, get_snapshot
+from tools.price_data        import get_daily_trend, get_raw_df, get_snapshot
 from tools.price_levels      import get_levels_from_snapshot
 
 # Minimum candle body confirmation for SELL signals (BUY uses limit orders, no candle check needed)
@@ -416,7 +416,22 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
                 "no long entry into active distribution"
             ), size_modifier
 
-    # 5. Whipsaw guard — 2+ stops in 96h means choppy market regardless of regime
+    # 5. Daily EMA trend filter — asset-specific period (50 or 200 day).
+    # Backtesting: mean-reversion signals in daily downtrends are net losers.
+    # ETH uses 50EMA (faster), ZEC uses 200EMA (slower, low-liquidity asset).
+    daily = get_daily_trend(asset)
+    if daily:
+        daily_period = _DAILY_EMA_PERIOD.get(asset, 200)
+        c1d      = daily.get("close_1d")
+        ema_key  = f"ema{daily_period}_1d"
+        daily_ma = daily.get(ema_key)
+        if c1d is not None and daily_ma is not None and c1d < daily_ma:
+            return False, (
+                f"Daily {daily_period}EMA veto — {asset} daily close ${c1d:,.2f} < "
+                f"{daily_period}-day EMA ${daily_ma:,.2f}; daily downtrend"
+            ), size_modifier
+
+    # 6. Whipsaw guard — 2+ stops in 96h means choppy market regardless of regime
     stop_count = count_recent_stops(asset, hours=_WHIPSAW_LOOKBACK_H)
     if stop_count >= _WHIPSAW_STOP_LIMIT:
         return False, (
@@ -729,7 +744,19 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
     return decision
 
 
-ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
+# BTC and SOL excluded: bounce strategy has negative edge on these assets.
+# ETH: best with daily 50EMA filter (faster trend response).
+# ZEC: best with daily 200EMA filter (longer context needed for slower asset).
+# Re-enable after developing asset-specific entry logic for BTC/SOL.
+ASSETS = ["ETH-USD", "ZEC-USD"]
+
+# Per-asset daily EMA period for the trend gate in _check_entry_filters
+_DAILY_EMA_PERIOD: dict[str, int] = {
+    "ETH-USD": 50,   # 50EMA is faster — catches ETH tops/bottoms weeks earlier
+    "ZEC-USD": 200,  # 200EMA stable for low-liquidity asset
+    "BTC-USD": 50,
+    "SOL-USD": 200,
+}
 
 
 def run_all_assets() -> dict[str, TradeDecision]:

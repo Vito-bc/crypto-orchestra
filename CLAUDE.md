@@ -49,22 +49,35 @@ Orchestrator uses `claude-sonnet-4-6` (smarter final decision).
 Maker fee 0.2% vs taker 0.4% — saves 0.4% per round trip.
 This is the margin that was blocking profitability in backtests.
 
-### Per-Asset ATR Parameters — Do Not Change Without Walk-Forward
-These were validated across 3 OOS windows. Changing them requires re-running
-`backtesting/walk_forward.py` to confirm they still generalize.
+### Active Assets
+**ETH-USD and ZEC-USD only.** BTC and SOL excluded — bounce strategy has
+consistently negative edge on these (backtested over 371 signals, full year).
 
-| Asset | Stop | Target | R:R |
-|-------|------|--------|-----|
-| BTC-USD | 2.0x ATR | 3.5x ATR | 1.75 |
-| ETH-USD | 2.5x ATR | 4.5x ATR | 1.80 |
-| SOL-USD | 2.5x ATR | 4.5x ATR | 1.80 |
-| ZEC-USD | 2.0x ATR | 3.5x ATR | 1.75 |
+Re-enable BTC/SOL only after developing asset-specific entry logic for them
+(e.g. trend-following for BTC instead of mean-reversion).
 
-ZEC is the only asset with walk-forward edge (+0.30% avg OOS). BTC/SOL are weak.
+### Per-Asset Strategy Config (signal_scanner.py `ASSET_CONFIG`)
+| Asset | Stop | Target | R:R | Min Conds | Daily EMA | Enabled |
+|-------|------|--------|-----|-----------|-----------|---------|
+| BTC-USD | 2.0x | 3.5x | 1.75 | 4 | 50d | **No** |
+| ETH-USD | 2.5x | 4.5x | 1.80 | 4 | **50d** | Yes |
+| SOL-USD | 2.5x | 4.5x | 1.80 | 4 | 200d | **No** |
+| ZEC-USD | 2.0x | 3.5x | 1.75 | 4 | 200d | Yes |
+
+ETH uses daily 50EMA (faster trend gate). ZEC uses 200EMA (slower, more stable).
+Changing these requires re-running `backtesting/signal_scanner.py full_year`.
 
 ### Position Sizing
 `LIVE_BALANCE_USD × position_size_pct` = order size.
 Default: 5% of $100 = $5 per trade. The rest of the Coinbase account is untouched.
+
+### Entry Filters (runner.py `_check_entry_filters`)
+1. BTC 4h BEAR + correlation veto (corr ≥ 0.65 → full block; ≥ 0.35 → 50% size)
+2. OKX funding rate veto (>20% annualized = crowded longs)
+3. Bounce confirmation: price must recover +1.5x ATR above stop-exit
+4. Velocity veto: asset down >5% in 24h → no long entry
+5. **Per-asset daily EMA veto**: ETH uses 50EMA, ZEC uses 200EMA (see `_DAILY_EMA_PERIOD`)
+6. Whipsaw guard: 2+ stops in 96h → no new entry
 
 ### Circuit Breakers (runner.py)
 -5% drawdown → 50% size | -8% → 25% size | -12% → FULL HALT
