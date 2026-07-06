@@ -30,8 +30,19 @@ import yfinance as yf
 from backtesting.backtest import (
     attach_higher_timeframe_context,
     STRATEGY_CONFIG,
-    FEE_RATE,
 )
+
+# Realistic fee model matching live system:
+#   Entry   → limit order  (maker 0.2%)
+#   TP exit → limit order  (maker 0.2%)
+#   SL/hold → market order (taker 0.4%)
+# backtest.py uses 0.6% taker for all sides — 3× too expensive.
+_ENTRY_FEE = 0.002   # maker: limit orders at support
+_TP_FEE    = 0.002   # maker: limit order at target price
+_SL_FEE    = 0.004   # taker: stop-market and max-hold exits
+
+# Keep FEE_RATE alias so any code that imported it still works
+FEE_RATE = _SL_FEE
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator, ADXIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
@@ -101,7 +112,7 @@ ASSET_CONFIG = {
         "atr_stop":        2.5, "atr_target": 4.5,  # R:R = 1.80 — wick-heavy
         "min_conditions":  4,
         "vol_spike_ratio": 1.3,
-        "daily_ema_period": 50,   # faster trend gate — 200EMA was too slow for ETH
+        "daily_ema_period": 50,
         "enabled": True,
     },
     "SOL-USD": {
@@ -273,21 +284,21 @@ def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
         high = float(row["high"])
 
         if low <= stop_price:
-            gross   = stop_price * (1 - FEE_RATE)
-            net_pnl = (gross - entry_price * (1 + FEE_RATE)) / entry_price * 100
+            gross   = stop_price * (1 - _SL_FEE)
+            net_pnl = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
             return {"reason": "STOP_LOSS", "exit_price": stop_price,
                     "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
 
         if high >= target_price:
-            gross   = target_price * (1 - FEE_RATE)
-            net_pnl = (gross - entry_price * (1 + FEE_RATE)) / entry_price * 100
+            gross   = target_price * (1 - _TP_FEE)
+            net_pnl = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
             return {"reason": "TAKE_PROFIT", "exit_price": target_price,
                     "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
 
-    # Max hold
+    # Max hold — market close, taker fee
     exit_price = float(df.iloc[min(entry_i + max_hold_hours, len(df) - 1)]["close"])
-    gross      = exit_price * (1 - FEE_RATE)
-    net_pnl    = (gross - entry_price * (1 + FEE_RATE)) / entry_price * 100
+    gross      = exit_price * (1 - _SL_FEE)
+    net_pnl    = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
     return {"reason": "MAX_HOLD", "exit_price": round(exit_price, 2),
             "hold_h": max_hold_hours, "pnl_pct": round(net_pnl, 2)}
 

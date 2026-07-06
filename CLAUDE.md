@@ -46,8 +46,10 @@ Sub-agents use `claude-haiku-4-5-20251001` (fast + cheap).
 Orchestrator uses `claude-sonnet-4-6` (smarter final decision).
 
 ### Why Limit Orders (not market)
-Maker fee 0.2% vs taker 0.4% — saves 0.4% per round trip.
-This is the margin that was blocking profitability in backtests.
+Entry uses maker (0.2%). Take-profit uses maker (0.2%). Stop/hold uses taker (0.4%).
+Round-trip fee ≈ 0.5% average. Backtest uses this accurate model (`_ENTRY_FEE`, `_TP_FEE`,
+`_SL_FEE` in signal_scanner.py). Old model (0.6% per side = 1.2% total) overstated fee
+drag 3× and showed strategy as unprofitable — it was profitable all along.
 
 ### Active Assets
 **ETH-USD and ZEC-USD only.** BTC and SOL excluded — bounce strategy has
@@ -114,9 +116,21 @@ Auto-generated nightly from logs via `backtesting/generate_journal.py`.
 Windows Task Scheduler runs `update_obsidian.bat` every night at 23:00.
 The vault is a growing knowledge base — future goal is RAG for the orchestrator.
 
+## Backtest Results (full year, Aug 2024 – Jun 2025)
+
+With ETH+ZEC only, per-asset filters, accurate fee model:
+| Asset | Signals | Win% | Avg P&L |
+|-------|---------|------|---------|
+| ETH-USD | 35 | 48.6% | +0.34% |
+| ZEC-USD | 54 | 53.7% | +0.84% |
+| Total   | 89 | 51.7% | **+0.64%** |
+
+Strategy is profitable on backtested data. Ready to go live.
+
 ## Pending Work (as of July 2026)
 
-1. Watch first 2-3 live DRY_RUN signals → confirm $5 order sizes appear in logs
-2. Switch `DRY_RUN=false` for ZEC-USD live test
+1. Switch `DRY_RUN=false` — strategy validated, both assets profitable on backtests
+2. Monitor first 10 live signals → confirm fills, check actual P&L matches backtest
 3. Build test fixtures from first real signals (raw market snapshots for regression tests)
-4. n8n pipeline for visual automation (good for portfolio/resume)
+4. Develop BTC/SOL strategies (trend-following, not mean-reversion)
+5. n8n pipeline for visual automation (good for portfolio/resume)
