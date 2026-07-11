@@ -85,6 +85,13 @@ PERIODS = {
         "warmup": "2024-07-12",   # yfinance 730-day rolling limit; update if too old
         "btc_move": "Multi-regime: crash -> +60% rally -> -28% bear",
     },
+    "live_period": {
+        "label":  "Live Period  (Jun 1 – present 2026)",
+        "start":  "2026-06-01",
+        "end":    "2026-07-09",
+        "warmup": "2025-12-01",
+        "btc_move": "Recovery rally ~2026",
+    },
 }
 
 ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
@@ -477,6 +484,61 @@ def scan_asset(asset: str, period: dict) -> dict:
         "blocked_whipsaw":  blocked_whipsaw,
         "atr_stop":         atr_stop,
         "atr_target":       atr_target,
+    }
+
+
+# ── Live signal gate ─────────────────────────────────────────────────────────
+
+def scan_latest(asset: str) -> dict | None:
+    """
+    Check if the breakout signal fires on the last closed candle for this asset.
+    Used by runner.py as the primary live entry gate — replaces the AI composite
+    score threshold. Returns a signal dict or None (no signal / blocked).
+
+    Downloads fresh data on every call (no cache) so the live runner always
+    has the most recent candle. Intentionally skips the last row (current
+    incomplete candle) and evaluates only fully-closed candles.
+    """
+    cfg = ASSET_CONFIG.get(asset)
+    if cfg is None or not cfg.get("enabled", True):
+        return None
+
+    from datetime import date, timedelta
+    today    = date.today().isoformat()
+    warmup   = (date.today() - timedelta(days=45)).isoformat()
+
+    sig_df   = _download_and_compute(asset, warmup,        today, "1h")
+    trend_df = _download_and_compute(asset, warmup,        today, "4h")
+    daily_df = _download_and_compute(asset, "2022-01-01",  today, "1d")
+
+    if sig_df is None or trend_df is None or len(sig_df) < 50:
+        return None
+
+    df = attach_higher_timeframe_context(sig_df, trend_df)
+    if daily_df is not None:
+        df = _attach_daily_context(df, daily_df)
+    if "time" in df.columns:
+        df.index = pd.to_datetime(df["time"], utc=True)
+
+    # n-1 is the current incomplete candle — skip it; evaluate n-2 (last closed)
+    i = len(df) - 2
+    if i < 12:
+        return None
+
+    result = _detect_breakout_signal(df, i, cfg)
+    if result is None or result.get("blocked"):
+        return None
+
+    ts = df.index[i]
+    return {
+        "asset":       asset,
+        "entry_time":  str(ts),
+        "entry_price": float(df.iloc[i]["close"]),
+        "conf":        result["confidence"],
+        "n_conditions": result["n_conditions"],
+        "candles_above": result["candles_above"],
+        "adx":         result["adx"],
+        "vol_ratio":   result["vol_ratio"],
     }
 
 

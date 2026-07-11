@@ -62,6 +62,7 @@ from pipeline.position_tracker import (
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
 from tools.price_data        import get_daily_trend, get_raw_df, get_snapshot
 from tools.price_levels      import get_levels_from_snapshot
+from backtesting.signal_scanner import scan_latest
 
 # Minimum candle body confirmation for SELL signals (BUY uses limit orders, no candle check needed)
 _MOMENTUM_THRESHOLD = 0.003   # 0.3% — raised from 0.2%; diagnostics show winners avg +0.77%, losers avg -0.22%
@@ -536,6 +537,32 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
         _check_open_positions(asset, current_price)   # stop/target/max-hold
         _check_pending_fills(asset, current_price)    # fills → open positions
 
+    # ── 1.5 Scanner gate — deterministic signal check ────────────────────────
+    # The signal_scanner is our validated entry model (89 signals, 51.7% win,
+    # +0.64% avg P&L in backtest). It fires only when EMA50 cross + 4/5 conditions
+    # are met. If no signal, skip agents entirely — saves API cost and prevents
+    # noise entries. When signal fires, agents act as veto-only (macro SELL blocks).
+    _scanner_signal = scan_latest(asset)
+    if _scanner_signal is None:
+        print(f"[Scanner] No signal for {asset} — HOLD (agents skipped)")
+        _hold = TradeDecision(
+            asset=asset, timestamp=datetime.now(timezone.utc),
+            action=TradeAction.HOLD, confidence=0.0,
+            reasoning="Scanner gate: no breakout signal on last closed candle.",
+            votes=[], overrides=[],
+            veto_triggered=False, veto_reason=None,
+            position_size_pct=None, stop_loss_price=None, take_profit_price=None,
+        )
+        _log_decision(asset, [], _hold)
+        _print_decision(asset, [], _hold)
+        return _hold
+
+    print(f"[Scanner] SIGNAL — {asset} ${_scanner_signal['entry_price']:,.2f}  "
+          f"candles_above={_scanner_signal['candles_above']}  "
+          f"ADX={_scanner_signal['adx']:.1f}  "
+          f"vol={_scanner_signal['vol_ratio']:.2f}x  "
+          f"conf={_scanner_signal['conf']:.0%}")
+
     # ── 2. Run sub-agents concurrently ────────────────────────────────────────
     sub_agents = [
         TechnicalAgent(),
@@ -568,6 +595,41 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
 
     elapsed_total = time.time() - t0
     print(f"[Orchestra] Decision ready in {elapsed_total:.1f}s total")
+
+    # ── 3.5 Scanner elevation — upgrade HOLD to BUY if no macro veto ─────────
+    # If scanner fired but orchestrator still says HOLD (composite score too low),
+    # we override to BUY — UNLESS macro agent explicitly votes SELL (bear regime).
+    # This aligns live entries with the backtested signal_scanner logic.
+    if _scanner_signal and decision.action == TradeAction.HOLD:
+        macro_vote = next(
+            (s for s in signals if "macro" in s.agent.value.lower()), None
+        )
+        if macro_vote and macro_vote.signal.value == "SELL":
+            print(f"[Scanner] Macro SELL veto — keeping HOLD despite scanner signal")
+            decision.overrides.append(
+                f"Scanner fired but macro SELL ({macro_vote.confidence:.0%}) blocks entry"
+            )
+        else:
+            _default_size = float(os.getenv("TRADE_SIZE_PCT", "0.05"))
+            print(f"[Scanner] Elevating HOLD→BUY — scanner signal confirmed, no macro veto")
+            decision = TradeDecision(
+                asset=asset, timestamp=decision.timestamp,
+                action=TradeAction.BUY,
+                confidence=_scanner_signal["conf"],
+                reasoning=(
+                    f"[Scanner] EMA50 cross {_scanner_signal['candles_above']} candle(s) ago "
+                    f"at ${_scanner_signal['entry_price']:,.2f}, "
+                    f"ADX={_scanner_signal['adx']:.1f}, "
+                    f"vol={_scanner_signal['vol_ratio']:.2f}x, "
+                    f"{_scanner_signal['n_conditions']}/5 conditions met. "
+                    + decision.reasoning
+                ),
+                votes=decision.votes,
+                overrides=decision.overrides + ["Scanner override: BUY elevated from HOLD"],
+                veto_triggered=False, veto_reason=None,
+                position_size_pct=_default_size,
+                stop_loss_price=None, take_profit_price=None,
+            )
 
     # ── 4. BUY → place limit order at support ─────────────────────────────────
     # Instead of a market entry, we queue a limit order at the nearest support
