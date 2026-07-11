@@ -167,7 +167,9 @@ def _attach_daily_context(signal_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd
     # are only visible to 1h rows on the NEXT calendar day.
     # Without this, the July-9 daily close (which only forms at midnight July 10)
     # would be attached to all July-9 intraday candles — look-ahead bias.
-    daily_cols["time"] = pd.to_datetime(daily_cols["time"]) + pd.Timedelta(days=1)
+    # Shift, then cast back to original dtype so merge_asof doesn't reject [s] vs [us].
+    _t_dtype = daily_cols["time"].dtype
+    daily_cols["time"] = (daily_cols["time"] + pd.Timedelta(days=1)).astype(_t_dtype)
     merged = pd.merge_asof(
         signal_df.sort_values("time"),
         daily_cols.sort_values("time"),

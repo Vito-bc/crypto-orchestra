@@ -256,7 +256,9 @@ def attach_higher_timeframe_context(signal_df, trend_df):
     # are only visible to 1h rows that start AFTER the 4h candle closes.
     # Without this, the 12:00 4h bar's close is attached to the 12:00 1h bar —
     # look-ahead, since the 4h bar doesn't close until 16:00.
-    trend_cols["time"] = pd.to_datetime(trend_cols["time"]) + pd.Timedelta(hours=4)
+    # Shift, then cast back to original dtype so merge_asof doesn't reject [s] vs [us].
+    _t_dtype = trend_cols["time"].dtype
+    trend_cols["time"] = (trend_cols["time"] + pd.Timedelta(hours=4)).astype(_t_dtype)
 
     merged = pd.merge_asof(
         signal_df.sort_values("time"),
