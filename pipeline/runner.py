@@ -605,13 +605,13 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
             (s for s in signals if "macro" in s.agent.value.lower()), None
         )
         if macro_vote and macro_vote.signal.value == "SELL":
-            print(f"[Scanner] Macro SELL veto — keeping HOLD despite scanner signal")
+            print("[Scanner] Macro SELL veto — keeping HOLD despite scanner signal")
             decision.overrides.append(
                 f"Scanner fired but macro SELL ({macro_vote.confidence:.0%}) blocks entry"
             )
         else:
             _default_size = float(os.getenv("TRADE_SIZE_PCT", "0.05"))
-            print(f"[Scanner] Elevating HOLD→BUY — scanner signal confirmed, no macro veto")
+            print("[Scanner] Elevating HOLD→BUY — scanner signal confirmed, no macro veto")
             decision = TradeDecision(
                 asset=asset, timestamp=decision.timestamp,
                 action=TradeAction.BUY,
