@@ -118,7 +118,8 @@ ASSET_CONFIG = {
         "min_conditions":  4,
         "vol_spike_ratio": 1.3,
         "daily_ema_period": 50,
-        "enabled": True,
+        "btc_regime_filter": True,
+        "enabled": False,  # 29% win rate in full-year — disabled until edge confirmed
     },
     "SOL-USD": {
         "atr_stop":        2.5, "atr_target": 4.5,  # R:R = 1.80
@@ -132,6 +133,7 @@ ASSET_CONFIG = {
         "min_conditions":  4,
         "vol_spike_ratio": 1.3,
         "daily_ema_period": 200,
+        "btc_regime_filter": False,  # ZEC moves independently of BTC — filter blocks good setups
         "enabled": True,
     },
 }
@@ -144,7 +146,7 @@ ASSET_PARAMS = {k: {"atr_stop": v["atr_stop"], "atr_target": v["atr_target"]}
 _MIN_VOL_RATIO     = 0.8
 _WHIPSAW_MAX_STOPS = 2
 _WHIPSAW_WINDOW_H  = 96   # matches runner.py _WHIPSAW_LOOKBACK_H (was 48 — bug fix)
-_MIN_ADX           = 20.0
+_MIN_ADX           = 25.0
 _MAX_RSI_AT_CROSS  = 65.0
 _MAX_PCT_ABOVE_EMA = 4.0
 _MAX_CANDLES_SINCE = 4
@@ -243,6 +245,13 @@ def _detect_breakout_signal(df: pd.DataFrame, i: int, cfg: dict) -> dict | None:
 
     if close_4h is not None and ema50_4h is not None and close_4h < ema50_4h:
         return {"blocked": "4h_trend", "close_4h": round(close_4h, 2), "ema50_4h": round(ema50_4h, 2)}
+
+    # BTC macro regime — block long entries when BTC is below its daily EMA50
+    if cfg.get("btc_regime_filter", False):
+        btc_close = _safe("btc_close_1d")
+        btc_ema50 = _safe("btc_ema50_1d")
+        if btc_close is not None and btc_ema50 is not None and btc_close < btc_ema50:
+            return {"blocked": "btc_regime"}
 
     close_1d   = _safe("close_1d")
     daily_ema  = _safe(f"ema{daily_period}_1d")
@@ -410,6 +419,28 @@ def scan_asset(asset: str, period: dict) -> dict:
     atr_stop   = asset_cfg["atr_stop"]
     atr_target = asset_cfg["atr_target"]
 
+    # BTC regime filter — attach BTC daily close vs EMA50 for each 1h bar
+    # Must come after asset_cfg is resolved (needs btc_regime_filter flag).
+    if asset != "BTC-USD" and asset_cfg.get("btc_regime_filter", False):
+        btc_daily = _download_and_compute("BTC-USD", "2022-01-01", period["end"], "1d")
+        if btc_daily is not None:
+            btc_regime_cols = btc_daily[["time", "close", "ema50"]].copy()
+            btc_regime_cols = btc_regime_cols.rename(
+                columns={"close": "btc_close_1d", "ema50": "btc_ema50_1d"}
+            )
+            _bt_dtype = btc_regime_cols["time"].dtype
+            btc_regime_cols["time"] = (
+                btc_regime_cols["time"] + pd.Timedelta(days=1)
+            ).astype(_bt_dtype)
+            # reset_index so "time" is unambiguously a column (not also the index)
+            df = pd.merge_asof(
+                df.reset_index(drop=True).sort_values("time"),
+                btc_regime_cols.sort_values("time"),
+                on="time",
+                direction="backward",
+            )
+            df.index = pd.to_datetime(df["time"], utc=True)
+
     # Slice to the actual replay window (after warmup)
     start_ts  = pd.Timestamp(period["start"], tz="UTC")
     df_period = df[df.index >= start_ts].copy()
@@ -424,6 +455,7 @@ def scan_asset(asset: str, period: dict) -> dict:
     blocked_vol      = 0
     blocked_4h       = 0
     blocked_daily    = 0
+    blocked_btc      = 0
     blocked_cond     = 0
     blocked_whipsaw  = 0
     skip_until       = -1   # don't double-enter
@@ -452,6 +484,9 @@ def scan_asset(asset: str, period: dict) -> dict:
             continue
         elif result.get("blocked") == "daily_trend":
             blocked_daily += 1
+            continue
+        elif result.get("blocked") == "btc_regime":
+            blocked_btc += 1
             continue
         elif result.get("blocked") == "conditions":
             blocked_cond += 1
@@ -485,6 +520,7 @@ def scan_asset(asset: str, period: dict) -> dict:
         "blocked_vol":      blocked_vol,
         "blocked_4h":       blocked_4h,
         "blocked_daily":    blocked_daily,
+        "blocked_btc":      blocked_btc,
         "blocked_cond":     blocked_cond,
         "blocked_whipsaw":  blocked_whipsaw,
         "atr_stop":         atr_stop,
@@ -524,6 +560,26 @@ def scan_latest(asset: str) -> dict | None:
         df = _attach_daily_context(df, daily_df)
     if "time" in df.columns:
         df.index = pd.to_datetime(df["time"], utc=True)
+
+    # BTC regime filter — attach BTC daily EMA50 so _detect_breakout_signal can check
+    if asset != "BTC-USD" and cfg.get("btc_regime_filter", False):
+        btc_daily = _download_and_compute("BTC-USD", "2022-01-01", today, "1d")
+        if btc_daily is not None:
+            btc_regime_cols = btc_daily[["time", "close", "ema50"]].copy()
+            btc_regime_cols = btc_regime_cols.rename(
+                columns={"close": "btc_close_1d", "ema50": "btc_ema50_1d"}
+            )
+            _bt_dtype = btc_regime_cols["time"].dtype
+            btc_regime_cols["time"] = (
+                btc_regime_cols["time"] + pd.Timedelta(days=1)
+            ).astype(_bt_dtype)
+            df = pd.merge_asof(
+                df.reset_index(drop=True).sort_values("time"),
+                btc_regime_cols.sort_values("time"),
+                on="time",
+                direction="backward",
+            )
+            df.index = pd.to_datetime(df["time"], utc=True)
 
     # n-1 is the current incomplete candle — skip it; evaluate n-2 (last closed)
     i = len(df) - 2
@@ -579,11 +635,13 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
         atr_stop   = r.get("atr_stop", 2.0)
         atr_target = r.get("atr_target", 3.5)
         rr         = atr_target / atr_stop
-        bd = r.get("blocked_daily", 0)
+        bd  = r.get("blocked_daily", 0)
+        bb  = r.get("blocked_btc", 0)
+        btc_str = f"  btc={bb}" if bb else ""
         print(f"  {asset}  ({len(sigs)} signals  |  "
               f"stop={atr_stop}x  target={atr_target}x  R:R={rr:.2f}  |  "
               f"blocked: vol={r['blocked_vol']}  4h={r['blocked_4h']}  "
-              f"daily={bd}  cond={r['blocked_cond']}  whipsaw={bw})")
+              f"daily={bd}{btc_str}  cond={r['blocked_cond']}  whipsaw={bw})")
 
         if not sigs:
             print("    No signals fired in this period.")
