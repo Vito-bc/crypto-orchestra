@@ -12,9 +12,9 @@ Trailing stop logic (percentage-based, no ATR needed in live system):
   TRAIL_ACTIVATION_PCT: once price rises this % above entry, begin trailing
   TRAIL_PCT           : trail stop stays this % below the high-water mark
 
-Fees:
-  Entry: 0.2% maker (limit order)
-  Exit:  0.4% taker (market order on stop/target/max-hold)
+Fees (Coinbase Advanced base tier):
+  Entry: 0.4% maker (limit order)
+  Exit:  0.6% taker (market order on stop/target/max-hold)
 
 State : logs/open_positions.json
 History: logs/trade_history.jsonl
@@ -34,8 +34,8 @@ ROOT           = Path(__file__).resolve().parents[1]
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
 TRADE_HISTORY  = ROOT / "logs" / "trade_history.jsonl"
 
-MAKER_FEE_RATE       = 0.002   # 0.2% entry (limit/maker)
-TAKER_FEE_RATE       = 0.004   # 0.4% exit  (market/taker)
+MAKER_FEE_RATE       = 0.004   # 0.4% entry (Coinbase Advanced base tier maker)
+TAKER_FEE_RATE       = 0.006   # 0.6% exit  (Coinbase Advanced base tier taker)
 PAPER_BALANCE        = int(os.getenv("LIVE_BALANCE_USD", "10000"))  # set LIVE_BALANCE_USD in .env for live trading
 DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
 
@@ -211,7 +211,10 @@ def count_recent_stops(asset: str, hours: int = 48) -> int:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def open_position_from_order(order: "PendingOrder", fill_price: float) -> Position:  # type: ignore[name-defined]
-    from pipeline.limit_orders import ATR_STOP_MULT, ATR_TARGET_MULT
+    from backtesting.signal_scanner import ASSET_CONFIG as _SCANNER_CFG
+    _cfg       = _SCANNER_CFG.get(order.asset, {})
+    _stop_mult = _cfg.get("stop_mult", 2.0)
+    _tgt_mult  = _cfg.get("target_mult", 3.5)
 
     pct     = order.position_size_pct or DEFAULT_POS_PCT
     qty_usd = round(PAPER_BALANCE * pct, 2)
@@ -219,9 +222,9 @@ def open_position_from_order(order: "PendingOrder", fill_price: float) -> Positi
     # Reconstruct ATR from the original limit order, then re-anchor stop/target
     # to the actual fill price. Without this, a gap-down fill (fill < limit)
     # puts the stop above the entry price — an immediate false trigger.
-    atr        = (order.limit_price - order.stop_price) / ATR_STOP_MULT
-    stop_price  = round(fill_price - ATR_STOP_MULT  * atr, 2)
-    target_price = round(fill_price + ATR_TARGET_MULT * atr, 2)
+    atr          = (order.limit_price - order.stop_price) / _stop_mult
+    stop_price   = round(fill_price - _stop_mult * atr, 2)
+    target_price = round(fill_price + _tgt_mult  * atr, 2)
 
     pos = Position(
         id=order.id,

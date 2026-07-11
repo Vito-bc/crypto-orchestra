@@ -16,6 +16,8 @@ Exchange integration (DRY_RUN=true by default):
   - check_and_fill() queries Coinbase for fill status (live) or simulates fill
     by price comparison (dry run).
   - cancel_open_orders() cancels on Coinbase before clearing locally.
+
+Fee note: Coinbase Advanced base tier: 0.4% maker (limit orders), 0.6% taker (market orders).
 """
 
 from __future__ import annotations

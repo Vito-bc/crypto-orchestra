@@ -29,7 +29,7 @@ if str(ROOT) not in sys.path:
 import pandas as pd
 import numpy as np
 from backtesting.signal_scanner import (
-    ASSETS, _download_and_compute, _detect_breakout_signal,
+    ASSETS, ASSET_CONFIG, _download_and_compute, _detect_breakout_signal,
     _WHIPSAW_MAX_STOPS, _WHIPSAW_WINDOW_H,
 )
 from backtesting.backtest import attach_higher_timeframe_context, STRATEGY_CONFIG, FEE_RATE
@@ -97,7 +97,7 @@ def _run_scan(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp,
         if i < skip_until:
             continue
 
-        result = _detect_breakout_signal(df, i)
+        result = _detect_breakout_signal(df, i, ASSET_CONFIG.get(asset, {}))
         if result is None:
             continue
 
@@ -278,7 +278,7 @@ def run_walk_forward(assets: list[str]) -> None:
             continue
 
         avg_oos = np.mean(oos_pnls)
-        verdict = "EDGE" if avg_oos > -0.5 else ("MARGINAL" if avg_oos > -1.0 else "WEAK")
+        verdict = "EDGE" if avg_oos > 0.0 else ("MARGINAL" if avg_oos > -0.5 else "WEAK")
         cols    = [f"{p:+.2f}%" for p in oos_pnls]
         while len(cols) < 3:
             cols.append("  n/a")
@@ -286,9 +286,9 @@ def run_walk_forward(assets: list[str]) -> None:
               f"{avg_oos:>+9.2f}%  {verdict:>14}")
 
     print("\nInterpretation:")
-    print("  EDGE     = OOS avg P&L > -0.5%  — params generalise, system has edge")
-    print("  MARGINAL = OOS avg P&L -0.5% to -1.0% — borderline, watch live results")
-    print("  WEAK     = OOS avg P&L < -1.0%  — params overfit, needs rethink")
+    print("  EDGE     = OOS avg P&L > 0%      — params generalise, system has edge")
+    print("  MARGINAL = OOS avg P&L 0% to -0.5% — borderline, watch live results")
+    print("  WEAK     = OOS avg P&L < -0.5%  — params overfit, needs rethink")
     print("=" * 70)
 
 

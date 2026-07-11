@@ -32,14 +32,12 @@ from backtesting.backtest import (
     STRATEGY_CONFIG,
 )
 
-# Realistic fee model matching live system:
-#   Entry   → limit order  (maker 0.2%)
-#   TP exit → limit order  (maker 0.2%)
-#   SL/hold → market order (taker 0.4%)
-# backtest.py uses 0.6% taker for all sides — 3× too expensive.
-_ENTRY_FEE = 0.002   # maker: limit orders at support
-_TP_FEE    = 0.002   # maker: limit order at target price
-_SL_FEE    = 0.004   # taker: stop-market and max-hold exits
+# Coinbase Advanced Trade base tier (<$10K/month volume):
+#   Maker (limit orders): 0.40%
+#   Taker (market orders): 0.60%
+_ENTRY_FEE = 0.004   # maker: limit order at support
+_TP_FEE    = 0.004   # maker: limit order at target price
+_SL_FEE    = 0.006   # taker: stop-market and max-hold exits
 
 # Keep FEE_RATE alias so any code that imported it still works
 FEE_RATE = _SL_FEE
@@ -165,6 +163,11 @@ def _attach_daily_context(signal_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd
         "ema50":  "ema50_1d",
         "ema200": "ema200_1d",
     })
+    # Shift daily timestamps forward by 1 day so that a day's close/EMA values
+    # are only visible to 1h rows on the NEXT calendar day.
+    # Without this, the July-9 daily close (which only forms at midnight July 10)
+    # would be attached to all July-9 intraday candles — look-ahead bias.
+    daily_cols["time"] = pd.to_datetime(daily_cols["time"]) + pd.Timedelta(days=1)
     merged = pd.merge_asof(
         signal_df.sort_values("time"),
         daily_cols.sort_values("time"),

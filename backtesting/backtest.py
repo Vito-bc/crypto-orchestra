@@ -252,6 +252,11 @@ def attach_higher_timeframe_context(signal_df, trend_df):
         "ema200": "ema200_4h",
         "trend": "trend_4h",
     })
+    # Shift 4h timestamps forward by 4h so that a candle's close/EMA values
+    # are only visible to 1h rows that start AFTER the 4h candle closes.
+    # Without this, the 12:00 4h bar's close is attached to the 12:00 1h bar —
+    # look-ahead, since the 4h bar doesn't close until 16:00.
+    trend_cols["time"] = pd.to_datetime(trend_cols["time"]) + pd.Timedelta(hours=4)
 
     merged = pd.merge_asof(
         signal_df.sort_values("time"),

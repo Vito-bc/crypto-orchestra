@@ -626,7 +626,8 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
                 ),
                 votes=decision.votes,
                 overrides=decision.overrides + ["Scanner override: BUY elevated from HOLD"],
-                veto_triggered=False, veto_reason=None,
+                veto_triggered=decision.veto_triggered,
+                veto_reason=decision.veto_reason,
                 position_size_pct=_default_size,
                 stop_loss_price=None, take_profit_price=None,
             )
