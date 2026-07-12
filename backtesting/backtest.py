@@ -587,7 +587,9 @@ def run_backtest(symbol, timeframe="1h", days=365):
     avg_loss = sum(t["pnl_usd"] for t in losses) / len(losses) if losses else 0
     avg_trade_pnl = sum(t["pnl_usd"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
     avg_hold_hours = sum(t["hold_hours"] for t in closed_trades) / len(closed_trades) if closed_trades else 0
-    profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else float("inf")
+    gross_win  = sum(t["pnl_usd"] for t in wins)
+    gross_loss = abs(sum(t["pnl_usd"] for t in losses))
+    profit_factor = gross_win / gross_loss if gross_loss else float("inf")
 
     eq_values = [e["balance"] for e in equity]
     peak = START_BALANCE

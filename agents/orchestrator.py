@@ -205,6 +205,23 @@ class OrchestratorAgent:
         if risk_signal and risk_signal.metrics:
             ok_to_trade = bool(risk_signal.metrics.get("ok_to_trade", True))
 
+        if not ok_to_trade:
+            veto_msg = (
+                risk_signal.reasoning if risk_signal and risk_signal.reasoning
+                else "Risk agent blocked trade"
+            )
+            return TradeDecision(
+                asset=asset,
+                timestamp=datetime.now(timezone.utc),
+                action=TradeAction("HOLD"),
+                confidence=0.0,
+                reasoning=f"[RiskVeto] {veto_msg}",
+                votes=[],
+                overrides=["Risk agent hard veto: ok_to_trade=False"],
+                veto_triggered=True,
+                veto_reason=veto_msg,
+            )
+
         # ── Composite score (computed in Python; passed to LLM for context) ───
         # Score = Σ(confidence × weight × direction) for all agents
         # BUY=+1, SELL=-1, NEUTRAL=0. Range: -1.0 to +1.0.

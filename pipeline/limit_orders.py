@@ -191,7 +191,7 @@ def check_and_fill(asset: str, current_price: float) -> list[PendingOrder]:
     Marks expired orders as EXPIRED.
     Returns the list of orders that just filled.
     """
-    from exchange.coinbase_client import check_order_filled, is_dry_run
+    from exchange.coinbase_client import cancel_order, check_order_filled, is_dry_run
 
     raw    = _load_raw()
     filled = []
@@ -203,6 +203,13 @@ def check_and_fill(asset: str, current_price: float) -> list[PendingOrder]:
         order = PendingOrder(**r)
         if order.is_expired():
             r["status"] = "EXPIRED"
+            if not dry:
+                exch_id = r.get("exchange_order_id")
+                if exch_id:
+                    try:
+                        cancel_order(exch_id)
+                    except Exception as exc:
+                        print(f"[LimitOrders] Could not cancel expired order {exch_id} on exchange: {exc}")
             continue
 
         if dry:
