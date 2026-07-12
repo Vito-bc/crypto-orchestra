@@ -90,9 +90,27 @@ PERIODS = {
         "warmup": "2025-12-01",
         "btc_move": "Recovery rally ~2026",
     },
+    "recent_year": {
+        "label":  "Recent Year  (Jul 2025 – Jul 2026)",
+        "start":  "2025-07-15",
+        "end":    "2026-07-12",
+        "warmup": "2025-04-01",
+        "btc_move": "Recovery $80k -> $100k+, 2026 rally",
+    },
+    # Retrospective holdout — NOT used in any ADX/parameter tuning.
+    # ADX=25 was selected using live_period (Jun-Jul 2026) only.
+    # This period sits between full_year and recent_year and was never examined.
+    "mid_year_holdout": {
+        "label":  "Mid-Year Holdout  (Aug 2024 – May 2025)",
+        "start":  "2024-08-01",
+        "end":    "2025-05-31",
+        "warmup": "2024-07-14",   # earliest available from yfinance 730-day window
+        "btc_move": "Aug crash -32% -> Trump rally +60% -> Q1 bear -28%",
+    },
 }
 
-ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
+ASSETS = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD",
+          "LINK-USD", "ATOM-USD", "AVAX-USD", "DOT-USD"]
 
 # ── Per-asset strategy configs ────────────────────────────────────────────────
 # Each asset gets its own entry conditions. Tweak and re-run signal_scanner
@@ -135,6 +153,40 @@ ASSET_CONFIG = {
         "daily_ema_period": 200,
         "btc_regime_filter": False,  # ZEC moves independently of BTC — filter blocks good setups
         "enabled": True,
+    },
+    # ── Candidate assets for portfolio expansion ─────────────────────────────
+    # All enabled=False — backtest-only until edge is confirmed.
+    "LINK-USD": {
+        "atr_stop": 2.0, "atr_target": 3.5,
+        "min_conditions": 4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 50,
+        "btc_regime_filter": True,
+        "enabled": False,
+    },
+    "ATOM-USD": {
+        "atr_stop": 2.0, "atr_target": 3.5,
+        "min_conditions": 4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 50,
+        "btc_regime_filter": True,
+        "enabled": False,
+    },
+    "AVAX-USD": {
+        "atr_stop": 2.0, "atr_target": 3.5,
+        "min_conditions": 4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 50,
+        "btc_regime_filter": True,
+        "enabled": False,
+    },
+    "DOT-USD": {
+        "atr_stop": 2.0, "atr_target": 3.5,
+        "min_conditions": 4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 50,
+        "btc_regime_filter": True,
+        "enabled": False,
     },
 }
 
