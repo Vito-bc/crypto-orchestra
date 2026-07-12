@@ -648,11 +648,25 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
             continue
 
         wins   = [s for s in sigs if s["trade"]["pnl_pct"] > 0]
-        [s for s in sigs if s["trade"]["pnl_pct"] <= 0]
-        avg_pnl = sum(s["trade"]["pnl_pct"] for s in sigs) / len(sigs)
+        losses = [s for s in sigs if s["trade"]["pnl_pct"] <= 0]
+        avg_pnl  = sum(s["trade"]["pnl_pct"] for s in sigs) / len(sigs)
+        avg_win  = sum(s["trade"]["pnl_pct"] for s in wins)  / len(wins)  if wins   else 0
+        avg_loss = sum(s["trade"]["pnl_pct"] for s in losses) / len(losses) if losses else 0
+        pf = abs(avg_win * len(wins)) / abs(avg_loss * len(losses)) if losses and avg_loss else float("inf")
+        by_reason = {}
+        for s in sigs:
+            reason = s["trade"]["reason"]
+            by_reason.setdefault(reason, []).append(s["trade"]["pnl_pct"])
 
         print(f"  Win rate: {len(wins)}/{len(sigs)} = {len(wins)/len(sigs):.1%}    "
-              f"Avg P&L: {avg_pnl:+.2f}%")
+              f"Avg P&L: {avg_pnl:+.2f}%    Profit factor: {pf:.2f}")
+        print(f"  Avg win: {avg_win:+.2f}%  |  Avg loss: {avg_loss:+.2f}%  |  "
+              f"Realized R:R: {abs(avg_win/avg_loss):.2f}" if avg_loss else "")
+        reason_parts = [
+            f"{reason}: {len(v)} trades (avg {sum(v)/len(v):+.2f}%)"
+            for reason, v in sorted(by_reason.items())
+        ]
+        print(f"  Exits: {', '.join(reason_parts)}")
 
         print(f"\n  {'Timestamp':<18} {'Price':>10}  {'Signal':>7}  "
               f"{'Conf':>5}  {'Exit':>12}  {'Hold':>5}  {'P&L':>8}")

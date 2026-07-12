@@ -35,7 +35,7 @@ ROOT        = Path(__file__).resolve().parents[1]
 ORDERS_FILE = ROOT / "logs" / "pending_orders.json"
 
 ORDER_TTL_HOURS = 24    # unfilled orders are cancelled after this
-MAKER_FEE_RATE  = 0.002  # 0.2% Coinbase maker fee per side
+MAKER_FEE_RATE  = 0.004  # 0.4% Coinbase Advanced base tier maker fee
 
 # Per-asset ATR multipliers — tuned from full_year signal scanner (371 trades).
 # ETH/SOL use wider stops to avoid intraday wick stop-outs while maintaining R:R ≥ 1.75.

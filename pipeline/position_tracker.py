@@ -213,8 +213,8 @@ def count_recent_stops(asset: str, hours: int = 48) -> int:
 def open_position_from_order(order: "PendingOrder", fill_price: float) -> Position:  # type: ignore[name-defined]
     from backtesting.signal_scanner import ASSET_CONFIG as _SCANNER_CFG
     _cfg       = _SCANNER_CFG.get(order.asset, {})
-    _stop_mult = _cfg.get("stop_mult", 2.0)
-    _tgt_mult  = _cfg.get("target_mult", 3.5)
+    _stop_mult = _cfg.get("atr_stop", 2.0)
+    _tgt_mult  = _cfg.get("atr_target", 3.5)
 
     pct     = order.position_size_pct or DEFAULT_POS_PCT
     qty_usd = round(PAPER_BALANCE * pct, 2)

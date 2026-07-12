@@ -600,7 +600,7 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
     # If scanner fired but orchestrator still says HOLD (composite score too low),
     # we override to BUY — UNLESS macro agent explicitly votes SELL (bear regime).
     # This aligns live entries with the backtested signal_scanner logic.
-    if _scanner_signal and decision.action == TradeAction.HOLD:
+    if _scanner_signal and decision.action == TradeAction.HOLD and not decision.veto_triggered:
         macro_vote = next(
             (s for s in signals if "macro" in s.agent.value.lower()), None
         )
