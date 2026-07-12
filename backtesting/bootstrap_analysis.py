@@ -15,6 +15,8 @@ Usage:
     python backtesting/bootstrap_analysis.py
     python backtesting/bootstrap_analysis.py --period recent_year
     python backtesting/bootstrap_analysis.py --period mid_year_holdout
+    python backtesting/bootstrap_analysis.py --multi-block   # sweep b=2,4,8,12
+    python backtesting/bootstrap_analysis.py --leave-out-event 2025-09 2025-11
 """
 
 from __future__ import annotations
@@ -68,6 +70,94 @@ def _block_bootstrap_pf(
         pfs[i] = gw / gl if gl > 0 else np.inf
 
     return pfs
+
+
+def _pct_above_1(returns: list[float], block_size: int, n_iter: int) -> float:
+    pfs = _block_bootstrap_pf(returns, block_size=block_size, n_iter=n_iter)
+    return float((pfs[np.isfinite(pfs)] > 1.0).mean() * 100)
+
+
+def run_multi_block(period: str, asset: str = "ZEC-USD", n_iter: int = 10_000) -> None:
+    """Sweep block sizes 2, 4, 8, 12 to test stability of P(PF>1)."""
+    if period not in PERIODS:
+        print(f"Unknown period '{period}'. Available: {list(PERIODS)}")
+        sys.exit(1)
+
+    period_cfg = PERIODS[period]
+    result     = scan_asset(asset, period_cfg)
+    signals    = result.get("signals", [])
+    if not signals:
+        print("No signals found.")
+        return
+
+    returns = [s["trade"]["pnl_pct"] for s in signals]
+    print(f"\nBlock-size sensitivity — {asset} / {period}  ({len(returns)} signals)")
+    print(f"{'Block':>6}  {'P(PF>1)':>9}")
+    print("-" * 20)
+    for b in [2, 4, 8, 12]:
+        pct = _pct_above_1(returns, block_size=b, n_iter=n_iter)
+        print(f"  b={b:>2}     {pct:>6.1f}%")
+    print()
+
+
+def run_leave_one_event_out(
+    period: str,
+    asset: str = "ZEC-USD",
+    exclude_start: str = "2025-09-01",
+    exclude_end:   str = "2025-11-30",
+    block_size: int = 4,
+    n_iter: int = 10_000,
+) -> None:
+    """Remove an entire date-range cluster and recompute stats + bootstrap."""
+    if period not in PERIODS:
+        print(f"Unknown period '{period}'. Available: {list(PERIODS)}")
+        sys.exit(1)
+
+    period_cfg = PERIODS[period]
+    result     = scan_asset(asset, period_cfg)
+    signals    = result.get("signals", [])
+    if not signals:
+        print("No signals found.")
+        return
+
+    all_returns = [s["trade"]["pnl_pct"] for s in signals]
+
+    excluded = [
+        s for s in signals
+        if exclude_start <= s["timestamp"][:10] <= exclude_end
+    ]
+    kept = [
+        s for s in signals
+        if not (exclude_start <= s["timestamp"][:10] <= exclude_end)
+    ]
+    kept_returns = [s["trade"]["pnl_pct"] for s in kept]
+
+    excl_sum = sum(s["trade"]["pnl_pct"] for s in excluded)
+    print(f"\nLeave-one-event-out — removing {exclude_start} to {exclude_end}")
+    print(f"  Excluded {len(excluded)} signals  (cluster P&L sum: {excl_sum:+.2f}%)")
+    print(f"  Kept {len(kept)} signals")
+
+    if not kept_returns:
+        print("  No signals remain after exclusion.")
+        return
+
+    wins_k   = [r for r in kept_returns if r > 0]
+    losses_k = [r for r in kept_returns if r <= 0]
+    gw = sum(wins_k)
+    gl = abs(sum(losses_k))
+    pf_kept  = gw / gl if gl else float("inf")
+    avg_kept = sum(kept_returns) / len(kept_returns)
+
+    print(f"\nWithout Oct cluster:")
+    print(f"  Avg P&L      : {avg_kept:+.2f}%  (full: {sum(all_returns)/len(all_returns):+.2f}%)")
+    print(f"  Profit factor: {pf_kept:.3f}  (full: {sum([r for r in all_returns if r>0]) / abs(sum([r for r in all_returns if r<=0])):.3f})")
+    print(f"  Win rate     : {len(wins_k)/len(kept_returns)*100:.1f}%")
+
+    if len(kept_returns) >= 4:
+        pct = _pct_above_1(kept_returns, block_size=block_size, n_iter=n_iter)
+        print(f"  P(PF > 1)    : {pct:.1f}%  (block_size={block_size})")
+
+    print()
 
 
 def run_bootstrap(period: str, asset: str = "ZEC-USD", block_size: int = 4, n_iter: int = 10_000) -> None:
@@ -181,6 +271,22 @@ if __name__ == "__main__":
     parser.add_argument("--block",  type=int, default=4,
                         help="Block size for bootstrap (default 4)")
     parser.add_argument("--iters",  type=int, default=10_000)
+    parser.add_argument("--multi-block",  action="store_true",
+                        help="Sweep block sizes 2, 4, 8, 12")
+    parser.add_argument("--leave-out-event", nargs=2,
+                        metavar=("START_YYYY-MM", "END_YYYY-MM"),
+                        help="Exclude a date-range cluster, e.g. 2025-09 2025-11")
     args = parser.parse_args()
 
-    run_bootstrap(args.period, args.asset, args.block, args.iters)
+    if args.multi_block:
+        run_multi_block(args.period, args.asset, args.iters)
+    elif args.leave_out_event:
+        start = args.leave_out_event[0] + "-01"
+        # end: last day of given month
+        import calendar, datetime
+        y, m = int(args.leave_out_event[1].split("-")[0]), int(args.leave_out_event[1].split("-")[1])
+        last_day = calendar.monthrange(y, m)[1]
+        end = f"{y:04d}-{m:02d}-{last_day:02d}"
+        run_leave_one_event_out(args.period, args.asset, start, end, args.block, args.iters)
+    else:
+        run_bootstrap(args.period, args.asset, args.block, args.iters)

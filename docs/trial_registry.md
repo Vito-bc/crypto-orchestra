@@ -66,7 +66,7 @@ Decision: ZEC is decorrelated from BTC during its breakout regimes. Filter disab
 | full_year         | 2024-07-12  | ~Jul-Dec 2024       | Initial development (now outside yfinance window) |
 | recent_year       | 2025-04-01  | Jul 2025 – Jul 2026 | ADX comparison, asset selection |
 | live_period       | 2026-04-01  | Jun – Jul 2026      | ADX=25 selection ← makes this IS |
-| mid_year_holdout  | 2024-07-14  | Aug 2024 – May 2025 | Retrospective holdout (not used in any tuning) |
+| mid_year_holdout  | 2024-07-14  | Aug 2024 – May 2025 | Stress/validation period — NOT clean OOS (overlaps full_year used for ADX/asset selection) |
 
 ## Approximate trial count
 
