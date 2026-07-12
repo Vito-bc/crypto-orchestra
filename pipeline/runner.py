@@ -347,12 +347,14 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
     4. Velocity veto
        Asset down > 5% in last 24h → no long entry.
     """
+    from backtesting.signal_scanner import ASSET_CONFIG as _SCANNER_CFG
     from tools.market_positioning import get_okx_funding_rate
 
     size_modifier = 1.0
+    _asset_cfg = _SCANNER_CFG.get(asset, {})
 
-    # 1. Correlation-adjusted BTC BEAR veto (skip for BTC itself)
-    if asset != "BTC-USD":
+    # 1. Correlation-adjusted BTC BEAR veto (skip for BTC itself and assets with btc_regime_filter=False)
+    if asset != "BTC-USD" and _asset_cfg.get("btc_regime_filter", True):
         btc = get_snapshot("BTC-USD")
         if btc and btc.get("trend_4h") == "bear":
             corr = _calc_btc_correlation(asset)
@@ -369,6 +371,8 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
             else:
                 print(f"[EntryFilter] BTC BEAR veto LIFTED for {asset} — "
                       f"30d correlation {corr_str} (decorrelated from BTC)")
+    elif asset != "BTC-USD":
+        print(f"[EntryFilter] BTC correlation veto skipped for {asset} (btc_regime_filter=False)")
 
     # 2. Funding rate leverage veto (skips assets with no OKX perp, e.g. ZEC)
     funding = get_okx_funding_rate(asset)

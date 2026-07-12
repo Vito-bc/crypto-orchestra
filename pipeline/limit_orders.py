@@ -202,14 +202,24 @@ def check_and_fill(asset: str, current_price: float) -> list[PendingOrder]:
             continue
         order = PendingOrder(**r)
         if order.is_expired():
-            r["status"] = "EXPIRED"
             if not dry:
                 exch_id = r.get("exchange_order_id")
                 if exch_id:
                     try:
                         cancel_order(exch_id)
-                    except Exception as exc:
-                        print(f"[LimitOrders] Could not cancel expired order {exch_id} on exchange: {exc}")
+                    except Exception as cancel_exc:
+                        # Cancel may fail if the order filled at the TTL boundary — verify
+                        try:
+                            is_already_filled, _ = check_order_filled(exch_id)
+                            if is_already_filled:
+                                r["status"] = "FILLED"
+                                filled.append(PendingOrder(**r))
+                                print(f"[LimitOrders] Order {exch_id} filled at TTL boundary — treating as fill")
+                                continue
+                        except Exception:
+                            pass
+                        print(f"[LimitOrders] Could not cancel expired order {exch_id}: {cancel_exc}")
+            r["status"] = "EXPIRED"
             continue
 
         if dry:

@@ -200,9 +200,26 @@ class OrchestratorAgent:
             )
 
         # ── Risk agent constraints ────────────────────────────────────────────
+        # Fail-closed: if RiskAgent is absent (crashed/timed-out) we cannot
+        # size the position or verify ATR — block rather than trade blind.
         risk_signal = next((s for s in signals if s.agent == AgentName.RISK), None)
+        if risk_signal is None:
+            print("[Orchestrator] WARNING: RiskAgent absent — blocking trade (fail-closed)",
+                  file=sys.stderr)
+            return TradeDecision(
+                asset=asset,
+                timestamp=datetime.now(timezone.utc),
+                action=TradeAction("HOLD"),
+                confidence=0.0,
+                reasoning="[RiskVeto] RiskAgent absent — cannot assess position risk",
+                votes=[],
+                overrides=["Risk agent absent: fail-closed"],
+                veto_triggered=True,
+                veto_reason="RiskAgent not available",
+            )
+
         ok_to_trade = True
-        if risk_signal and risk_signal.metrics:
+        if risk_signal.metrics:
             ok_to_trade = bool(risk_signal.metrics.get("ok_to_trade", True))
 
         if not ok_to_trade:
