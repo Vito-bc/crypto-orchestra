@@ -97,6 +97,23 @@ PERIODS = {
         "warmup": "2025-04-01",
         "btc_move": "Recovery $80k -> $100k+, 2026 rally",
     },
+    # 2021 bull cycle — independent of all tuning; tests general momentum mechanism.
+    # ZEC went from ~$60 to ~$280 (Mar-Oct 2021). Coinbase data available from Dec 2020.
+    "bull_2021": {
+        "label":  "2021 Bull Run  (Mar – Nov 2021)",
+        "start":  "2021-03-01",
+        "end":    "2021-11-10",
+        "warmup": "2020-12-08",
+        "btc_move": "BTC $30k -> $68k (Mar-Nov 2021), ZEC $60 -> $280",
+    },
+    # 2022 bear / crypto winter — tests how badly the strategy bleeds in extended bear.
+    "bear_2022": {
+        "label":  "Crypto Winter  (Jan – Dec 2022)",
+        "start":  "2022-01-01",
+        "end":    "2022-12-31",
+        "warmup": "2021-10-01",
+        "btc_move": "BTC $47k -> $16k (-66%), ZEC $150 -> $28",
+    },
     # Retrospective holdout — NOT used in any ADX/parameter tuning.
     # ADX=25 was selected using live_period (Jun-Jul 2026) only.
     # This period sits between full_year and recent_year and was never examined.
@@ -378,8 +395,24 @@ def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
 
 # ── Per-asset scanner ─────────────────────────────────────────────────────────
 
-def _download_and_compute(asset: str, start: str, end: str, interval: str) -> pd.DataFrame | None:
-    """Download OHLCV from yfinance and attach all technical indicators."""
+def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFrame | None:
+    """Fetch OHLCV from Coinbase (preferred) with yfinance as fallback."""
+    # ── Coinbase path ──────────────────────────────────────────────────────────
+    try:
+        from exchange.coinbase_candles import download as _cb_download
+        gran_map = {"1h": "1h", "4h": "4h", "1d": "1d"}
+        gran = gran_map.get(interval)
+        if gran:
+            df = _cb_download(asset, start=start, end=end, granularity=gran, verbose=False)
+            if df is not None and not df.empty and len(df) >= 20:
+                df = df.set_index("time")
+                df.index = pd.to_datetime(df.index, utc=True)
+                df.index.name = None  # avoid "time is both index and column" ambiguity
+                return df.dropna(subset=["close", "open", "high", "low", "volume"])
+    except Exception:
+        pass  # fall through to yfinance
+
+    # ── yfinance fallback ──────────────────────────────────────────────────────
     try:
         raw = yf.download(asset, start=start, end=end, interval=interval,
                           progress=False, auto_adjust=True)
@@ -389,8 +422,16 @@ def _download_and_compute(asset: str, start: str, end: str, interval: str) -> pd
             raw.columns = raw.columns.get_level_values(0)
         raw.columns = [c.lower() for c in raw.columns]
         raw.index   = pd.to_datetime(raw.index, utc=True)
-        raw         = raw.dropna(subset=["close", "open", "high", "low", "volume"])
-        if len(raw) < 20:
+        return raw.dropna(subset=["close", "open", "high", "low", "volume"])
+    except Exception:
+        return None
+
+
+def _download_and_compute(asset: str, start: str, end: str, interval: str) -> pd.DataFrame | None:
+    """Fetch OHLCV (Coinbase preferred, yfinance fallback) and compute all indicators."""
+    try:
+        raw = _fetch_ohlcv(asset, start, end, interval)
+        if raw is None or len(raw) < 20:
             return None
 
         df = raw.copy()
