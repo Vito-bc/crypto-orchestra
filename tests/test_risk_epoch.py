@@ -278,6 +278,25 @@ def test_epoch_drawdown_halts_at_threshold():
         assert dd > 12.0, f"DD {dd}% should exceed 12% halt threshold"
 
 
+def test_duplicate_epoch_id_rejected():
+    """start_new_epoch raises ValueError if epoch_id already exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        epochs_file = Path(tmpdir) / "risk_epochs.jsonl"
+
+        import pipeline.risk_epoch as re_mod
+        orig = re_mod.EPOCHS_FILE
+        re_mod.EPOCHS_FILE = epochs_file
+        try:
+            start_new_epoch("EPOCH_A:2026-07-12", 100.0, "first", force=True)
+            with pytest.raises(ValueError, match="already exists"):
+                start_new_epoch("EPOCH_A:2026-07-12", 100.0, "duplicate attempt", force=True)
+            # File should still have only one record
+            lines = [l for l in epochs_file.read_text().splitlines() if l.strip()]
+            assert len(lines) == 1, f"Duplicate must not be written. Got {len(lines)} lines."
+        finally:
+            re_mod.EPOCHS_FILE = orig
+
+
 def test_circuit_breaker_inner_halts_at_epoch_12pct():
     """_get_circuit_breaker_state_inner() must return halted=True when epoch DD > 12%."""
     with tempfile.TemporaryDirectory() as tmpdir:

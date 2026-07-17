@@ -199,8 +199,12 @@ def count_recent_stops(asset: str, hours: int = 48) -> int:
             continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue  # malformed stop record: under-count is safer than blocking all trades
+        except json.JSONDecodeError as e:
+            # A corrupt line could be a stop-loss — under-count is not safe.
+            raise RuntimeError(
+                f"Corrupt line in trade_history.jsonl — whipsaw guard cannot proceed: "
+                f"{e!r} | line: {line[:120]!r}"
+            ) from e
         if rec.get("asset") != asset or rec.get("reason") != "STOP_LOSS":
             continue
         ts_str = rec.get("closed_at_utc") or rec.get("exit_time") or ""

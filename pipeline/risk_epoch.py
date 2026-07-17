@@ -31,6 +31,7 @@ strategy-level drawdown.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -80,17 +81,57 @@ def start_new_epoch(
     """
     Record the start of a new risk epoch. Append-only — does NOT modify trade_history.
 
-    Raises ValueError if open positions or pending orders exist (use force=True to bypass).
+    Guards (all enforced before writing):
+      1. force=True is blocked when DRY_RUN=false (live mode requires Coinbase reconciliation).
+      2. epoch_id must be unique — duplicate would merge old trades into the new epoch.
+      3. Open positions / pending orders must be zero unless force=True.
 
     Args:
         epoch_id:      Unique identifier, e.g. "ZEC_V2_ADX25:2026-07-12"
         paper_capital: Starting paper capital for this epoch (e.g. 100.0)
         reason:        Human-readable reason for starting this epoch
-        force:         Skip the open-exposure safety check (use only when you know what you're doing)
+        force:         Skip the open-exposure check. Blocked in live mode.
 
     Returns:
         The epoch record dict that was written.
     """
+    # Guard 1: force is only safe in dry-run mode
+    if force:
+        _live = os.getenv("DRY_RUN", "true").lower() in ("false", "0", "no")
+        if _live:
+            raise ValueError(
+                "force=True is not allowed when DRY_RUN=false. "
+                "Set DRY_RUN=true and verify Coinbase exposure before force-starting an epoch."
+            )
+
+    # Guard 2: epoch_id must be unique
+    if EPOCHS_FILE.exists():
+        try:
+            _text = EPOCHS_FILE.read_text(encoding="utf-8")
+        except OSError as e:
+            raise RuntimeError(f"risk_epochs.jsonl unreadable during uniqueness check: {e}") from e
+        _existing_ids: set[str] = set()
+        for _line in _text.splitlines():
+            _line = _line.strip()
+            if not _line:
+                continue
+            try:
+                _rec = json.loads(_line)
+                _eid = _rec.get("epoch_id")
+                if _eid:
+                    _existing_ids.add(_eid)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"Corrupt line in risk_epochs.jsonl during uniqueness check: {e!r}"
+                ) from e
+        if epoch_id in _existing_ids:
+            raise ValueError(
+                f"Epoch '{epoch_id}' already exists in risk_epochs.jsonl. "
+                "Duplicate epoch_id would merge old trades into this epoch. "
+                "Choose a distinct epoch_id (e.g. append a suffix or different date)."
+            )
+
+    # Guard 3: no open exposure (unless force=True)
     if not force:
         _positions_file = ROOT / "logs" / "open_positions.json"
         _orders_file    = ROOT / "logs" / "pending_orders.json"
@@ -114,14 +155,12 @@ def start_new_epoch(
         if open_pos_count != 0:
             raise ValueError(
                 f"Cannot start new epoch: {open_pos_count} open position(s) detected "
-                f"(or exposure file unreadable). Close all positions first, then retry. "
-                f"Use force=True only if you have verified there is truly no open exposure."
+                f"(or exposure file unreadable). Close all positions first, then retry."
             )
         if pending_count != 0:
             raise ValueError(
                 f"Cannot start new epoch: {pending_count} pending order(s) detected "
-                f"(or orders file unreadable). Cancel all orders first, then retry. "
-                f"Use force=True only if you have verified there is truly no open exposure."
+                f"(or orders file unreadable). Cancel all orders first, then retry."
             )
 
     EPOCHS_FILE.parent.mkdir(parents=True, exist_ok=True)

@@ -1,3 +1,8 @@
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires live Coinbase data cache (data/candles/)",
+]
+
 [tool.ruff]
 target-version = "py310"
 

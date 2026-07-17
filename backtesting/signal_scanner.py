@@ -169,6 +169,19 @@ ASSET_CONFIG = {
         "vol_spike_ratio": 1.3,
         "daily_ema_period": 200,
         "btc_regime_filter": False,  # ZEC moves independently of BTC — filter blocks good setups
+        # V3 regime filter — ER-30 (Kaufman Efficiency Ratio, 30-day window).
+        # Integrated filter analysis across 4 historical regimes (4.5 years):
+        #   No filter: PFs=[1.42, 1.41, 0.52, 1.00], avg=-0.08%/trade
+        #   er>=0.20:  PFs=[1.41, 1.03, 1.00, 1.11], avg=+0.31%/trade (best stable threshold)
+        #   er>=0.25:  PFs=[0.77, 5.32, 0.77, 1.16]  (small sample instability)
+        #
+        # v3_candidate_threshold — pre-registered (2026-07-13), LOCKED at 0.20.
+        #   Always computed for journaling; never changed on OOS data.
+        # v3_enforcement_enabled — False = shadow/research only (log v3_would_block but
+        #   don't block trades). True = live enforcement. Activate only after 5-point OOS
+        #   criteria are met (see docs/trial_registry.md).
+        "v3_candidate_threshold": 0.20,
+        "v3_enforcement_enabled": False,
         "enabled": True,
     },
     # ── Candidate assets for portfolio expansion ─────────────────────────────
@@ -486,6 +499,78 @@ def _download_and_compute(asset: str, start: str, end: str, interval: str) -> pd
         return None
 
 
+def _compute_regime_metrics(daily_df: pd.DataFrame | None, as_of_ts: pd.Timestamp) -> dict:
+    """
+    Compute regime quality metrics from daily OHLCV *before* the signal date.
+    All values use only past data — zero look-ahead.
+
+    Returns:
+      er_30   : Kaufman Trend Efficiency Ratio over last 30 trading days.
+                er_30 = |net move| / sum(|daily moves|).  Range [0, 1].
+                1.0 = perfectly straight trend; 0.0 = pure noise.
+      vm_30   : Vol-adjusted momentum = 30-day return / annualised realised vol.
+                Positive and large in strong, low-noise uptrends.
+      ema50_slope : 5-day fractional change of daily EMA50 (trend angle proxy).
+    """
+    if daily_df is None or daily_df.empty:
+        return {}
+
+    # Strictly trailing: use only daily candles that are FULLY CLOSED before today.
+    # A Coinbase daily candle is timestamped at its START (e.g. 2021-03-08 00:00 UTC
+    # covers 2021-03-08 00:00 → 2021-03-09 00:00). At signal time 20:00 on March 8,
+    # that candle is NOT closed — its close is future relative to the signal.
+    # Fix: cut at midnight of the signal's date so only yesterday-and-earlier is used.
+    ts = as_of_ts if as_of_ts.tzinfo else as_of_ts.tz_localize("UTC")
+
+    # Both ts and the daily index must be UTC to avoid silent timezone offset in normalize().
+    if daily_df.index.tzinfo is None:
+        daily_df = daily_df.copy()
+        daily_df.index = daily_df.index.tz_localize("UTC")
+    elif str(daily_df.index.tzinfo) != "UTC":
+        daily_df = daily_df.copy()
+        daily_df.index = daily_df.index.tz_convert("UTC")
+
+    day_boundary = ts.normalize()                          # midnight UTC on signal date
+    pre_signal   = daily_df[daily_df.index < day_boundary]
+    hist         = pre_signal.tail(40)
+    if len(hist) < 20:
+        return {}
+
+    n_daily_bars = len(pre_signal)
+    ema200_valid = n_daily_bars >= 200                     # EMA200 needs ~200 trading days
+
+    closes = hist["close"].astype(float).values
+
+    # ── Trend Efficiency Ratio (30-day) ─────────────────────────────────────
+    c30 = closes[-min(30, len(closes)):]
+    net_move   = abs(float(c30[-1]) - float(c30[0]))
+    gross_path = float(np.sum(np.abs(np.diff(c30))))
+    er_30 = round(net_move / gross_path, 3) if gross_path > 0 else 0.0
+
+    # ── Vol-adjusted momentum (30-day) ──────────────────────────────────────
+    ret_30    = (float(c30[-1]) - float(c30[0])) / float(c30[0])
+    daily_ret = np.diff(c30) / c30[:-1]
+    rv        = float(np.std(daily_ret)) * np.sqrt(252) if len(daily_ret) > 1 else 1.0
+    vm_30     = round(ret_30 / rv, 3) if rv > 0 else 0.0
+
+    # ── EMA50 slope (5-day fractional change) ───────────────────────────────
+    ema50_vals = hist["ema50"].astype(float).values if "ema50" in hist.columns else None
+    ema50_slope = None
+    if ema50_vals is not None and len(ema50_vals) >= 5:
+        e_now, e_5d = float(ema50_vals[-1]), float(ema50_vals[-5])
+        ema50_slope = round((e_now - e_5d) / e_5d, 4) if e_5d > 0 else 0.0
+
+    result = {
+        "er_30":        er_30,
+        "vm_30":        vm_30,
+        "n_daily_bars": n_daily_bars,
+        "ema200_valid": ema200_valid,
+    }
+    if ema50_slope is not None:
+        result["ema50_slope"] = ema50_slope
+    return result
+
+
 def scan_asset(asset: str, period: dict) -> dict:
     print(f"\n  Downloading {asset} data (warmup from {period['warmup']})...")
 
@@ -493,7 +578,9 @@ def scan_asset(asset: str, period: dict) -> dict:
     trend_df = _download_and_compute(asset, period["warmup"], period["end"], "4h")
     # Daily data: extend warmup far back so EMA200 (200 trading days ≈ 10 months) is valid.
     # yfinance daily has no 730-day limit, so "2022-01-01" is safe for any period.
-    daily_df = _download_and_compute(asset, "2022-01-01", period["end"], "1d")
+    # Start daily from Coinbase listing date (2020-12-08) so EMA200 and ER-30
+    # are valid even for periods that start in 2021.
+    daily_df = _download_and_compute(asset, "2020-01-01", period["end"], "1d")
 
     if sig_df is None or trend_df is None:
         print(f"  {asset}: no data")
@@ -551,8 +638,11 @@ def scan_asset(asset: str, period: dict) -> dict:
     blocked_btc      = 0
     blocked_cond     = 0
     blocked_whipsaw  = 0
-    skip_until       = -1   # don't double-enter
-    recent_stop_ts: list[pd.Timestamp] = []  # timestamps of recent stop losses
+    blocked_v3        = 0
+    skip_until        = -1   # don't double-enter
+    recent_stop_ts: list[pd.Timestamp] = []
+    v3_threshold      = asset_cfg.get("v3_candidate_threshold")
+    v3_enforcement    = asset_cfg.get("v3_enforcement_enabled", False)
 
     # We need to operate on the full df (for lookback), but filter output to period
     full_len   = len(df)
@@ -592,6 +682,14 @@ def scan_asset(asset: str, period: dict) -> dict:
             blocked_whipsaw += 1
             continue
 
+        # V3 regime filter — always compute for tracking; enforce only if enabled
+        regime = _compute_regime_metrics(daily_df, ts)
+        er = regime.get("er_30")
+        v3_would_block = (v3_threshold is not None and er is not None and er < v3_threshold)
+        if v3_would_block and v3_enforcement:
+            blocked_v3 += 1
+            continue
+
         # Valid BUY signal — simulate the trade
         trade = _simulate_trade(df, i, price, max_hold, atr_stop, atr_target)
         if trade["reason"] == "STOP_LOSS":
@@ -602,6 +700,8 @@ def scan_asset(asset: str, period: dict) -> dict:
             "price":        round(price, 2),
             "signal":       result,
             "trade":        trade,
+            "regime":       regime,
+            "v3_would_block": v3_would_block,
         }
         signals.append(record)
         skip_until = i + trade["hold_h"] + 1   # don't re-enter mid-hold
@@ -616,6 +716,7 @@ def scan_asset(asset: str, period: dict) -> dict:
         "blocked_btc":      blocked_btc,
         "blocked_cond":     blocked_cond,
         "blocked_whipsaw":  blocked_whipsaw,
+        "blocked_v3":       blocked_v3,
         "atr_stop":         atr_stop,
         "atr_target":       atr_target,
     }
@@ -643,7 +744,7 @@ def scan_latest(asset: str) -> dict | None:
 
     sig_df   = _download_and_compute(asset, warmup,        today, "1h")
     trend_df = _download_and_compute(asset, warmup,        today, "4h")
-    daily_df = _download_and_compute(asset, "2022-01-01",  today, "1d")
+    daily_df = _download_and_compute(asset, "2020-01-01",  today, "1d")
 
     if sig_df is None or trend_df is None or len(sig_df) < 50:
         return None
@@ -684,16 +785,48 @@ def scan_latest(asset: str) -> dict | None:
         return None
 
     ts = df.index[i]
-    return {
-        "asset":       asset,
-        "entry_time":  str(ts),
-        "entry_price": float(df.iloc[i]["close"]),
-        "conf":        result["confidence"],
-        "n_conditions": result["n_conditions"],
-        "candles_above": result["candles_above"],
-        "adx":         result["adx"],
-        "vol_ratio":   result["vol_ratio"],
+
+    # V3 regime filter — always compute for shadow journaling regardless of enforcement.
+    v3_threshold    = cfg.get("v3_candidate_threshold")   # pre-registered, locked
+    v3_enforcement  = cfg.get("v3_enforcement_enabled", False)
+    regime = {}
+    if daily_df is not None:
+        regime = _compute_regime_metrics(daily_df, ts)
+
+    er = regime.get("er_30")
+    v3_would_block = (
+        v3_threshold is not None
+        and er is not None
+        and er < v3_threshold
+    )
+    # Enforcement = shadow AND active gate — only blocks when explicitly enabled
+    v3_blocked = v3_would_block and v3_enforcement
+
+    signal_dict = {
+        "asset":           asset,
+        "entry_time":      str(ts),
+        "entry_price":     float(df.iloc[i]["close"]),
+        "atr":             float(df.iloc[i].get("atr", 0)),
+        "conf":            result["confidence"],
+        "n_conditions":    result["n_conditions"],
+        "candles_above":   result["candles_above"],
+        "adx":             result["adx"],
+        "vol_ratio":       result["vol_ratio"],
+        "er_30":           er,
+        "vm_30":           regime.get("vm_30"),
+        "ema50_slope":     regime.get("ema50_slope"),
+        "ema200_valid":    regime.get("ema200_valid"),
+        "n_daily_bars":    regime.get("n_daily_bars"),
+        "v3_candidate_threshold": v3_threshold,
+        "v3_would_block":  v3_would_block,
+        "v3_enforcement":  v3_enforcement,
+        "v3_blocked":      v3_blocked,
     }
+
+    if v3_blocked:
+        print(f"[ScanLatest] V3 enforcement blocked {asset}: ER-30={er:.3f} < {v3_threshold:.3f}")
+
+    return signal_dict
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
@@ -725,16 +858,18 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
         sigs = r.get("signals", [])
         print(f"\n{'-'*70}")
         bw         = r.get("blocked_whipsaw", 0)
+        bv3        = r.get("blocked_v3", 0)
         atr_stop   = r.get("atr_stop", 2.0)
         atr_target = r.get("atr_target", 3.5)
         rr         = atr_target / atr_stop
         bd  = r.get("blocked_daily", 0)
         bb  = r.get("blocked_btc", 0)
         btc_str = f"  btc={bb}" if bb else ""
+        v3_str  = f"  v3_er={bv3}" if bv3 else ""
         print(f"  {asset}  ({len(sigs)} signals  |  "
               f"stop={atr_stop}x  target={atr_target}x  R:R={rr:.2f}  |  "
               f"blocked: vol={r['blocked_vol']}  4h={r['blocked_4h']}  "
-              f"daily={bd}{btc_str}  cond={r['blocked_cond']}  whipsaw={bw})")
+              f"daily={bd}{btc_str}  cond={r['blocked_cond']}  whipsaw={bw}{v3_str})")
 
         if not sigs:
             print("    No signals fired in this period.")
@@ -760,6 +895,18 @@ def print_report(period_key: str, period: dict, all_results: dict) -> None:
             for reason, v in sorted(by_reason.items())
         ]
         print(f"  Exits: {', '.join(reason_parts)}")
+
+        # ── Regime metrics breakdown ──────────────────────────────────────────
+        er_wins = [s["regime"]["er_30"] for s in wins   if s.get("regime", {}).get("er_30") is not None]
+        er_loss = [s["regime"]["er_30"] for s in losses if s.get("regime", {}).get("er_30") is not None]
+        if er_wins or er_loss:
+            avg_er_w = sum(er_wins) / len(er_wins) if er_wins else None
+            avg_er_l = sum(er_loss) / len(er_loss) if er_loss else None
+            w_str = f"{avg_er_w:.3f}" if avg_er_w is not None else "n/a"
+            l_str = f"{avg_er_l:.3f}" if avg_er_l is not None else "n/a"
+            diff_str = (f"  diff={avg_er_w - avg_er_l:+.3f}"
+                        if avg_er_w is not None and avg_er_l is not None else "")
+            print(f"  ER-30 (wins/losses): {w_str} / {l_str}{diff_str}")
 
         print(f"\n  {'Timestamp':<18} {'Price':>10}  {'Signal':>7}  "
               f"{'Conf':>5}  {'Exit':>12}  {'Hold':>5}  {'P&L':>8}")
