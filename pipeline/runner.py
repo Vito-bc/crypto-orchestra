@@ -82,6 +82,7 @@ _FUNDING_BLOCK_ANNUALIZED    = 20.0  # block long if OKX funding > 20% annualize
 
 LOG_DIR       = ROOT / "logs"
 DECISIONS_LOG = LOG_DIR / "agent_decisions.jsonl"
+_SIGNALS_DB   = LOG_DIR / "signals.db"               # SQLite idempotency store
 
 # Hold extension thresholds (condition-based exit research: Liu & Tsyvinski 2021)
 _HOLD_EXT_MIN_SCORE = 3   # out of 5 conditions required to extend
@@ -140,6 +141,75 @@ def _log_order_event(asset: str, event_type: str, details: dict) -> None:
     }
     with DECISIONS_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
+
+
+# ── Idempotency (SQLite) ──────────────────────────────────────────────────────
+# SQLite gives us atomic INSERT with UNIQUE constraint — two concurrent processes
+# cannot both claim the same signal_id.
+# State machine: claimed → completed.
+# Stale claims (>2h old) are eligible for recovery so a crash doesn't permanently
+# lose a signal.
+
+import sqlite3 as _sqlite3
+
+def _make_signal_id(asset: str, candle_close_time: str) -> str:
+    return f"{asset}:{candle_close_time}:v3"
+
+
+def _ensure_signals_db() -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with _sqlite3.connect(_SIGNALS_DB) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS processed_signals (
+                signal_id    TEXT PRIMARY KEY,
+                asset        TEXT NOT NULL,
+                candle_close TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'claimed',
+                claimed_at   TEXT,
+                completed_at TEXT
+            )
+        """)
+
+
+def _claim_signal(signal_id: str, asset: str, candle_close: str) -> bool:
+    """
+    Atomically claim this signal_id. Returns True if successfully claimed,
+    False if it is already claimed/completed (idempotency gate).
+    Stale 'claimed' entries older than 2 hours are treated as recoverable.
+    """
+    _ensure_signals_db()
+    now = datetime.now(timezone.utc).isoformat()
+    # First, clean up any stale claims for this specific signal_id
+    stale_cutoff = (datetime.now(timezone.utc).timestamp() - 7200)
+    with _sqlite3.connect(_SIGNALS_DB) as conn:
+        conn.execute(
+            "DELETE FROM processed_signals "
+            "WHERE signal_id=? AND status='claimed' "
+            "AND CAST(strftime('%s', claimed_at) AS INTEGER) < ?",
+            (signal_id, stale_cutoff),
+        )
+    try:
+        with _sqlite3.connect(_SIGNALS_DB) as conn:
+            conn.execute(
+                "INSERT INTO processed_signals "
+                "(signal_id, asset, candle_close, status, claimed_at) "
+                "VALUES (?, ?, ?, 'claimed', ?)",
+                (signal_id, asset, candle_close, now),
+            )
+        return True
+    except _sqlite3.IntegrityError:
+        return False  # UNIQUE violation — already claimed or completed
+
+
+def _complete_signal(signal_id: str) -> None:
+    """Mark a successfully processed signal as completed."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _sqlite3.connect(_SIGNALS_DB) as conn:
+        conn.execute(
+            "UPDATE processed_signals SET status='completed', completed_at=? "
+            "WHERE signal_id=?",
+            (now, signal_id),
+        )
 
 
 # ── Console output ────────────────────────────────────────────────────────────
@@ -449,77 +519,115 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
 
 # ── Drawdown circuit breakers ────────────────────────────────────────────────
 
-_PAPER_START        = float(os.getenv("LIVE_BALANCE_USD", "10000.0"))
-_DD_HALT_PCT        = 12.0   # drawdown from peak → halt all new trades
-_DD_QUARTER_PCT     =  8.0   # drawdown from peak → 25% position size
-_DD_HALF_PCT        =  5.0   # drawdown from peak → 50% position size
+_DD_HALT_PCT        = 12.0   # strategy drawdown from epoch peak → halt all new trades
+_DD_QUARTER_PCT     =  8.0   # drawdown from epoch peak → 25% position size
+_DD_HALF_PCT        =  5.0   # drawdown from epoch peak → 50% position size
 _DAILY_LOSS_HALT    =  2.0   # single-day loss % → 50% position size
+_GLOBAL_HALT_PCT    = 40.0   # absolute loss from epoch capital → emergency global halt
 
 
 def _get_circuit_breaker_state() -> tuple[bool, str, float]:
     """
-    Read closed trade history, compute current equity and drawdown from peak.
+    Two-level circuit breaker using risk epoch isolation.
+
+    Level 1 — Strategy epoch circuit breaker (primary):
+      Drawdown computed only from trades tagged with the current epoch_id.
+      Pre-epoch trades (different strategy version, different capital scale)
+      do NOT contaminate this calculation.
+      Thresholds: HALT at 12%, reduce at 8% and 5%.
+
+    Level 2 — Global absolute protection:
+      If epoch equity falls below (1 - _GLOBAL_HALT_PCT/100) × epoch_paper_capital,
+      halt regardless of peak — this catches a series of very large individual losses.
+
+    If no epoch is active: falls back to legacy behavior using all trades and
+    LIVE_BALANCE_USD env var as the starting equity (backward compatible).
+
+    Fail-closed: any exception reading risk data returns halted=True.
+
     Returns (trading_halted, reason, size_modifier).
-
-    trading_halted=True  → no new BUY orders at all (manual review required)
-    size_modifier < 1.0  → position sizes reduced proportionally
     """
-    if not TRADE_HISTORY.exists():
-        return False, "", 1.0
-
     try:
+        return _get_circuit_breaker_state_inner()
+    except Exception as _cb_exc:
+        _reason = f"CIRCUIT BREAKER SAFE MODE — risk data unreadable: {_cb_exc}"
+        print(f"[CircuitBreaker] {_reason}")
+        return True, _reason, 0.0
+
+
+def _get_circuit_breaker_state_inner() -> tuple[bool, str, float]:
+    from pipeline.risk_epoch import get_current_epoch, compute_epoch_drawdown
+
+    epoch = get_current_epoch()
+
+    if epoch is None:
+        # Legacy fallback: no epoch registered → use all trades, env-var balance
+        _paper_start = float(os.getenv("LIVE_BALANCE_USD", "10000.0"))
+        if not TRADE_HISTORY.exists():
+            return False, "", 1.0
+        try:
+            raw_lines = [l for l in TRADE_HISTORY.read_text(encoding="utf-8").splitlines() if l.strip()]
+        except OSError as e:
+            raise RuntimeError(f"trade_history.jsonl unreadable (legacy CB path): {e}") from e
         trades = []
-        with open(TRADE_HISTORY) as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    trades.append(json.loads(line))
-    except Exception:
-        return False, "", 1.0
+        for _l in raw_lines:
+            try:
+                trades.append(json.loads(_l))
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"Corrupt line in trade_history.jsonl (legacy CB path): {e!r} | line: {_l[:120]!r}"
+                ) from e
+        if not trades:
+            return False, "", 1.0
+        equity = _paper_start
+        peak   = _paper_start
+        for t in sorted(trades, key=lambda x: x.get("exit_time", "")):
+            equity += t.get("pnl_usd", 0.0)
+            if equity > peak:
+                peak = equity
+        drawdown_pct = (peak - equity) / peak * 100 if peak > 0 else 0.0
+        today = datetime.now(timezone.utc).date().isoformat()
+        daily_pnl = sum(t.get("pnl_usd", 0.0) for t in trades if str(t.get("exit_time", ""))[:10] == today)
+        daily_loss_pct = abs(daily_pnl) / equity * 100 if equity > 0 and daily_pnl < 0 else 0.0
+    else:
+        # Epoch-scoped circuit breaker
+        equity, peak, drawdown_pct = compute_epoch_drawdown(epoch)
+        paper_capital = epoch["paper_capital"]
 
-    if not trades:
-        return False, "", 1.0
+        # Level 2: global absolute floor (emergency stop, strategy-scale-independent)
+        global_floor = paper_capital * (1.0 - _GLOBAL_HALT_PCT / 100.0)
+        if equity < global_floor:
+            return True, (
+                f"GLOBAL HALT [{epoch['epoch_id']}] — equity ${equity:.2f} < "
+                f"${global_floor:.2f} ({_GLOBAL_HALT_PCT:.0f}% floor of epoch capital ${paper_capital:.2f})"
+            ), 0.0
 
-    # Build equity curve to find peak
-    equity = _PAPER_START
-    peak   = _PAPER_START
-    for t in sorted(trades, key=lambda x: x.get("exit_time", "")):
-        equity += t.get("pnl_usd", 0.0)
-        if equity > peak:
-            peak = equity
+        today = datetime.now(timezone.utc).date().isoformat()
+        from pipeline.risk_epoch import get_epoch_trades
+        epoch_trades = get_epoch_trades(epoch["epoch_id"])
+        daily_pnl = sum(
+            t.get("pnl_usd", 0.0)
+            for t in epoch_trades
+            if str(t.get("exit_time", t.get("closed_at_utc", "")))[:10] == today
+        )
+        daily_loss_pct = abs(daily_pnl) / equity * 100 if equity > 0 and daily_pnl < 0 else 0.0
 
-    drawdown_pct = (peak - equity) / peak * 100 if peak > 0 else 0.0
-
-    # Daily P&L: trades closed today (UTC)
-    today = datetime.now(timezone.utc).date().isoformat()
-    daily_pnl = sum(
-        t.get("pnl_usd", 0.0)
-        for t in trades
-        if str(t.get("exit_time", ""))[:10] == today
-    )
-    daily_loss_pct = abs(daily_pnl) / equity * 100 if equity > 0 and daily_pnl < 0 else 0.0
-
-    # Apply thresholds in order of severity
+    # Apply thresholds
     if drawdown_pct >= _DD_HALT_PCT:
+        label = f"[{epoch['epoch_id']}] " if epoch else ""
         return True, (
-            f"CIRCUIT BREAKER — drawdown {drawdown_pct:.1f}% from peak ${peak:,.2f}. "
+            f"CIRCUIT BREAKER {label}— drawdown {drawdown_pct:.1f}% from peak ${peak:.2f}. "
             f"Trading HALTED. Manual review required."
         ), 0.0
 
     if drawdown_pct >= _DD_QUARTER_PCT:
-        return False, (
-            f"Circuit breaker (25% size) — drawdown {drawdown_pct:.1f}% from peak"
-        ), 0.25
+        return False, f"Circuit breaker (25% size) — drawdown {drawdown_pct:.1f}% from epoch peak", 0.25
 
     if drawdown_pct >= _DD_HALF_PCT:
-        return False, (
-            f"Circuit breaker (50% size) — drawdown {drawdown_pct:.1f}% from peak"
-        ), 0.5
+        return False, f"Circuit breaker (50% size) — drawdown {drawdown_pct:.1f}% from epoch peak", 0.5
 
     if daily_loss_pct >= _DAILY_LOSS_HALT:
-        return False, (
-            f"Daily loss circuit breaker (50% size) — lost {daily_loss_pct:.1f}% today"
-        ), 0.5
+        return False, f"Daily loss circuit breaker (50% size) — lost {daily_loss_pct:.1f}% today", 0.5
 
     return False, "", 1.0
 
@@ -542,11 +650,56 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
         _check_pending_fills(asset, current_price)    # fills → open positions
 
     # ── 1.5 Scanner gate — deterministic signal check ────────────────────────
-    # The signal_scanner is our validated entry model (89 signals, 51.7% win,
-    # +0.64% avg P&L in backtest). It fires only when EMA50 cross + 4/5 conditions
-    # are met. If no signal, skip agents entirely — saves API cost and prevents
-    # noise entries. When signal fires, agents act as veto-only (macro SELL blocks).
+    # The signal_scanner is our validated entry model. It fires only when EMA50
+    # cross + 4/5 conditions are met. If no signal, skip agents entirely.
+    # When signal fires, agents act as veto-only (macro SELL blocks).
     _scanner_signal = scan_latest(asset)
+
+    # Idempotency: a 30-minute scheduler may call run_pipeline() twice for the
+    # same closed hourly candle. Atomically claim the signal before any processing.
+    # CLAIMED → COMPLETED; crash leaves a claimed entry that auto-expires after 2h.
+    if _scanner_signal is not None:
+        _sig_id = _make_signal_id(asset, _scanner_signal["entry_time"])
+        if not _claim_signal(_sig_id, asset, _scanner_signal["entry_time"]):
+            print(f"[Scanner] Signal {_sig_id} already claimed/processed — skipping (idempotency)")
+            return TradeDecision(
+                asset=asset, timestamp=datetime.now(timezone.utc),
+                action=TradeAction.HOLD, confidence=0.0,
+                reasoning=f"Idempotency: candle {_scanner_signal['entry_time']} already evaluated.",
+                votes=[], overrides=[],
+                veto_triggered=False, veto_reason=None,
+                position_size_pct=None, stop_loss_price=None, take_profit_price=None,
+            )
+
+        # Signal claimed — log to V3 forward-OOS journal before any trade action.
+        # In shadow mode (v3_enforcement_enabled=False), v3_blocked is always False
+        # but v3_would_block is still set, letting us track counterfactuals.
+        from pipeline.v3_journal import log_v2_signal
+        _v3_blocked    = _scanner_signal.get("v3_blocked", False)
+        _v3_would_blk  = _scanner_signal.get("v3_would_block", False)
+        log_v2_signal(scanner_signal=_scanner_signal, accepted=not _v3_blocked)
+
+        # V3 enforcement blocked this signal
+        if _v3_blocked:
+            er  = _scanner_signal.get("er_30", 0.0)
+            thr = _scanner_signal.get("v3_candidate_threshold", "?")
+            print(f"[V3] Enforced block {asset}: ER-30={er:.3f} < {thr} — HOLD")
+            _complete_signal(_sig_id)
+            return TradeDecision(
+                asset=asset, timestamp=datetime.now(timezone.utc),
+                action=TradeAction.HOLD, confidence=0.0,
+                reasoning=f"[V3] ER-30={er:.3f} below enforcement threshold {thr}.",
+                votes=[], overrides=[f"V3 ER enforcement: {er:.3f} < {thr}"],
+                veto_triggered=True, veto_reason=f"V3 regime filter: ER-30={er:.3f}",
+                position_size_pct=None, stop_loss_price=None, take_profit_price=None,
+            )
+
+        # Shadow-mode info log (enforcement off, but would-block is informative)
+        if _v3_would_blk:
+            er  = _scanner_signal.get("er_30", 0.0)
+            thr = _scanner_signal.get("v3_candidate_threshold", "?")
+            print(f"[V3 shadow] Would-block {asset}: ER-30={er:.3f} < {thr} — proceeding (enforcement off)")
+
     if _scanner_signal is None:
         print(f"[Scanner] No signal for {asset} — HOLD (agents skipped)")
         _hold = TradeDecision(
@@ -565,7 +718,8 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
           f"candles_above={_scanner_signal['candles_above']}  "
           f"ADX={_scanner_signal['adx']:.1f}  "
           f"vol={_scanner_signal['vol_ratio']:.2f}x  "
-          f"conf={_scanner_signal['conf']:.0%}")
+          f"conf={_scanner_signal['conf']:.0%}"
+          + (f"  ER-30={_scanner_signal['er_30']:.3f}" if _scanner_signal.get("er_30") is not None else ""))
 
     # ── 2. Run sub-agents concurrently ────────────────────────────────────────
     sub_agents = [
@@ -807,6 +961,13 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
 
     if decision.action == TradeAction.SELL:
         send_telegram_message(_format_telegram(asset, decision))
+
+    # Mark this signal as fully processed (claim → complete)
+    if _scanner_signal is not None:
+        try:
+            _complete_signal(_make_signal_id(asset, _scanner_signal["entry_time"]))
+        except Exception:
+            pass  # Non-fatal; claim will auto-expire in 2h
 
     return decision
 

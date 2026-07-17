@@ -67,6 +67,7 @@ class PendingOrder:
     reasoning:         str
     status:            str    # OPEN | FILLED | CANCELLED | EXPIRED
     exchange_order_id: Optional[str] = field(default=None)  # Coinbase order ID
+    epoch_id:          Optional[str] = field(default=None)  # stamped at placement, not at close
 
     @classmethod
     def create(
@@ -78,6 +79,8 @@ class PendingOrder:
         reasoning:         str = "",
         ttl_hours:         int = ORDER_TTL_HOURS,
     ) -> "PendingOrder":
+        from pipeline.risk_epoch import get_current_epoch as _get_epoch
+        _epoch = _get_epoch()
         now = datetime.now(timezone.utc)
         return cls(
             id=str(uuid.uuid4())[:8],
@@ -91,6 +94,7 @@ class PendingOrder:
             reasoning=reasoning,
             status="OPEN",
             exchange_order_id=None,
+            epoch_id=_epoch["epoch_id"] if _epoch else None,
         )
 
     def is_expired(self) -> bool:
@@ -111,12 +115,15 @@ def _load_raw() -> list[dict]:
         return []
     try:
         rows = json.loads(ORDERS_FILE.read_text(encoding="utf-8"))
-        # Backwards compat: add exchange_order_id if missing (pre-Coinbase orders)
+        # Backwards compat: fill in fields missing from older records
         for r in rows:
             r.setdefault("exchange_order_id", None)
+            r.setdefault("epoch_id", None)
         return rows
-    except (json.JSONDecodeError, OSError):
-        return []
+    except (json.JSONDecodeError, OSError) as e:
+        # Fail-closed: file exists but is unreadable → safer to raise than return []
+        # (returning [] would make the placement guard think no orders are open)
+        raise RuntimeError(f"pending_orders.json is corrupt or unreadable: {e}") from e
 
 
 def _save_raw(orders: list[dict]) -> None:
@@ -146,7 +153,7 @@ def place_limit_order(
     reasoning:         str = "",
 ) -> PendingOrder:
     """Create a limit buy order, send it to Coinbase, and persist it locally."""
-    from exchange.coinbase_client import place_limit_buy
+    from exchange.coinbase_client import is_dry_run, place_limit_buy
     from pipeline.position_tracker import PAPER_BALANCE
 
     order = PendingOrder.create(
@@ -156,6 +163,12 @@ def place_limit_order(
         position_size_pct=position_size_pct,
         reasoning=reasoning,
     )
+
+    if not is_dry_run() and order.epoch_id is None:
+        raise RuntimeError(
+            f"Live order rejected for {asset}: no active risk epoch. "
+            "Start an epoch with 'python pipeline/start_epoch.py' before going live."
+        )
 
     pct        = position_size_pct or 0.02
     quote_usd  = round(PAPER_BALANCE * pct, 2)

@@ -72,6 +72,7 @@ class Position:
     high_water_mark:          Optional[float] = None   # highest price seen since open
     extensions_used:          int            = 0      # hold extensions granted so far
     extension_trailing_stop:  Optional[float] = None  # ATR-anchored stop added during extensions
+    epoch_id:        Optional[str]  = None             # stamped at order placement, immutable
     # Populated on close
     exit_price:      Optional[float] = None
     exit_time:       Optional[str]   = None
@@ -145,9 +146,14 @@ def _load_raw() -> list[dict]:
     if not POSITIONS_FILE.exists():
         return []
     try:
-        return json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return []
+        rows = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+        for r in rows:
+            r.setdefault("epoch_id", None)  # backwards compat for pre-epoch records
+        return rows
+    except (json.JSONDecodeError, OSError) as e:
+        # Fail-closed: file exists but is unreadable → raise rather than return []
+        # (returning [] would hide open positions from the placement guard)
+        raise RuntimeError(f"open_positions.json is corrupt or unreadable: {e}") from e
 
 
 def _save_raw(positions: list[dict]) -> None:
@@ -184,27 +190,28 @@ def count_recent_stops(asset: str, hours: int = 48) -> int:
     cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
     count = 0
     try:
-        for line in TRADE_HISTORY.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if rec.get("asset") != asset or rec.get("reason") != "STOP_LOSS":
-                continue
-            ts_str = rec.get("closed_at_utc") or rec.get("exit_time") or ""
-            try:
-                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                if ts.timestamp() >= cutoff:
-                    count += 1
-            except (ValueError, AttributeError):
-                continue
-    except Exception:
-        pass
+        text = TRADE_HISTORY.read_text(encoding="utf-8")
+    except OSError as e:
+        raise RuntimeError(f"trade_history.jsonl unreadable — whipsaw guard cannot proceed: {e}") from e
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # malformed stop record: under-count is safer than blocking all trades
+        if rec.get("asset") != asset or rec.get("reason") != "STOP_LOSS":
+            continue
+        ts_str = rec.get("closed_at_utc") or rec.get("exit_time") or ""
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts.timestamp() >= cutoff:
+                count += 1
+        except (ValueError, AttributeError):
+            continue
     return count
 
 
@@ -237,6 +244,7 @@ def open_position_from_order(order: "PendingOrder", fill_price: float) -> Positi
         order_id=order.id,
         status="OPEN",
         high_water_mark=round(fill_price, 2),
+        epoch_id=getattr(order, "epoch_id", None),  # carry epoch stamped at placement
     )
     raw = _load_raw()
     raw.append(asdict(pos))
@@ -302,6 +310,7 @@ def close_position(pos: Position, exit_price: float, reason: str) -> dict:
         "pnl_usd":       round(net_pnl, 2),
         "pnl_pct":       round(pnl_pct, 4),
         "hold_hours":    round(pos.held_hours(), 1),
+        "epoch_id":      pos.epoch_id,  # stamped at order placement, not read from current epoch
     }
     _append_history(record)
 
