@@ -31,6 +31,7 @@ strategy-level drawdown.
 from __future__ import annotations
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,35 +77,37 @@ def start_new_epoch(
     epoch_id: str,
     paper_capital: float,
     reason: str,
-    force: bool = False,
 ) -> dict:
     """
     Record the start of a new risk epoch. Append-only — does NOT modify trade_history.
 
-    Guards (all enforced before writing):
-      1. force=True is blocked when DRY_RUN=false (live mode requires Coinbase reconciliation).
-      2. epoch_id must be unique — duplicate would merge old trades into the new epoch.
-      3. Open positions / pending orders must be zero unless force=True.
+    Guards enforced before writing:
+      1. epoch_id must be non-empty.
+      2. paper_capital must be a finite positive number.
+      3. epoch_id must be unique (note: non-atomic check — SQLite UNIQUE will replace this).
+      4. No open positions or pending orders may exist.
 
     Args:
         epoch_id:      Unique identifier, e.g. "ZEC_V2_ADX25:2026-07-12"
         paper_capital: Starting paper capital for this epoch (e.g. 100.0)
         reason:        Human-readable reason for starting this epoch
-        force:         Skip the open-exposure check. Blocked in live mode.
 
     Returns:
         The epoch record dict that was written.
     """
-    # Guard 1: force is only safe in dry-run mode
-    if force:
-        _live = os.getenv("DRY_RUN", "true").lower() in ("false", "0", "no")
-        if _live:
-            raise ValueError(
-                "force=True is not allowed when DRY_RUN=false. "
-                "Set DRY_RUN=true and verify Coinbase exposure before force-starting an epoch."
-            )
+    # Guard 1: epoch_id must be non-empty
+    if not epoch_id or not epoch_id.strip():
+        raise ValueError("epoch_id must be a non-empty string.")
 
-    # Guard 2: epoch_id must be unique
+    # Guard 2: paper_capital must be finite and positive
+    if not isinstance(paper_capital, (int, float)):
+        raise ValueError(f"paper_capital must be a number, got {type(paper_capital).__name__}.")
+    if not math.isfinite(paper_capital):
+        raise ValueError(f"paper_capital must be finite, got {paper_capital}.")
+    if paper_capital <= 0:
+        raise ValueError(f"paper_capital must be positive, got {paper_capital}.")
+
+    # Guard 3: epoch_id uniqueness (non-atomic — TOCTOU race possible; SQLite UNIQUE will fix this)
     if EPOCHS_FILE.exists():
         try:
             _text = EPOCHS_FILE.read_text(encoding="utf-8")
@@ -131,37 +134,36 @@ def start_new_epoch(
                 "Choose a distinct epoch_id (e.g. append a suffix or different date)."
             )
 
-    # Guard 3: no open exposure (unless force=True)
-    if not force:
-        _positions_file = ROOT / "logs" / "open_positions.json"
-        _orders_file    = ROOT / "logs" / "pending_orders.json"
+    # Guard 4: no open exposure
+    _positions_file = ROOT / "logs" / "open_positions.json"
+    _orders_file    = ROOT / "logs" / "pending_orders.json"
 
-        open_pos_count = 0
-        if _positions_file.exists():
-            try:
-                positions = json.loads(_positions_file.read_text(encoding="utf-8"))
-                open_pos_count = sum(1 for p in positions if p.get("status") == "OPEN")
-            except (json.JSONDecodeError, OSError):
-                open_pos_count = -1  # unreadable → treat as unknown exposure
+    open_pos_count = 0
+    if _positions_file.exists():
+        try:
+            positions = json.loads(_positions_file.read_text(encoding="utf-8"))
+            open_pos_count = sum(1 for p in positions if p.get("status") == "OPEN")
+        except (json.JSONDecodeError, OSError):
+            open_pos_count = -1  # unreadable → treat as unknown exposure
 
-        pending_count = 0
-        if _orders_file.exists():
-            try:
-                orders = json.loads(_orders_file.read_text(encoding="utf-8"))
-                pending_count = sum(1 for o in orders if o.get("status") == "OPEN")
-            except (json.JSONDecodeError, OSError):
-                pending_count = -1  # unreadable → treat as unknown exposure
+    pending_count = 0
+    if _orders_file.exists():
+        try:
+            orders = json.loads(_orders_file.read_text(encoding="utf-8"))
+            pending_count = sum(1 for o in orders if o.get("status") == "OPEN")
+        except (json.JSONDecodeError, OSError):
+            pending_count = -1  # unreadable → treat as unknown exposure
 
-        if open_pos_count != 0:
-            raise ValueError(
-                f"Cannot start new epoch: {open_pos_count} open position(s) detected "
-                f"(or exposure file unreadable). Close all positions first, then retry."
-            )
-        if pending_count != 0:
-            raise ValueError(
-                f"Cannot start new epoch: {pending_count} pending order(s) detected "
-                f"(or orders file unreadable). Cancel all orders first, then retry."
-            )
+    if open_pos_count != 0:
+        raise ValueError(
+            f"Cannot start new epoch: {open_pos_count} open position(s) detected "
+            f"(or exposure file unreadable). Close all positions first, then retry."
+        )
+    if pending_count != 0:
+        raise ValueError(
+            f"Cannot start new epoch: {pending_count} pending order(s) detected "
+            f"(or orders file unreadable). Cancel all orders first, then retry."
+        )
 
     EPOCHS_FILE.parent.mkdir(parents=True, exist_ok=True)
     record = {

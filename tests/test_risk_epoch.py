@@ -190,11 +190,13 @@ def test_start_new_epoch_appends_not_overwrites():
         epochs_file = Path(tmpdir) / "risk_epochs.jsonl"
 
         import pipeline.risk_epoch as re_mod
-        orig = re_mod.EPOCHS_FILE
+        orig_e = re_mod.EPOCHS_FILE
+        orig_r = re_mod.ROOT
         re_mod.EPOCHS_FILE = epochs_file
+        re_mod.ROOT = Path(tmpdir)  # no positions/orders files → exposure check passes
         try:
-            start_new_epoch("EPOCH_A:2026-01-01", 50.0, "first", force=True)
-            start_new_epoch("EPOCH_B:2026-07-12", 100.0, "second", force=True)
+            start_new_epoch("EPOCH_A:2026-01-01", 50.0, "first")
+            start_new_epoch("EPOCH_B:2026-07-12", 100.0, "second")
 
             lines = [l for l in epochs_file.read_text().splitlines() if l.strip()]
             assert len(lines) == 2, f"Expected 2 epoch records, got {len(lines)}"
@@ -205,7 +207,8 @@ def test_start_new_epoch_appends_not_overwrites():
             current = get_current_epoch()
             assert current["epoch_id"] == "EPOCH_B:2026-07-12", "get_current_epoch returns the LAST epoch"
         finally:
-            re_mod.EPOCHS_FILE = orig
+            re_mod.EPOCHS_FILE = orig_e
+            re_mod.ROOT = orig_r
 
 
 def test_start_new_epoch_blocked_with_open_positions():
@@ -284,17 +287,46 @@ def test_duplicate_epoch_id_rejected():
         epochs_file = Path(tmpdir) / "risk_epochs.jsonl"
 
         import pipeline.risk_epoch as re_mod
-        orig = re_mod.EPOCHS_FILE
+        orig_e = re_mod.EPOCHS_FILE
+        orig_r = re_mod.ROOT
         re_mod.EPOCHS_FILE = epochs_file
+        re_mod.ROOT = Path(tmpdir)
         try:
-            start_new_epoch("EPOCH_A:2026-07-12", 100.0, "first", force=True)
+            start_new_epoch("EPOCH_A:2026-07-12", 100.0, "first")
             with pytest.raises(ValueError, match="already exists"):
-                start_new_epoch("EPOCH_A:2026-07-12", 100.0, "duplicate attempt", force=True)
-            # File should still have only one record
+                start_new_epoch("EPOCH_A:2026-07-12", 100.0, "duplicate attempt")
             lines = [l for l in epochs_file.read_text().splitlines() if l.strip()]
             assert len(lines) == 1, f"Duplicate must not be written. Got {len(lines)} lines."
         finally:
-            re_mod.EPOCHS_FILE = orig
+            re_mod.EPOCHS_FILE = orig_e
+            re_mod.ROOT = orig_r
+
+
+def test_epoch_validation_rejects_invalid_inputs():
+    """start_new_epoch must reject empty epoch_id and non-positive or non-finite capital."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        import pipeline.risk_epoch as re_mod
+        orig_e = re_mod.EPOCHS_FILE
+        orig_r = re_mod.ROOT
+        re_mod.EPOCHS_FILE = Path(tmpdir) / "risk_epochs.jsonl"
+        re_mod.ROOT = Path(tmpdir)
+        try:
+            with pytest.raises(ValueError, match="non-empty"):
+                start_new_epoch("", 100.0, "empty id")
+            with pytest.raises(ValueError, match="non-empty"):
+                start_new_epoch("   ", 100.0, "whitespace id")
+            with pytest.raises(ValueError, match="positive"):
+                start_new_epoch("EPOCH:2026-07-17", 0.0, "zero capital")
+            with pytest.raises(ValueError, match="positive"):
+                start_new_epoch("EPOCH:2026-07-17", -50.0, "negative capital")
+            with pytest.raises(ValueError, match="finite"):
+                import math
+                start_new_epoch("EPOCH:2026-07-17", math.inf, "infinite capital")
+            with pytest.raises(ValueError, match="finite"):
+                start_new_epoch("EPOCH:2026-07-17", float("nan"), "nan capital")
+        finally:
+            re_mod.EPOCHS_FILE = orig_e
+            re_mod.ROOT = orig_r
 
 
 def test_circuit_breaker_inner_halts_at_epoch_12pct():

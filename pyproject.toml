@@ -1,6 +1,7 @@
 [tool.pytest.ini_options]
+addopts = ["-m", "not integration"]
 markers = [
-    "integration: requires live Coinbase data cache (data/candles/)",
+    "integration: requires live Coinbase data cache (data/candles/) — run with: pytest -m integration",
 ]
 
 [tool.ruff]

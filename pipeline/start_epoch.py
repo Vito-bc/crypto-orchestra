@@ -54,8 +54,6 @@ def main() -> None:
                         help="Human-readable reason for this epoch start")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be written without writing")
-    parser.add_argument("--force", action="store_true",
-                        help="Skip open-exposure safety check (use only when no real exposure exists)")
     args = parser.parse_args()
 
     # Show current state
@@ -87,14 +85,6 @@ def main() -> None:
     print(f"  paper_capital=${args.capital:.2f}")
     print(f"  reason:       {reason}")
 
-    if args.force:
-        _live = os.getenv("DRY_RUN", "true").lower() in ("false", "0", "no")
-        if _live:
-            print("ERROR: --force is not allowed when DRY_RUN=false.")
-            print("In live mode, starting an epoch without exposure verification hides real P&L.")
-            print("Disable live trading first (DRY_RUN=true), then re-run with --force.")
-            sys.exit(1)
-
     if args.dry_run:
         print()
         print("[DRY RUN] Would write:")
@@ -102,7 +92,7 @@ def main() -> None:
         print("No files were modified.")
         return
 
-    written = start_new_epoch(args.epoch_id, args.capital, reason, force=args.force)
+    written = start_new_epoch(args.epoch_id, args.capital, reason)
     print()
     print(f"Written to logs/risk_epochs.jsonl:")
     print(json.dumps(written, indent=2))
