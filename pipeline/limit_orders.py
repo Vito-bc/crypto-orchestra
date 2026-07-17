@@ -83,7 +83,7 @@ class PendingOrder:
         _epoch = _get_epoch()
         now = datetime.now(timezone.utc)
         return cls(
-            id=str(uuid.uuid4())[:8],
+            id=str(uuid.uuid4()),
             asset=asset,
             limit_price=round(limit_price, 2),
             stop_price=round(limit_price - _atr_mults(asset)[0] * atr, 2),
