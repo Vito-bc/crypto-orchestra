@@ -1,54 +1,50 @@
 """
 SQLite order/position/epoch ledger — single source of truth for all order state.
-Schema V2.
+Schema V2.1 (PRAGMA user_version = 3).
 
 Design:
-  WAL mode + foreign_keys=ON on every connection.
-  PRAGMA user_version tracks schema version; run_migrations() applies sequential patches.
+  WAL mode + foreign_keys=ON + busy_timeout=10s on every connection.
+  PRAGMA user_version tracks schema. run_migrations() applies sequential patches.
+  Pre-wiring prototypes (v<3) are backed up and reset on first migration.
   Immutability triggers on fills and position_events (BEFORE UPDATE/DELETE → RAISE).
-  Partial UNIQUE INDEX ensures at most one active epoch (ended_at IS NULL).
-  apply_fill() is the only public path to record fills — atomic fill+transition+VWAP.
-  Fail-closed: on unresolvable discrepancy with Coinbase, halt before placing new orders.
+  Partial UNIQUE INDEXes enforce one active epoch and one running reconciliation.
+  apply_fill() is the ONLY public path to record fills:
+    ENTRY fill → VWAP aggregate → PARTIAL/FILLED transition → create/update position.
+    EXIT fill  → exit VWAP → CLOSING/CLOSED transition → P&L calculation.
+  trade_intents: durable stop/target written before Coinbase call; survives crash.
+  start_epoch() checks for open exposure before transitioning epochs.
+  start_reconciliation() is atomic via UNIQUE INDEX (no TOCTOU race).
 
-Tables: risk_epochs, orders, fills, positions, position_events,
+Tables: risk_epochs, orders, fills, positions, trade_intents, position_events,
         account_snapshots, reconciliation_runs
 
 Order state machine:
-  SUBMITTING → OPEN          (Coinbase accepted the order)
-  SUBMITTING → CANCELLED     (Coinbase rejected before exchange state)
-  OPEN       → PARTIAL       (first partial fill received)
-  OPEN       → FILLED        (complete fill in one shot)
-  OPEN       → CANCELLED
-  OPEN       → EXPIRED
-  PARTIAL    → FILLED        (remaining qty filled)
-  PARTIAL    → CANCELLED
+  SUBMITTING → OPEN → PARTIAL → FILLED  (normal fill path)
+  SUBMITTING → OPEN → CANCELLED
+  SUBMITTING → CANCELLED
+  OPEN/PARTIAL → EXPIRED
   (FILLED, CANCELLED, EXPIRED are terminal)
 
 Position state machine:
-  OPEN → CLOSING (exit order placed) → CLOSED
-
-Stop/target live on positions, not on individual exchange orders.
+  OPEN → CLOSING (first exit fill, qty remaining > 0)
+  OPEN/CLOSING → CLOSED (fully exited)
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import uuid as _uuid_mod
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Iterator, Optional
-
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator, Optional
 
 ROOT    = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "logs" / "ledger.db"
 
-SCHEMA_VERSION = 2
-
-# ---------------------------------------------------------------------------
-# Allowed order state transitions
-# ---------------------------------------------------------------------------
+SCHEMA_VERSION = 3
 
 _TRANSITIONS: dict[str, set[str]] = {
     "SUBMITTING": {"OPEN", "CANCELLED"},
@@ -70,12 +66,12 @@ _TERMINAL_STATES = {"FILLED", "CANCELLED", "EXPIRED"}
 def get_db(path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
     """
     Yield a WAL-mode SQLite connection inside an explicit transaction.
-    Commits on clean exit; rolls back on any exception.
-    foreign_keys=ON is enforced per-connection (SQLite default is OFF).
+    busy_timeout=10s handles transient database-locked errors.
+    foreign_keys=ON enforced per-connection. Commits on clean exit; rolls back on error.
     """
     db_path = path or DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -92,46 +88,40 @@ def get_db(path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
 
 
 # ---------------------------------------------------------------------------
-# Schema V2
+# Schema V3 (externally "V2.1")
 # ---------------------------------------------------------------------------
 
-_SCHEMA_V2 = """
+_SCHEMA_V3 = """
 CREATE TABLE IF NOT EXISTS risk_epochs (
     epoch_id      TEXT    PRIMARY KEY,
     paper_capital REAL    NOT NULL CHECK(paper_capital > 0),
     reason        TEXT    NOT NULL,
     started_at    TEXT    NOT NULL,
-    ended_at      TEXT                -- NULL = currently active
+    ended_at      TEXT
 );
 
--- At most one epoch may be active at a time.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_epoch
-    ON risk_epochs(1) WHERE ended_at IS NULL;
-
--- Universal exchange-order model: entry limit orders, exit market/stop orders, etc.
--- stop_price and target_price live on the position, not here.
 CREATE TABLE IF NOT EXISTS orders (
-    id                 TEXT  PRIMARY KEY,             -- full UUID (client_order_id to Coinbase)
+    id                 TEXT  PRIMARY KEY,
     epoch_id           TEXT  NOT NULL REFERENCES risk_epochs(epoch_id),
     asset              TEXT  NOT NULL,
     side               TEXT  NOT NULL CHECK(side IN ('BUY','SELL')),
     order_type         TEXT  NOT NULL CHECK(order_type IN ('LIMIT','MARKET','STOP_LIMIT')),
     purpose            TEXT  NOT NULL CHECK(purpose IN ('ENTRY','EXIT')),
-    position_id        TEXT  REFERENCES positions(id),  -- NULL for ENTRY; set for EXIT
-    qty_base_requested REAL,                            -- base asset qty (coins); NULL if sized in USD
-    qty_usd_requested  REAL,                            -- notional USD; NULL if sized in base
-    limit_price        REAL,                            -- NULL for MARKET orders
+    position_id        TEXT  REFERENCES positions(id),
+    qty_base_requested REAL  CHECK(qty_base_requested IS NULL OR qty_base_requested > 0),
+    qty_usd_requested  REAL  CHECK(qty_usd_requested IS NULL OR qty_usd_requested > 0),
+    limit_price        REAL,
     placed_at          TEXT  NOT NULL,
-    expires_at         TEXT,                            -- NULL = GTC
+    expires_at         TEXT,
     reasoning          TEXT  NOT NULL DEFAULT '',
     status             TEXT  NOT NULL DEFAULT 'SUBMITTING'
                              CHECK(status IN ('SUBMITTING','OPEN','PARTIAL','FILLED','CANCELLED','EXPIRED')),
-    exchange_order_id  TEXT  UNIQUE,                    -- NULL until Coinbase accepts
+    exchange_order_id  TEXT  UNIQUE,
     cancelled_at       TEXT,
-    expired_at         TEXT
+    expired_at         TEXT,
+    CHECK((purpose = 'ENTRY') OR (purpose = 'EXIT' AND position_id IS NOT NULL))
 );
 
--- Immutable fill records. exchange_fill_id UNIQUE prevents double-counting on reconciliation.
 CREATE TABLE IF NOT EXISTS fills (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id         TEXT    NOT NULL REFERENCES orders(id),
@@ -144,16 +134,15 @@ CREATE TABLE IF NOT EXISTS fills (
     filled_at        TEXT    NOT NULL
 );
 
--- Position: stop/target live here, not on individual exchange orders.
--- entry_order_id is TEXT (no FK) to avoid circular dependency with orders.position_id.
 CREATE TABLE IF NOT EXISTS positions (
     id                      TEXT  PRIMARY KEY,
-    entry_order_id          TEXT  NOT NULL UNIQUE,      -- references orders(id); TEXT to break circular FK
+    entry_order_id          TEXT  NOT NULL UNIQUE REFERENCES orders(id),
     epoch_id                TEXT  NOT NULL REFERENCES risk_epochs(epoch_id),
     asset                   TEXT  NOT NULL,
-    entry_price             REAL,                       -- VWAP of entry fills; NULL until first fill
-    qty_base                REAL,                       -- filled base qty (coins)
-    qty_usd                 REAL,                       -- filled notional USD
+    entry_price             REAL,
+    qty_base                REAL,
+    qty_base_remaining      REAL,
+    qty_usd                 REAL,
     entry_fee_usd           REAL  NOT NULL DEFAULT 0.0,
     opened_at               TEXT,
     stop_price              REAL,
@@ -172,7 +161,13 @@ CREATE TABLE IF NOT EXISTS positions (
     closed_at               TEXT
 );
 
--- Immutable event log for positions.
+CREATE TABLE IF NOT EXISTS trade_intents (
+    order_id     TEXT PRIMARY KEY REFERENCES orders(id),
+    stop_price   REAL NOT NULL CHECK(stop_price > 0),
+    target_price REAL NOT NULL CHECK(target_price > 0),
+    recorded_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS position_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     position_id TEXT    NOT NULL REFERENCES positions(id),
@@ -190,17 +185,22 @@ CREATE TABLE IF NOT EXISTS account_snapshots (
     open_positions INTEGER NOT NULL
 );
 
--- Reconciliation runs: track what was found vs resolved vs still unresolved.
 CREATE TABLE IF NOT EXISTS reconciliation_runs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at   TEXT    NOT NULL,
     completed_at TEXT,
     status       TEXT    NOT NULL DEFAULT 'RUNNING'
                          CHECK(status IN ('RUNNING','COMPLETE','COMPLETE_WITH_ACTIONS','FAILED')),
-    discovered   TEXT    NOT NULL DEFAULT '[]',   -- all discrepancies found
-    resolved     TEXT    NOT NULL DEFAULT '[]',   -- auto-fixed by reconciler
-    unresolved   TEXT    NOT NULL DEFAULT '[]'    -- require human intervention → FAILED
+    discovered   TEXT    NOT NULL DEFAULT '[]',
+    resolved     TEXT    NOT NULL DEFAULT '[]',
+    unresolved   TEXT    NOT NULL DEFAULT '[]'
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_epoch
+    ON risk_epochs(1) WHERE ended_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_running_reconciliation
+    ON reconciliation_runs(1) WHERE status = 'RUNNING';
 
 CREATE INDEX IF NOT EXISTS idx_orders_asset_status    ON orders(asset, status);
 CREATE INDEX IF NOT EXISTS idx_orders_epoch           ON orders(epoch_id);
@@ -209,7 +209,6 @@ CREATE INDEX IF NOT EXISTS idx_fills_order            ON fills(order_id);
 CREATE INDEX IF NOT EXISTS idx_positions_epoch_status ON positions(epoch_id, status);
 CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id);
 
--- Immutability: fills are append-only.
 CREATE TRIGGER IF NOT EXISTS trg_fills_no_update
     BEFORE UPDATE ON fills
 BEGIN
@@ -222,7 +221,6 @@ BEGIN
     SELECT RAISE(ABORT, 'fills are immutable: DELETE not allowed');
 END;
 
--- Immutability: position_events are append-only.
 CREATE TRIGGER IF NOT EXISTS trg_position_events_no_update
     BEFORE UPDATE ON position_events
 BEGIN
@@ -241,33 +239,47 @@ END;
 # Schema versioning and migrations
 # ---------------------------------------------------------------------------
 
-def _get_schema_version(conn: sqlite3.Connection) -> int:
-    return conn.execute("PRAGMA user_version").fetchone()[0]
-
-
 def run_migrations(path: Optional[Path] = None) -> None:
     """
-    Apply all pending schema migrations in order.
-    Called instead of init_db() — it's the main entry point for schema setup.
-    Uses a raw connection because executescript() auto-commits any active BEGIN.
+    Apply schema migrations. Called on every startup before any DB access.
+
+    v0 (no DB): fresh install of V3 schema.
+    v1/v2 (prototype, never wired): backup to .vN.bak, then fresh V3 install.
+    v3: already current — no-op.
+
+    The backup+reset approach is safe for v1/v2 because those schemas were
+    prototype-only and were never used as the live source of truth.
+    Future in-place migrations (v3 → v4, etc.) should use ALTER TABLE.
     """
     db_path = path or DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version == SCHEMA_VERSION:
+            return
+    finally:
+        conn.close()
+
+    if 0 < version < SCHEMA_VERSION and db_path.exists():
+        backup = db_path.with_suffix(f".v{version}.bak")
+        shutil.copy2(str(db_path), str(backup))
+        db_path.unlink()
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        version = _get_schema_version(conn)
-        if version < 2:
-            conn.executescript(_SCHEMA_V2)
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        # Future: elif version < 3: conn.executescript(_MIGRATION_V3) ...
+        conn.executescript(_SCHEMA_V3)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     finally:
         conn.close()
 
 
-# Keep init_db() as an alias so existing callers and tests work.
 def init_db(path: Optional[Path] = None) -> None:
+    """Alias for run_migrations() — keeps existing callers working."""
     run_migrations(path)
 
 
@@ -285,8 +297,7 @@ def insert_epoch(
 ) -> None:
     """
     Raw epoch insert — for migration and testing only.
-    For live use, call start_epoch() which atomically closes the previous active epoch.
-    Raises sqlite3.IntegrityError on duplicate epoch_id or active-epoch constraint violation.
+    For live use, call start_epoch() which atomically guards and closes the previous.
     """
     ts = started_at or datetime.now(timezone.utc).isoformat()
     sql = """
@@ -307,13 +318,38 @@ def start_epoch(
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """
-    Live epoch transition: atomically closes the current active epoch and starts a new one.
-    The partial UNIQUE INDEX enforces at most one active epoch at all times.
-    Raises ValueError on duplicate epoch_id.
-    """
-    ts = datetime.now(timezone.utc).isoformat()
+    Live epoch transition. Atomically:
+      1. Verifies no open orders, positions, or running reconciliation.
+      2. Closes the current active epoch (UPDATE ended_at).
+      3. Inserts the new active epoch.
 
+    Raises ValueError on exposure or duplicate epoch_id.
+    """
     def _run(c: sqlite3.Connection) -> None:
+        open_positions = c.execute(
+            "SELECT COUNT(*) FROM positions WHERE status IN ('OPEN','CLOSING')"
+        ).fetchone()[0]
+        if open_positions:
+            raise ValueError(
+                f"Cannot start new epoch: {open_positions} open/closing position(s). "
+                "Close all positions first."
+            )
+        open_orders = c.execute(
+            "SELECT COUNT(*) FROM orders WHERE status IN ('SUBMITTING','OPEN','PARTIAL')"
+        ).fetchone()[0]
+        if open_orders:
+            raise ValueError(
+                f"Cannot start new epoch: {open_orders} open order(s). "
+                "Cancel all orders first."
+            )
+        running_recon = c.execute(
+            "SELECT COUNT(*) FROM reconciliation_runs WHERE status='RUNNING'"
+        ).fetchone()[0]
+        if running_recon:
+            raise ValueError(
+                "Cannot start new epoch: a reconciliation run is in progress."
+            )
+        ts = datetime.now(timezone.utc).isoformat()
         c.execute("UPDATE risk_epochs SET ended_at=? WHERE ended_at IS NULL", (ts,))
         try:
             c.execute(
@@ -333,10 +369,7 @@ def start_epoch(
 
 
 def get_active_epoch(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
-    """Return the single active epoch (ended_at IS NULL), or None."""
-    return conn.execute(
-        "SELECT * FROM risk_epochs WHERE ended_at IS NULL"
-    ).fetchone()
+    return conn.execute("SELECT * FROM risk_epochs WHERE ended_at IS NULL").fetchone()
 
 
 # ---------------------------------------------------------------------------
@@ -361,13 +394,13 @@ def insert_order(
 ) -> None:
     """
     Insert a new order in SUBMITTING state.
-    At least one of qty_base_requested or qty_usd_requested must be provided.
-    Raises ValueError on validation failure; IntegrityError on duplicate id.
+    At least one of qty_base_requested / qty_usd_requested must be provided.
+    EXIT orders must have a position_id (enforced here and by CHECK constraint).
     """
     if qty_base_requested is None and qty_usd_requested is None:
-        raise ValueError(
-            f"Order '{order_id}': must set qty_base_requested or qty_usd_requested."
-        )
+        raise ValueError(f"Order '{order_id}': must set qty_base_requested or qty_usd_requested.")
+    if purpose == "EXIT" and position_id is None:
+        raise ValueError(f"Order '{order_id}': EXIT orders require a position_id.")
     sql = """
         INSERT INTO orders(
             id, epoch_id, asset, side, order_type, purpose, position_id,
@@ -393,14 +426,10 @@ def transition_order(
     exchange_order_id: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
-    """
-    Atomically advance an order to new_status.
-    Raises ValueError on forbidden transition; RuntimeError if order not found.
-    """
     def _run(c: sqlite3.Connection) -> None:
         row = c.execute("SELECT status FROM orders WHERE id=?", (order_id,)).fetchone()
         if row is None:
-            raise RuntimeError(f"Order '{order_id}' not found in ledger.")
+            raise RuntimeError(f"Order '{order_id}' not found.")
         current = row["status"]
         if new_status not in _TRANSITIONS.get(current, set()):
             raise ValueError(
@@ -427,19 +456,48 @@ def transition_order(
 
 def get_open_orders_for_asset(asset: str, conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
-        "SELECT * FROM orders WHERE asset=? AND status IN ('OPEN','PARTIAL')",
-        (asset,),
+        "SELECT * FROM orders WHERE asset=? AND status IN ('OPEN','PARTIAL')", (asset,)
     ).fetchall()
 
 
 def get_open_orders_for_position(
     position_id: str, conn: sqlite3.Connection
 ) -> list[sqlite3.Row]:
-    """Return all non-terminal orders associated with a position (e.g. exit orders)."""
     return conn.execute(
-        "SELECT * FROM orders WHERE position_id=? AND status NOT IN ('FILLED','CANCELLED','EXPIRED')",
+        "SELECT * FROM orders WHERE position_id=?"
+        " AND status NOT IN ('FILLED','CANCELLED','EXPIRED')",
         (position_id,),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Trade intents — durable stop/target before first fill
+# ---------------------------------------------------------------------------
+
+def insert_trade_intent(
+    order_id: str,
+    stop_price: float,
+    target_price: float,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """
+    Record intended stop/target at order-placement time.
+    Must be written in the same transaction as insert_order(), before the Coinbase call.
+    apply_fill() reads this to populate position.stop_price / target_price on first fill.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    sql = "INSERT INTO trade_intents(order_id, stop_price, target_price, recorded_at) VALUES (?,?,?,?)"
+    if conn:
+        conn.execute(sql, (order_id, stop_price, target_price, ts))
+    else:
+        with get_db() as c:
+            c.execute(sql, (order_id, stop_price, target_price, ts))
+
+
+def get_trade_intent(order_id: str, conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM trade_intents WHERE order_id=?", (order_id,)
+    ).fetchone()
 
 
 # ---------------------------------------------------------------------------
@@ -459,29 +517,42 @@ def apply_fill(
     conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     """
-    Atomically apply a fill to an order:
-      1. INSERT fill (idempotent on exchange_fill_id — re-runs safely on reconciliation).
-      2. Aggregate VWAP + totals from all fills for this order.
-      3. Transition order to PARTIAL or FILLED.
-      4. For ENTRY orders: create position on first fill, or update VWAP on subsequent fills.
+    Atomically apply a fill to an order.
 
-    stop_price / target_price are only used when creating the position (ENTRY, first fill).
+    ENTRY orders:
+      INSERT fill → VWAP aggregate → PARTIAL/FILLED transition →
+      create position (first fill, reads trade_intent for stop/target) or
+      update VWAP (subsequent fills).
+
+    EXIT orders:
+      INSERT fill → aggregate all exit fills for the position →
+      update qty_base_remaining →
+      OPEN/CLOSING → CLOSING (partial) or CLOSED (fully exited) →
+      compute P&L on close.
+
+    Idempotency: if exchange_fill_id already exists for THIS order, returns
+    current state without error. If the same exchange_fill_id is submitted for
+    a DIFFERENT order, raises RuntimeError (Coinbase/local mismatch).
 
     Returns {"status": new_order_status, "position_id": str or None}.
-
-    Raises RuntimeError if order not found, is SUBMITTING, or is in a terminal state.
-    Must be called within get_db() — caller provides the connection.
+    Raises RuntimeError on order not found, SUBMITTING state, or terminal state.
     """
     ts = filled_at or datetime.now(timezone.utc).isoformat()
 
     def _run(c: sqlite3.Connection) -> dict:
-        # Early idempotency check: if this exchange_fill_id was already recorded
-        # (e.g. reconciliation re-run), skip the whole operation and return current state.
+        # Early idempotency check
         if exchange_fill_id:
-            already = c.execute(
+            existing_fill = c.execute(
                 "SELECT order_id FROM fills WHERE exchange_fill_id=?", (exchange_fill_id,)
             ).fetchone()
-            if already:
+            if existing_fill:
+                if existing_fill["order_id"] != order_id:
+                    raise RuntimeError(
+                        f"exchange_fill_id '{exchange_fill_id}' was previously recorded "
+                        f"for order '{existing_fill['order_id']}', not '{order_id}'. "
+                        "Possible Coinbase/local order-ID mismatch — halt and investigate."
+                    )
+                # Same fill replayed for same order — return current state
                 order = c.execute("SELECT status FROM orders WHERE id=?", (order_id,)).fetchone()
                 pos = c.execute(
                     "SELECT id FROM positions WHERE entry_order_id=?", (order_id,)
@@ -493,39 +564,31 @@ def apply_fill(
 
         order = c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
         if order is None:
-            raise RuntimeError(f"Order '{order_id}' not found in ledger.")
+            raise RuntimeError(f"Order '{order_id}' not found.")
         if order["status"] in _TERMINAL_STATES:
-            raise RuntimeError(
-                f"Cannot apply fill to {order['status']!r} order '{order_id}'."
-            )
+            raise RuntimeError(f"Cannot fill {order['status']!r} order '{order_id}'.")
         if order["status"] == "SUBMITTING":
             raise RuntimeError(
-                f"Order '{order_id}' is still SUBMITTING — "
-                "call transition_order(..., 'OPEN') before applying fills."
+                f"Order '{order_id}' is SUBMITTING — call transition_order(..., 'OPEN') first."
             )
 
-        # INSERT fill (non-idempotent path: exchange_fill_id is new or None)
+        # Insert fill
         c.execute("""
-            INSERT INTO fills(
-                order_id, exchange_fill_id, fill_price, fill_qty_base,
-                fill_qty_usd, fee_usd, is_taker, filled_at
-            ) VALUES (?,?,?,?,?,?,?,?)
-        """, (
-            order_id, exchange_fill_id, fill_price, fill_qty_base,
-            fill_price * fill_qty_base, fee_usd, 1 if is_taker else 0, ts,
-        ))
+            INSERT INTO fills(order_id, exchange_fill_id, fill_price, fill_qty_base,
+                              fill_qty_usd, fee_usd, is_taker, filled_at)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (order_id, exchange_fill_id, fill_price, fill_qty_base,
+               fill_price * fill_qty_base, fee_usd, 1 if is_taker else 0, ts))
 
-        # VWAP + totals across all fills for this order
+        # VWAP + totals for THIS order
         agg = c.execute("""
-            SELECT
-                SUM(fill_price * fill_qty_base) / SUM(fill_qty_base) AS vwap,
-                SUM(fill_qty_base) AS total_base,
-                SUM(fill_qty_usd)  AS total_usd,
-                SUM(fee_usd)       AS total_fee
+            SELECT SUM(fill_price * fill_qty_base) / SUM(fill_qty_base) AS vwap,
+                   SUM(fill_qty_base) AS total_base,
+                   SUM(fill_qty_usd)  AS total_usd,
+                   SUM(fee_usd)       AS total_fee
             FROM fills WHERE order_id=?
         """, (order_id,)).fetchone()
 
-        # Determine completeness
         req_base = order["qty_base_requested"]
         req_usd  = order["qty_usd_requested"]
         is_complete = False
@@ -536,40 +599,124 @@ def apply_fill(
         new_status = "FILLED" if is_complete else "PARTIAL"
         c.execute("UPDATE orders SET status=? WHERE id=?", (new_status, order_id))
 
-        # Create or update position for ENTRY orders
         position_id = None
+
+        # ----- ENTRY fill -----
         if order["purpose"] == "ENTRY":
             existing = c.execute(
                 "SELECT id FROM positions WHERE entry_order_id=?", (order_id,)
             ).fetchone()
             if existing is None:
+                # Resolve stop/target: explicit args > trade_intent > NULL
+                intent = c.execute(
+                    "SELECT stop_price, target_price FROM trade_intents WHERE order_id=?",
+                    (order_id,),
+                ).fetchone()
+                _stop   = stop_price   if stop_price   is not None else (intent["stop_price"]   if intent else None)
+                _target = target_price if target_price is not None else (intent["target_price"] if intent else None)
                 position_id = str(_uuid_mod.uuid4())
                 c.execute("""
                     INSERT INTO positions(
                         id, entry_order_id, epoch_id, asset,
-                        entry_price, qty_base, qty_usd, entry_fee_usd,
-                        opened_at, stop_price, target_price, high_water_mark, status
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'OPEN')
+                        entry_price, qty_base, qty_base_remaining, qty_usd,
+                        entry_fee_usd, opened_at,
+                        stop_price, target_price, high_water_mark, status
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'OPEN')
                 """, (
                     position_id, order_id, order["epoch_id"], order["asset"],
-                    agg["vwap"], agg["total_base"], agg["total_usd"], agg["total_fee"],
-                    ts, stop_price, target_price, agg["vwap"],
+                    agg["vwap"], agg["total_base"], agg["total_base"], agg["total_usd"],
+                    agg["total_fee"], ts, _stop, _target, agg["vwap"],
                 ))
                 c.execute(
                     "INSERT INTO position_events(position_id, event_type, payload, occurred_at)"
                     " VALUES (?,?,?,?)",
                     (position_id, "OPENED",
-                     json.dumps({"entry_price": agg["vwap"], "qty_base": agg["total_base"]}),
-                     ts),
+                     json.dumps({"entry_price": agg["vwap"], "qty_base": agg["total_base"]}), ts),
                 )
             else:
                 position_id = existing["id"]
+                # Update VWAP and qty on subsequent entry fills
                 c.execute("""
                     UPDATE positions SET
-                        entry_price=?, qty_base=?, qty_usd=?, entry_fee_usd=?
+                        entry_price=?, qty_base=?, qty_base_remaining=?,
+                        qty_usd=?, entry_fee_usd=?
                     WHERE id=?
-                """, (agg["vwap"], agg["total_base"], agg["total_usd"], agg["total_fee"],
-                      position_id))
+                """, (agg["vwap"], agg["total_base"], agg["total_base"],
+                      agg["total_usd"], agg["total_fee"], position_id))
+
+        # ----- EXIT fill -----
+        elif order["purpose"] == "EXIT":
+            pos_id = order["position_id"]
+            pos = c.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone()
+            if pos is None:
+                raise RuntimeError(
+                    f"EXIT order '{order_id}' references position '{pos_id}' which does not exist."
+                )
+            if pos["status"] == "CLOSED":
+                raise RuntimeError(
+                    f"Cannot fill EXIT order '{order_id}': position '{pos_id}' is already CLOSED."
+                )
+
+            # Aggregate ALL exit fills for this position (across all exit orders)
+            exit_agg = c.execute("""
+                SELECT SUM(f.fill_price * f.fill_qty_base) / SUM(f.fill_qty_base) AS exit_vwap,
+                       SUM(f.fill_qty_base) AS total_exit_base,
+                       SUM(f.fee_usd)       AS total_exit_fee
+                FROM fills f
+                JOIN orders o ON f.order_id = o.id
+                WHERE o.position_id=? AND o.purpose='EXIT'
+            """, (pos_id,)).fetchone()
+
+            entry_qty = pos["qty_base"] or 0.0
+            exit_qty  = exit_agg["total_exit_base"] or 0.0
+
+            # Validate: exit quantity must not exceed entry quantity
+            if exit_qty > entry_qty * 1.001:
+                raise RuntimeError(
+                    f"EXIT fill would overfill position '{pos_id}': "
+                    f"total_exit={exit_qty:.8f} > entry_qty={entry_qty:.8f}."
+                )
+
+            remaining = max(0.0, entry_qty - exit_qty)
+            is_closed = remaining <= entry_qty * 0.001  # within 0.1%
+            new_pos_status = "CLOSED" if is_closed else "CLOSING"
+
+            if is_closed:
+                entry_cost = (pos["entry_price"] or 0.0) * entry_qty
+                exit_vwap  = exit_agg["exit_vwap"] or fill_price
+                pnl_usd = (
+                    (exit_vwap - (pos["entry_price"] or 0.0)) * entry_qty
+                    - (exit_agg["total_exit_fee"] or 0.0)
+                    - pos["entry_fee_usd"]
+                )
+                pnl_pct = (pnl_usd / entry_cost * 100) if entry_cost else 0.0
+                c.execute("""
+                    UPDATE positions SET
+                        status='CLOSED', qty_base_remaining=0,
+                        exit_price=?, exit_time=?, exit_reason=?,
+                        exit_fee_usd=?, pnl_usd=?, pnl_pct=?, closed_at=?
+                    WHERE id=?
+                """, (exit_vwap, ts, order["reasoning"] or "EXIT_FILL",
+                      exit_agg["total_exit_fee"], pnl_usd, pnl_pct, ts, pos_id))
+                c.execute(
+                    "INSERT INTO position_events(position_id, event_type, payload, occurred_at)"
+                    " VALUES (?,?,?,?)",
+                    (pos_id, "CLOSED",
+                     json.dumps({"exit_price": exit_vwap, "pnl_usd": pnl_usd,
+                                 "exit_reason": order["reasoning"]}), ts),
+                )
+            else:
+                c.execute(
+                    "UPDATE positions SET status='CLOSING', qty_base_remaining=? WHERE id=?",
+                    (remaining, pos_id),
+                )
+                c.execute(
+                    "INSERT INTO position_events(position_id, event_type, payload, occurred_at)"
+                    " VALUES (?,?,?,?)",
+                    (pos_id, "PARTIAL_EXIT",
+                     json.dumps({"exit_qty": exit_qty, "remaining": remaining}), ts),
+                )
+            position_id = pos_id
 
         return {"status": new_status, "position_id": position_id}
 
@@ -605,28 +752,28 @@ def insert_position(
     status: str = "OPEN",
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
-    """
-    Direct position insert — for migration and reconciliation only.
-    Normal fills must go through apply_fill() which sets VWAP correctly.
-    """
+    """Direct position insert for migration and reconciliation. Prefer apply_fill() for normal fills."""
     ts = opened_at or datetime.now(timezone.utc).isoformat()
     sql = """
         INSERT INTO positions(
             id, entry_order_id, epoch_id, asset,
-            entry_price, qty_base, qty_usd, entry_fee_usd,
+            entry_price, qty_base, qty_base_remaining, qty_usd, entry_fee_usd,
             opened_at, stop_price, target_price, high_water_mark, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """
-    args = (
-        position_id, entry_order_id, epoch_id, asset,
-        entry_price, qty_base, qty_usd, entry_fee_usd,
-        ts, stop_price, target_price, entry_price, status,
-    )
     if conn:
-        conn.execute(sql, args)
+        conn.execute(sql, (
+            position_id, entry_order_id, epoch_id, asset,
+            entry_price, qty_base, qty_base, qty_usd, entry_fee_usd,
+            ts, stop_price, target_price, entry_price, status,
+        ))
     else:
         with get_db() as c:
-            c.execute(sql, args)
+            c.execute(sql, (
+                position_id, entry_order_id, epoch_id, asset,
+                entry_price, qty_base, qty_base, qty_usd, entry_fee_usd,
+                ts, stop_price, target_price, entry_price, status,
+            ))
 
 
 def close_position(
@@ -640,8 +787,9 @@ def close_position(
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """
-    Mark a position as CLOSED. Raises RuntimeError if not found or not OPEN/CLOSING.
-    Records a CLOSED position_event.
+    Direct position close — for manual and reconciliation use.
+    Normal path: close via apply_fill() on the EXIT order.
+    Raises RuntimeError if not found or not OPEN/CLOSING.
     """
     ts = exit_time or datetime.now(timezone.utc).isoformat()
 
@@ -655,17 +803,15 @@ def close_position(
             )
         c.execute("""
             UPDATE positions SET
-                status='CLOSED', exit_price=?, exit_time=?, exit_reason=?,
+                status='CLOSED', qty_base_remaining=0,
+                exit_price=?, exit_time=?, exit_reason=?,
                 exit_fee_usd=?, pnl_usd=?, pnl_pct=?, closed_at=?
             WHERE id=?
         """, (exit_price, ts, exit_reason, exit_fee_usd, pnl_usd, pnl_pct, ts, position_id))
-        payload = json.dumps({
-            "exit_price": exit_price, "exit_reason": exit_reason,
-            "pnl_usd": pnl_usd, "pnl_pct": pnl_pct,
-        })
         c.execute(
             "INSERT INTO position_events(position_id, event_type, payload, occurred_at) VALUES (?,?,?,?)",
-            (position_id, "CLOSED", payload, ts),
+            (position_id, "CLOSED",
+             json.dumps({"exit_price": exit_price, "exit_reason": exit_reason, "pnl_usd": pnl_usd}), ts),
         )
 
     if conn:
@@ -682,9 +828,8 @@ def update_position_stop(
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """
-    Update trailing stop and high-water mark on an OPEN position.
-    Raises RuntimeError if position not found or not OPEN.
-    The STOP_UPDATED event is only inserted if the UPDATE succeeded.
+    Update trailing stop and HWM. Raises RuntimeError if position not found or not OPEN.
+    STOP_UPDATED event only written after a successful rowcount check.
     """
     ts = datetime.now(timezone.utc).isoformat()
 
@@ -693,18 +838,17 @@ def update_position_stop(
             "UPDATE positions SET stop_price=?, high_water_mark=? WHERE id=? AND status='OPEN'",
             (new_stop, new_hwm, position_id),
         )
-        rows_changed = c.execute("SELECT changes()").fetchone()[0]
-        if rows_changed == 0:
+        if c.execute("SELECT changes()").fetchone()[0] == 0:
             row = c.execute("SELECT status FROM positions WHERE id=?", (position_id,)).fetchone()
             if row is None:
                 raise RuntimeError(f"Position '{position_id}' not found.")
             raise RuntimeError(
-                f"Position '{position_id}' is {row['status']!r} — stop update only allowed on OPEN."
+                f"Position '{position_id}' is {row['status']!r} — stop update only on OPEN."
             )
-        payload = json.dumps({"new_stop": new_stop, "new_hwm": new_hwm})
         c.execute(
             "INSERT INTO position_events(position_id, event_type, payload, occurred_at) VALUES (?,?,?,?)",
-            (position_id, "STOP_UPDATED", payload, ts),
+            (position_id, "STOP_UPDATED",
+             json.dumps({"new_stop": new_stop, "new_hwm": new_hwm}), ts),
         )
 
     if conn:
@@ -715,8 +859,7 @@ def update_position_stop(
 
 
 def get_open_positions_for_asset(
-    asset: Optional[str],
-    conn: sqlite3.Connection,
+    asset: Optional[str], conn: sqlite3.Connection
 ) -> list[sqlite3.Row]:
     if asset:
         return conn.execute(
@@ -748,35 +891,34 @@ def start_reconciliation(
     """
     Begin a new reconciliation run.
 
-    If a RUNNING run exists and is older than stale_threshold_minutes, marks it FAILED
-    (hung-run recovery) and starts a new one.
-    Raises RuntimeError if a recent RUNNING run already exists (< stale_threshold_minutes old).
+    First recovers any stale RUNNING run (older than threshold → FAILED).
+    Then inserts a new RUNNING run. The partial UNIQUE INDEX on (1) WHERE status='RUNNING'
+    prevents two concurrent RUNNING runs atomically — no TOCTOU race.
+
+    Raises RuntimeError if a recent RUNNING run already exists.
     """
     now = datetime.now(timezone.utc)
-    running = conn.execute(
-        "SELECT id, started_at FROM reconciliation_runs WHERE status='RUNNING' ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    if running:
-        started = datetime.fromisoformat(running["started_at"])
-        # Ensure both are timezone-aware for comparison
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        age_minutes = (now - started).total_seconds() / 60
-        if age_minutes < stale_threshold_minutes:
-            raise RuntimeError(
-                f"Reconciliation run #{running['id']} is already RUNNING "
-                f"(started {age_minutes:.0f}m ago, threshold={stale_threshold_minutes}m). "
-                "Wait for it to complete or investigate."
-            )
-        conn.execute(
-            "UPDATE reconciliation_runs SET status='FAILED', completed_at=? WHERE id=?",
-            (now.isoformat(), running["id"]),
-        )
-    ts = now.isoformat()
+    stale_cutoff = (now - timedelta(minutes=stale_threshold_minutes)).isoformat()
     conn.execute(
-        "INSERT INTO reconciliation_runs(started_at, status) VALUES (?,?)", (ts, "RUNNING")
+        "UPDATE reconciliation_runs SET status='FAILED', completed_at=?"
+        " WHERE status='RUNNING' AND started_at < ?",
+        (now.isoformat(), stale_cutoff),
     )
-    return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    try:
+        conn.execute(
+            "INSERT INTO reconciliation_runs(started_at, status) VALUES (?,?)",
+            (now.isoformat(), "RUNNING"),
+        )
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    except sqlite3.IntegrityError:
+        running = conn.execute(
+            "SELECT id, started_at FROM reconciliation_runs WHERE status='RUNNING' LIMIT 1"
+        ).fetchone()
+        raise RuntimeError(
+            f"Reconciliation run #{running['id'] if running else '?'} is already RUNNING "
+            f"(started {running['started_at'] if running else 'unknown'}). "
+            "Wait for it to complete or investigate."
+        )
 
 
 def complete_reconciliation(
@@ -786,12 +928,6 @@ def complete_reconciliation(
     unresolved: list,
     conn: sqlite3.Connection,
 ) -> None:
-    """
-    Close a reconciliation run.
-    status = COMPLETE if no discrepancies were found.
-    status = COMPLETE_WITH_ACTIONS if discrepancies were found but all resolved.
-    status = FAILED if any remain unresolved (require human intervention).
-    """
     ts = datetime.now(timezone.utc).isoformat()
     if unresolved:
         status = "FAILED"
@@ -802,8 +938,13 @@ def complete_reconciliation(
     conn.execute("""
         UPDATE reconciliation_runs
         SET completed_at=?, status=?, discovered=?, resolved=?, unresolved=?
-        WHERE id=?
-    """, (ts, status, json.dumps(discovered), json.dumps(resolved), json.dumps(unresolved), run_id))
+        WHERE id=? AND status='RUNNING'
+    """, (ts, status, json.dumps(discovered), json.dumps(resolved),
+          json.dumps(unresolved), run_id))
+    if conn.execute("SELECT changes()").fetchone()[0] == 0:
+        raise RuntimeError(
+            f"complete_reconciliation: run #{run_id} not found or not in RUNNING state."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -819,12 +960,10 @@ def migrate_from_json(
     """
     One-time import of existing JSON/JSONL data into the SQLite ledger.
 
-    Idempotency: exact duplicate primary-key rows are silently skipped.
-    Any other IntegrityError (e.g. conflicting exchange_order_id, orphan data)
-    raises RuntimeError rather than being silently swallowed.
-
-    Pre-epoch orders/positions (epoch_id is None) are skipped — they have no
-    representation in the epoch-scoped ledger.
+    Idempotency: existence check before every INSERT; only confirmed new rows are counted.
+    Non-idempotent IntegrityErrors (e.g. conflicting exchange_order_id) raise RuntimeError.
+    Pre-epoch records (epoch_id is None) are skipped — no representation in the ledger.
+    Multiple epochs in JSONL: all but last get ended_at set to the next epoch's started_at.
 
     Returns counts: {"epochs": N, "orders": N, "positions": N}
     """
@@ -849,12 +988,10 @@ def migrate_from_json(
 
         epoch_records.sort(key=lambda r: r.get("timestamp", ""))
         for i, rec in enumerate(epoch_records):
-            # Existence check before insert avoids ambiguous partial-index vs PK IntegrityError.
-            already = conn.execute(
+            if conn.execute(
                 "SELECT 1 FROM risk_epochs WHERE epoch_id=?", (rec["epoch_id"],)
-            ).fetchone()
-            if already:
-                continue  # already migrated — idempotent skip
+            ).fetchone():
+                continue
             ended_at = (
                 epoch_records[i + 1].get("timestamp") if i < len(epoch_records) - 1 else None
             )
@@ -873,26 +1010,18 @@ def migrate_from_json(
 
         # -- Pending orders ---------------------------------------------------
         if _orders.exists():
-            orders_data = json.loads(_orders.read_text(encoding="utf-8"))
-            for o in orders_data:
+            for o in json.loads(_orders.read_text(encoding="utf-8")):
                 epoch_id = o.get("epoch_id")
                 if epoch_id is None:
-                    continue  # pre-epoch order — no DB representation
-                row = conn.execute(
-                    "SELECT epoch_id FROM risk_epochs WHERE epoch_id=?", (epoch_id,)
-                ).fetchone()
-                if row is None:
-                    continue  # orphan order (epoch not migrated) — skip
-                status_map = {
-                    "OPEN": "OPEN", "FILLED": "FILLED",
-                    "CANCELLED": "CANCELLED", "EXPIRED": "EXPIRED",
-                }
-                status = status_map.get(o.get("status", ""), "OPEN")
-                already = conn.execute(
-                    "SELECT 1 FROM orders WHERE id=?", (o["id"],)
-                ).fetchone()
-                if already:
-                    continue  # already migrated — idempotent skip
+                    continue
+                if not conn.execute(
+                    "SELECT 1 FROM risk_epochs WHERE epoch_id=?", (epoch_id,)
+                ).fetchone():
+                    continue
+                if conn.execute("SELECT 1 FROM orders WHERE id=?", (o["id"],)).fetchone():
+                    continue
+                status_map = {"OPEN": "OPEN", "FILLED": "FILLED",
+                              "CANCELLED": "CANCELLED", "EXPIRED": "EXPIRED"}
                 try:
                     conn.execute("""
                         INSERT INTO orders(
@@ -901,12 +1030,12 @@ def migrate_from_json(
                             placed_at, expires_at, reasoning, status, exchange_order_id
                         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (
-                        o["id"], epoch_id, o["asset"],
-                        "BUY", "LIMIT", "ENTRY",      # legacy orders are all BUY LIMIT ENTRY
-                        o.get("qty_usd_requested"),   # NULL if not present — unknown is NULL
+                        o["id"], epoch_id, o["asset"], "BUY", "LIMIT", "ENTRY",
+                        o.get("qty_usd_requested"),
                         o.get("limit_price"),
                         o["placed_at"], o.get("expires_at"), o.get("reasoning", ""),
-                        status, o.get("exchange_order_id"),
+                        status_map.get(o.get("status", ""), "OPEN"),
+                        o.get("exchange_order_id"),
                     ))
                     counts["orders"] += 1
                 except sqlite3.IntegrityError as e:
@@ -923,42 +1052,37 @@ def migrate_from_json(
                 t = json.loads(line)
                 epoch_id = t.get("epoch_id")
                 if epoch_id is None:
-                    continue  # pre-epoch — no DB representation
-                order_row = conn.execute(
-                    "SELECT id FROM orders WHERE id=?", (t["id"],)
-                ).fetchone()
-                if order_row is None:
-                    continue  # order not migrated — skip position
+                    continue
+                if not conn.execute("SELECT 1 FROM orders WHERE id=?", (t["id"],)).fetchone():
+                    continue
+                if conn.execute("SELECT 1 FROM positions WHERE id=?", (t["id"],)).fetchone():
+                    continue
+                entry_price = t.get("entry_price")
+                qty_usd     = t.get("qty_usd")
+                qty_base    = (qty_usd / entry_price) if (qty_usd and entry_price) else None
                 try:
-                    entry_price = t.get("entry_price")
-                    qty_usd = t.get("qty_usd")
-                    qty_base = (qty_usd / entry_price) if (qty_usd and entry_price) else None
                     conn.execute("""
                         INSERT INTO positions(
                             id, entry_order_id, epoch_id, asset,
-                            entry_price, qty_base, qty_usd, entry_fee_usd,
-                            opened_at, status,
+                            entry_price, qty_base, qty_base_remaining, qty_usd,
+                            entry_fee_usd, opened_at, status,
                             exit_price, exit_time, exit_reason,
                             exit_fee_usd, pnl_usd, pnl_pct, closed_at
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """, (
                         t["id"], t["id"], epoch_id, t["asset"],
-                        entry_price, qty_base, qty_usd,
+                        entry_price, qty_base, 0.0, qty_usd,
                         t.get("entry_fee_usd", 0),
                         t.get("entry_time", t.get("closed_at_utc", "")),
                         "CLOSED",
-                        t.get("exit_price"), t.get("exit_time"),
-                        t.get("reason"), t.get("exit_fee_usd", 0),
-                        t.get("pnl_usd"), t.get("pnl_pct"),
+                        t.get("exit_price"), t.get("exit_time"), t.get("reason"),
+                        t.get("exit_fee_usd", 0), t.get("pnl_usd"), t.get("pnl_pct"),
                         t.get("closed_at_utc", t.get("exit_time")),
                     ))
                     counts["positions"] += 1
                 except sqlite3.IntegrityError as e:
-                    if "positions.id" in str(e):
-                        pass  # duplicate — already migrated
-                    else:
-                        raise RuntimeError(
-                            f"Migration: unexpected IntegrityError for position {t.get('id')!r}: {e}"
-                        ) from e
+                    raise RuntimeError(
+                        f"Migration: unexpected IntegrityError for position {t.get('id')!r}: {e}"
+                    ) from e
 
     return counts
