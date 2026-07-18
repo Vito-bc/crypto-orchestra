@@ -49,7 +49,7 @@ SCHEMA_VERSION = 3
 _TRANSITIONS: dict[str, set[str]] = {
     "SUBMITTING": {"OPEN", "CANCELLED"},
     "OPEN":       {"PARTIAL", "FILLED", "CANCELLED", "EXPIRED"},
-    "PARTIAL":    {"FILLED", "CANCELLED"},
+    "PARTIAL":    {"FILLED", "CANCELLED", "EXPIRED"},
     "FILLED":     set(),
     "CANCELLED":  set(),
     "EXPIRED":    set(),
@@ -243,12 +243,13 @@ def run_migrations(path: Optional[Path] = None) -> None:
     """
     Apply schema migrations. Called on every startup before any DB access.
 
-    v0 (no DB): fresh install of V3 schema.
-    v1/v2 (prototype, never wired): backup to .vN.bak, then fresh V3 install.
+    v0 (no DB or fresh file): fresh install of V3 schema.
+    v0 (file exists with user tables): unversioned prototype (e.g. from commit 972eac3
+        which never called PRAGMA user_version). Backed up to .v0.bak, then fresh V3.
+    v1/v2 (prototype, never wired): backed up to .vN.bak, then fresh V3.
     v3: already current — no-op.
 
-    The backup+reset approach is safe for v1/v2 because those schemas were
-    prototype-only and were never used as the live source of truth.
+    The backup+reset approach is safe for all pre-wiring prototypes.
     Future in-place migrations (v3 → v4, etc.) should use ALTER TABLE.
     """
     db_path = path or DB_PATH
@@ -260,10 +261,20 @@ def run_migrations(path: Optional[Path] = None) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version == SCHEMA_VERSION:
             return
+        # Detect unversioned prototype: user_version=0 but user tables already exist.
+        # Distinguishes "legacy DB without user_version" from "brand-new empty file".
+        has_user_tables = (
+            version == 0
+            and conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master"
+                " WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchone()[0] > 0
+        )
     finally:
         conn.close()
 
-    if 0 < version < SCHEMA_VERSION and db_path.exists():
+    is_legacy = (0 < version < SCHEMA_VERSION) or (version == 0 and has_user_tables)
+    if is_legacy and db_path.exists():
         backup = db_path.with_suffix(f".v{version}.bak")
         shutil.copy2(str(db_path), str(backup))
         db_path.unlink()
@@ -514,6 +525,7 @@ def apply_fill(
     exchange_fill_id: Optional[str] = None,
     stop_price: Optional[float] = None,
     target_price: Optional[float] = None,
+    reconciliation_mode: bool = False,
     conn: Optional[sqlite3.Connection] = None,
 ) -> dict:
     """
@@ -522,7 +534,7 @@ def apply_fill(
     ENTRY orders:
       INSERT fill → VWAP aggregate → PARTIAL/FILLED transition →
       create position (first fill, reads trade_intent for stop/target) or
-      update VWAP (subsequent fills).
+      update VWAP/remaining (subsequent fills, accounting for exits).
 
     EXIT orders:
       INSERT fill → aggregate all exit fills for the position →
@@ -534,8 +546,16 @@ def apply_fill(
     current state without error. If the same exchange_fill_id is submitted for
     a DIFFERENT order, raises RuntimeError (Coinbase/local mismatch).
 
-    Returns {"status": new_order_status, "position_id": str or None}.
-    Raises RuntimeError on order not found, SUBMITTING state, or terminal state.
+    reconciliation_mode=True: allows fills on CANCELLED or EXPIRED orders —
+    used when reconciliation discovers Coinbase executed a fill that was locally
+    marked terminal (e.g. partial fill before cancel). Order status is NOT
+    changed; the fill is recorded and position is created/updated. The
+    reconciliation run is responsible for flagging the discrepancy.
+
+    Returns {"status": order_status, "position_id": str or None,
+             "reconciliation": bool}.
+    Raises RuntimeError on order not found, SUBMITTING state, or terminal state
+    (unless reconciliation_mode=True).
     """
     ts = filled_at or datetime.now(timezone.utc).isoformat()
 
@@ -560,12 +580,13 @@ def apply_fill(
                 return {
                     "status": order["status"] if order else "UNKNOWN",
                     "position_id": pos["id"] if pos else None,
+                    "reconciliation": False,
                 }
 
         order = c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
         if order is None:
             raise RuntimeError(f"Order '{order_id}' not found.")
-        if order["status"] in _TERMINAL_STATES:
+        if order["status"] in _TERMINAL_STATES and not reconciliation_mode:
             raise RuntimeError(f"Cannot fill {order['status']!r} order '{order_id}'.")
         if order["status"] == "SUBMITTING":
             raise RuntimeError(
@@ -589,15 +610,20 @@ def apply_fill(
             FROM fills WHERE order_id=?
         """, (order_id,)).fetchone()
 
-        req_base = order["qty_base_requested"]
-        req_usd  = order["qty_usd_requested"]
-        is_complete = False
-        if req_base is not None:
-            is_complete = agg["total_base"] >= req_base * 0.999
-        elif req_usd is not None:
-            is_complete = agg["total_usd"] >= req_usd * 0.999
-        new_status = "FILLED" if is_complete else "PARTIAL"
-        c.execute("UPDATE orders SET status=? WHERE id=?", (new_status, order_id))
+        # In reconciliation_mode the order status is authoritative on Coinbase, not locally.
+        # Keep the terminal status; only normal-path fills transition the order.
+        if order["status"] in _TERMINAL_STATES:
+            new_status = order["status"]  # reconciliation_mode: leave status unchanged
+        else:
+            req_base = order["qty_base_requested"]
+            req_usd  = order["qty_usd_requested"]
+            is_complete = False
+            if req_base is not None:
+                is_complete = agg["total_base"] >= req_base * 0.999
+            elif req_usd is not None:
+                is_complete = agg["total_usd"] >= req_usd * 0.999
+            new_status = "FILLED" if is_complete else "PARTIAL"
+            c.execute("UPDATE orders SET status=? WHERE id=?", (new_status, order_id))
 
         position_id = None
 
@@ -635,13 +661,21 @@ def apply_fill(
                 )
             else:
                 position_id = existing["id"]
-                # Update VWAP and qty on subsequent entry fills
+                # Compute remaining = total_entry - already_exited.
+                # Must NOT just use total_entry: position may be partially exited.
+                total_exit = c.execute("""
+                    SELECT COALESCE(SUM(f.fill_qty_base), 0)
+                    FROM fills f
+                    JOIN orders o ON f.order_id = o.id
+                    WHERE o.position_id=? AND o.purpose='EXIT'
+                """, (position_id,)).fetchone()[0]
+                remaining = max(0.0, agg["total_base"] - total_exit)
                 c.execute("""
                     UPDATE positions SET
                         entry_price=?, qty_base=?, qty_base_remaining=?,
                         qty_usd=?, entry_fee_usd=?
                     WHERE id=?
-                """, (agg["vwap"], agg["total_base"], agg["total_base"],
+                """, (agg["vwap"], agg["total_base"], remaining,
                       agg["total_usd"], agg["total_fee"], position_id))
 
         # ----- EXIT fill -----
@@ -718,7 +752,11 @@ def apply_fill(
                 )
             position_id = pos_id
 
-        return {"status": new_status, "position_id": position_id}
+        return {
+            "status": new_status,
+            "position_id": position_id,
+            "reconciliation": reconciliation_mode,
+        }
 
     if conn:
         return _run(conn)

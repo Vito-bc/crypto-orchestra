@@ -1128,3 +1128,285 @@ def test_exit_order_check_constraint_enforced_at_db_level(db_with_epoch: Path) -
                     qty_base_requested, placed_at, status)
                 VALUES (?,?,?,?,?,?,?,?,'OPEN')
             """, (_oid(), "EP1", "ZEC-USD", "SELL", "LIMIT", "EXIT", 1.0, _now()))
+
+
+# ---------------------------------------------------------------------------
+# 12. Regression: late ENTRY fill must not overwrite qty_base_remaining (P0)
+# ---------------------------------------------------------------------------
+
+def test_late_entry_fill_preserves_existing_exit_quantity(db_with_epoch: Path) -> None:
+    """
+    Sequence: partial entry (0.5 ZEC) → partial exit (0.3 ZEC) → late entry (+0.5 ZEC).
+    Before fix: remaining was reset to 1.0 (total entry), ignoring the 0.3 exit.
+    After fix:  remaining = 1.0 - 0.3 = 0.7.
+    """
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+
+    # Partial entry: 0.5 ZEC
+    with get_db(db_with_epoch) as conn:
+        r1 = apply_fill(order_id=oid, fill_price=100.0, fill_qty_base=0.5, conn=conn)
+    pos_id = r1["position_id"]
+    assert r1["status"] == "PARTIAL"
+
+    # Partial exit: 0.3 ZEC
+    exit_oid = _place_exit_order(db_with_epoch, pos_id, qty_base=0.3)
+    with get_db(db_with_epoch) as conn:
+        apply_fill(order_id=exit_oid, fill_price=110.0, fill_qty_base=0.3, conn=conn)
+    with get_db(db_with_epoch) as conn:
+        mid = conn.execute(
+            "SELECT qty_base, qty_base_remaining FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+    assert abs(mid["qty_base"] - 0.5) < 1e-9
+    assert abs(mid["qty_base_remaining"] - 0.2) < 1e-9
+
+    # Late entry fill: +0.5 ZEC completes the entry order
+    with get_db(db_with_epoch) as conn:
+        r2 = apply_fill(order_id=oid, fill_price=101.0, fill_qty_base=0.5, conn=conn)
+    assert r2["status"] == "FILLED"
+    assert r2["position_id"] == pos_id
+
+    with get_db(db_with_epoch) as conn:
+        pos = conn.execute(
+            "SELECT qty_base, qty_base_remaining FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+    assert abs(pos["qty_base"] - 1.0) < 1e-9
+    # Remaining = 1.0 (total entry) - 0.3 (already exited) = 0.7
+    assert abs(pos["qty_base_remaining"] - 0.7) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# 13. Migration: unversioned legacy prototype (user_version=0, tables present)
+# ---------------------------------------------------------------------------
+
+_UNVERSIONED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS risk_epochs (
+    epoch_id TEXT PRIMARY KEY, paper_capital REAL, reason TEXT,
+    started_at TEXT, ended_at TEXT
+);
+CREATE TABLE IF NOT EXISTS orders (
+    id TEXT PRIMARY KEY, epoch_id TEXT, asset TEXT,
+    status TEXT DEFAULT 'OPEN', placed_at TEXT, limit_price REAL,
+    stop_price REAL, target_price REAL
+);
+"""
+
+
+def _make_unversioned_db(path: Path) -> None:
+    """Simulates the first prototype (commit 972eac3) which never set user_version."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(_UNVERSIONED_SCHEMA)
+    # Deliberately NOT setting PRAGMA user_version
+    conn.execute(
+        "INSERT INTO risk_epochs VALUES ('EP_LEGACY', 100, 'legacy', '2024-01-01', NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_run_migrations_unversioned_db_creates_v0_backup(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    _make_unversioned_db(db)
+
+    run_migrations(db)
+
+    backup = tmp_path / "ledger.v0.bak"
+    assert backup.exists(), ".v0.bak must be created for unversioned prototype"
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert ver == SCHEMA_VERSION
+
+
+def test_run_migrations_unversioned_backup_preserves_data(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    _make_unversioned_db(db)
+    run_migrations(db)
+
+    backup = tmp_path / "ledger.v0.bak"
+    with sqlite3.connect(str(backup)) as conn:
+        row = conn.execute("SELECT epoch_id FROM risk_epochs").fetchone()
+    assert row[0] == "EP_LEGACY"
+
+
+def test_run_migrations_unversioned_new_db_has_v3_tables(tmp_path: Path) -> None:
+    db = tmp_path / "ledger.db"
+    _make_unversioned_db(db)
+    run_migrations(db)
+
+    with sqlite3.connect(str(db)) as conn:
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    assert "trade_intents" in tables
+    assert "reconciliation_runs" in tables
+
+
+def test_run_migrations_fresh_empty_file_no_backup(tmp_path: Path) -> None:
+    """A brand-new empty DB (no tables) must NOT create a backup."""
+    db = tmp_path / "fresh.db"
+    # Create empty file — sqlite_master has no user tables
+    sqlite3.connect(str(db)).close()
+    run_migrations(db)
+
+    assert not (tmp_path / "fresh.v0.bak").exists()
+    with get_db(db) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert ver == SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# 14. State machine: PARTIAL → EXPIRED
+# ---------------------------------------------------------------------------
+
+def test_partial_order_can_transition_to_expired(db_with_epoch: Path) -> None:
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=2.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+    with get_db(db_with_epoch) as conn:
+        apply_fill(order_id=oid, fill_price=100.0, fill_qty_base=0.5, conn=conn)
+    with get_db(db_with_epoch) as conn:
+        transition_order(oid, "EXPIRED", conn=conn)
+    with get_db(db_with_epoch) as conn:
+        row = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
+    assert row["status"] == "EXPIRED"
+
+
+def test_partial_order_can_transition_to_cancelled(db_with_epoch: Path) -> None:
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=2.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+    with get_db(db_with_epoch) as conn:
+        apply_fill(order_id=oid, fill_price=100.0, fill_qty_base=0.5, conn=conn)
+    with get_db(db_with_epoch) as conn:
+        transition_order(oid, "CANCELLED", conn=conn)
+    with get_db(db_with_epoch) as conn:
+        row = conn.execute("SELECT status, cancelled_at FROM orders WHERE id=?", (oid,)).fetchone()
+    assert row["status"] == "CANCELLED"
+    assert row["cancelled_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# 15. Reconciliation-mode fills on terminal orders
+# ---------------------------------------------------------------------------
+
+def test_reconciliation_fill_on_cancelled_entry_creates_position(db_with_epoch: Path) -> None:
+    """
+    Coinbase executed a partial fill before the local CANCELLED transition.
+    reconciliation_mode=True must record the fill and create a position
+    without changing the order's terminal status.
+    """
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+        transition_order(oid, "CANCELLED", conn=conn)
+
+    with get_db(db_with_epoch) as conn:
+        result = apply_fill(
+            order_id=oid, fill_price=100.0, fill_qty_base=0.5,
+            exchange_fill_id="CB-LATE-FILL",
+            reconciliation_mode=True, conn=conn,
+        )
+
+    assert result["reconciliation"] is True
+    assert result["position_id"] is not None
+
+    with get_db(db_with_epoch) as conn:
+        order_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE order_id=?", (oid,)
+        ).fetchone()[0]
+        pos = conn.execute(
+            "SELECT status, qty_base FROM positions WHERE id=?", (result["position_id"],)
+        ).fetchone()
+
+    # Order stays CANCELLED — reconciliation owns the discrepancy
+    assert order_row["status"] == "CANCELLED"
+    # Fill is recorded
+    assert fill_count == 1
+    # Position is created with the fill's qty
+    assert pos["status"] == "OPEN"
+    assert abs(pos["qty_base"] - 0.5) < 1e-9
+
+
+def test_reconciliation_fill_on_expired_entry_creates_position(db_with_epoch: Path) -> None:
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+        transition_order(oid, "EXPIRED", conn=conn)
+
+    with get_db(db_with_epoch) as conn:
+        result = apply_fill(
+            order_id=oid, fill_price=100.0, fill_qty_base=1.0,
+            reconciliation_mode=True, conn=conn,
+        )
+
+    assert result["position_id"] is not None
+    with get_db(db_with_epoch) as conn:
+        row = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
+    assert row["status"] == "EXPIRED"  # status unchanged
+
+
+def test_reconciliation_fill_normal_order_still_transitions(db_with_epoch: Path) -> None:
+    """reconciliation_mode=True on a non-terminal order still transitions status normally."""
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+    with get_db(db_with_epoch) as conn:
+        result = apply_fill(
+            order_id=oid, fill_price=100.0, fill_qty_base=1.0,
+            reconciliation_mode=True, conn=conn,
+        )
+    assert result["status"] == "FILLED"
+    assert result["reconciliation"] is True
+
+
+def test_terminal_order_fill_without_reconciliation_mode_still_raises(
+    db_with_epoch: Path,
+) -> None:
+    """Without reconciliation_mode, terminal fill must still raise."""
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+        transition_order(oid, "CANCELLED", conn=conn)
+    with pytest.raises(RuntimeError, match="Cannot fill"):
+        with get_db(db_with_epoch) as conn:
+            apply_fill(order_id=oid, fill_price=100.0, fill_qty_base=1.0, conn=conn)
