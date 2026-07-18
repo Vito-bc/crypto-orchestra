@@ -562,7 +562,7 @@ def apply_fill(
     reconciliation run is responsible for flagging the discrepancy.
 
     Returns {"status": order_status, "position_id": str or None,
-             "reconciliation": bool}.
+             "reconciliation": bool, "replayed": bool (True only on idempotent replay)}.
     Raises RuntimeError on order not found, SUBMITTING state, or terminal state
     (unless reconciliation_mode=True).
     """
@@ -597,7 +597,8 @@ def apply_fill(
                 return {
                     "status": order["status"] if order else "UNKNOWN",
                     "position_id": resolved_pos_id,
-                    "reconciliation": False,
+                    "reconciliation": reconciliation_mode,
+                    "replayed": True,
                 }
 
         order = c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
@@ -790,7 +791,19 @@ def apply_fill(
         }
 
     if conn:
-        return _run(conn)
+        # Use a SAVEPOINT so that any exception inside _run() rolls back only
+        # the fill's writes, not the entire outer transaction.  This guarantees
+        # atomicity even when the caller catches LedgerConsistencyError (or any
+        # other error) inside their own `with get_db()` block.
+        sp = f"af_{_uuid_mod.uuid4().hex[:8]}"
+        conn.execute(f"SAVEPOINT {sp}")
+        try:
+            result = _run(conn)
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
+            return result
+        except Exception:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+            raise
     else:
         with get_db() as c:
             return _run(c)

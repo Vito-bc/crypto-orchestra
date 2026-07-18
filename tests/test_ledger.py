@@ -1476,7 +1476,72 @@ def test_late_entry_fill_after_position_closed_raises_consistency_error(
 
 
 # ---------------------------------------------------------------------------
-# 17. P2 regression: idempotent EXIT fill must return correct position_id
+# 17. P0 regression: LedgerConsistencyError caught inside shared tx must not
+#     commit the fill (SAVEPOINT atomicity)
+# ---------------------------------------------------------------------------
+
+def test_consistency_error_caught_inside_shared_connection_does_not_commit_fill(
+    db_with_epoch: Path,
+) -> None:
+    """
+    Reconciler catches LedgerConsistencyError inside the same with get_db() block.
+    Before the SAVEPOINT fix: the fill INSERT was already in the outer transaction
+    and got committed despite the error being caught.
+    After fix: SAVEPOINT rolls back the fill INSERT; only the fill_count stays at 1.
+    """
+    entry_oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=entry_oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(entry_oid, "OPEN", conn=conn)
+
+    # Partial entry → position created
+    with get_db(db_with_epoch) as conn:
+        r = apply_fill(order_id=entry_oid, fill_price=100.0, fill_qty_base=0.5, conn=conn)
+    pos_id = r["position_id"]
+
+    # Full exit → position CLOSED
+    exit_oid = _place_exit_order(db_with_epoch, pos_id, qty_base=0.5)
+    with get_db(db_with_epoch) as conn:
+        apply_fill(order_id=exit_oid, fill_price=110.0, fill_qty_base=0.5, conn=conn)
+
+    with get_db(db_with_epoch) as conn:
+        transition_order(entry_oid, "CANCELLED", conn=conn)
+
+    # Reconciler catches error *inside* the shared connection — exactly the pattern
+    # that exposes the pre-SAVEPOINT bug.
+    with get_db(db_with_epoch) as conn:
+        try:
+            apply_fill(
+                order_id=entry_oid, fill_price=100.0, fill_qty_base=0.5,
+                reconciliation_mode=True, conn=conn,
+            )
+        except LedgerConsistencyError:
+            pass  # reconciler handles this and continues its own transaction
+
+    # The late fill must NOT appear — SAVEPOINT must have rolled it back.
+    with get_db(db_with_epoch) as conn:
+        fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE order_id=?", (entry_oid,)
+        ).fetchone()[0]
+    assert fill_count == 1, (
+        "LedgerConsistencyError caught inside shared tx must not leave a committed fill. "
+        "SAVEPOINT in apply_fill() must roll back the INSERT before re-raising."
+    )
+
+    with get_db(db_with_epoch) as conn:
+        pos = conn.execute(
+            "SELECT status, qty_base FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+    assert pos["status"] == "CLOSED"
+    assert abs(pos["qty_base"] - 0.5) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# 18. P2 regression: idempotent EXIT fill must return correct position_id
 # ---------------------------------------------------------------------------
 
 def test_idempotent_exit_fill_returns_position_id(db_with_epoch: Path) -> None:
@@ -1506,3 +1571,42 @@ def test_idempotent_exit_fill_returns_position_id(db_with_epoch: Path) -> None:
         "Idempotent EXIT fill replay must return position_id, not None. "
         "Before fix: used entry_order_id lookup which always returns None for EXIT orders."
     )
+    assert r2.get("replayed") is True
+
+
+def test_idempotent_replay_with_reconciliation_mode_returns_correct_flags(
+    db_with_epoch: Path,
+) -> None:
+    """
+    When a fill is replayed with reconciliation_mode=True, the return dict must have
+    reconciliation=True and replayed=True.
+    Before fix: 'reconciliation' was hardcoded False on the idempotency path regardless
+    of the reconciliation_mode argument.
+    """
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(oid, "OPEN", conn=conn)
+
+    with get_db(db_with_epoch) as conn:
+        apply_fill(
+            order_id=oid, fill_price=100.0, fill_qty_base=1.0,
+            exchange_fill_id="FILL-RECON-001", conn=conn,
+        )
+
+    with get_db(db_with_epoch) as conn:
+        replayed = apply_fill(
+            order_id=oid, fill_price=100.0, fill_qty_base=1.0,
+            exchange_fill_id="FILL-RECON-001",
+            reconciliation_mode=True, conn=conn,
+        )
+
+    assert replayed["reconciliation"] is True, (
+        "Idempotent replay with reconciliation_mode=True must return reconciliation=True. "
+        "Before fix: hardcoded False on idempotency path."
+    )
+    assert replayed.get("replayed") is True
