@@ -18,6 +18,7 @@ import pytest
 
 from pipeline.ledger import (
     SCHEMA_VERSION,
+    LedgerConsistencyError,
     apply_fill,
     close_position,
     complete_reconciliation,
@@ -1410,3 +1411,98 @@ def test_terminal_order_fill_without_reconciliation_mode_still_raises(
     with pytest.raises(RuntimeError, match="Cannot fill"):
         with get_db(db_with_epoch) as conn:
             apply_fill(order_id=oid, fill_price=100.0, fill_qty_base=1.0, conn=conn)
+
+
+# ---------------------------------------------------------------------------
+# 16. P0 regression: late fill after close must raise LedgerConsistencyError
+# ---------------------------------------------------------------------------
+
+def test_late_entry_fill_after_position_closed_raises_consistency_error(
+    db_with_epoch: Path,
+) -> None:
+    """
+    Sequence that was silently corrupting the ledger before the guard:
+      1. ENTRY partial fill (0.5 ZEC)
+      2. EXIT full fill (0.5 ZEC) → position CLOSED
+      3. ENTRY order CANCELLED
+      4. Reconciliation discovers late ENTRY fill of 0.5 on the cancelled order
+
+    Expected: LedgerConsistencyError — NOT a silent qty_base update on a CLOSED position.
+    The resulting state must be unchanged: position still CLOSED with original P&L.
+    """
+    entry_oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=entry_oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        transition_order(entry_oid, "OPEN", conn=conn)
+
+    # Step 1: partial entry fill
+    with get_db(db_with_epoch) as conn:
+        r = apply_fill(order_id=entry_oid, fill_price=100.0, fill_qty_base=0.5, conn=conn)
+    pos_id = r["position_id"]
+
+    # Step 2: full exit → position CLOSED
+    exit_oid = _place_exit_order(db_with_epoch, pos_id, qty_base=0.5)
+    with get_db(db_with_epoch) as conn:
+        apply_fill(order_id=exit_oid, fill_price=110.0, fill_qty_base=0.5, conn=conn)
+
+    with get_db(db_with_epoch) as conn:
+        pre = conn.execute("SELECT status, qty_base, pnl_usd FROM positions WHERE id=?",
+                           (pos_id,)).fetchone()
+    assert pre["status"] == "CLOSED"
+
+    # Step 3: entry order cancelled (Coinbase flow)
+    with get_db(db_with_epoch) as conn:
+        transition_order(entry_oid, "CANCELLED", conn=conn)
+
+    # Step 4: reconciliation tries to apply late fill
+    with pytest.raises(LedgerConsistencyError, match="CLOSED"):
+        with get_db(db_with_epoch) as conn:
+            apply_fill(
+                order_id=entry_oid, fill_price=100.0, fill_qty_base=0.5,
+                reconciliation_mode=True, conn=conn,
+            )
+
+    # Position must be completely unchanged after the failed attempt
+    with get_db(db_with_epoch) as conn:
+        post = conn.execute("SELECT status, qty_base, pnl_usd FROM positions WHERE id=?",
+                            (pos_id,)).fetchone()
+    assert post["status"] == "CLOSED"
+    assert post["qty_base"] == pre["qty_base"]
+    assert post["pnl_usd"] == pre["pnl_usd"]
+
+
+# ---------------------------------------------------------------------------
+# 17. P2 regression: idempotent EXIT fill must return correct position_id
+# ---------------------------------------------------------------------------
+
+def test_idempotent_exit_fill_returns_position_id(db_with_epoch: Path) -> None:
+    """
+    Replaying a known EXIT fill must return the position_id, not None.
+    Before the fix the idempotency path looked up position via entry_order_id,
+    which is wrong for EXIT orders — they reference position via order.position_id.
+    """
+    _, pos_id = _setup_open_position(db_with_epoch)
+    exit_oid = _place_exit_order(db_with_epoch, pos_id)
+
+    # First fill (normal path)
+    with get_db(db_with_epoch) as conn:
+        r1 = apply_fill(
+            order_id=exit_oid, fill_price=110.0, fill_qty_base=1.0,
+            exchange_fill_id="EXIT-FILL-001", conn=conn,
+        )
+    assert r1["position_id"] == pos_id
+
+    # Replay — idempotency path must also return the position_id
+    with get_db(db_with_epoch) as conn:
+        r2 = apply_fill(
+            order_id=exit_oid, fill_price=110.0, fill_qty_base=1.0,
+            exchange_fill_id="EXIT-FILL-001", conn=conn,
+        )
+    assert r2["position_id"] == pos_id, (
+        "Idempotent EXIT fill replay must return position_id, not None. "
+        "Before fix: used entry_order_id lookup which always returns None for EXIT orders."
+    )

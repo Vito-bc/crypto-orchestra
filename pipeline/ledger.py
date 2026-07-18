@@ -58,6 +58,15 @@ _TRANSITIONS: dict[str, set[str]] = {
 _TERMINAL_STATES = {"FILLED", "CANCELLED", "EXPIRED"}
 
 
+class LedgerConsistencyError(RuntimeError):
+    """
+    Raised when a fill would create an inconsistent ledger state that requires
+    human/reconciliation intervention before trading can resume.
+    The reconciliation run must flag the affected position/epoch as UNRESOLVED
+    and halt all new orders until the discrepancy is resolved.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Connection factory
 # ---------------------------------------------------------------------------
@@ -572,14 +581,22 @@ def apply_fill(
                         f"for order '{existing_fill['order_id']}', not '{order_id}'. "
                         "Possible Coinbase/local order-ID mismatch — halt and investigate."
                     )
-                # Same fill replayed for same order — return current state
-                order = c.execute("SELECT status FROM orders WHERE id=?", (order_id,)).fetchone()
-                pos = c.execute(
-                    "SELECT id FROM positions WHERE entry_order_id=?", (order_id,)
+                # Same fill replayed for same order — return current state.
+                # Position lookup differs: ENTRY orders are referenced by positions via
+                # entry_order_id; EXIT orders carry position_id directly on the order.
+                order = c.execute(
+                    "SELECT status, purpose, position_id FROM orders WHERE id=?", (order_id,)
                 ).fetchone()
+                if order and order["purpose"] == "EXIT":
+                    resolved_pos_id = order["position_id"]
+                else:
+                    row = c.execute(
+                        "SELECT id FROM positions WHERE entry_order_id=?", (order_id,)
+                    ).fetchone()
+                    resolved_pos_id = row["id"] if row else None
                 return {
                     "status": order["status"] if order else "UNKNOWN",
-                    "position_id": pos["id"] if pos else None,
+                    "position_id": resolved_pos_id,
                     "reconciliation": False,
                 }
 
@@ -661,6 +678,20 @@ def apply_fill(
                 )
             else:
                 position_id = existing["id"]
+                pos_status = c.execute(
+                    "SELECT status FROM positions WHERE id=?", (position_id,)
+                ).fetchone()["status"]
+                # Guard: if the position is already CLOSED, a late fill would create
+                # real open exposure invisible to position tracking. Silently updating
+                # qty_base on a CLOSED position is the most dangerous silent corruption
+                # possible. Raise and let the reconciler flag this as UNRESOLVED.
+                if pos_status == "CLOSED":
+                    raise LedgerConsistencyError(
+                        f"Late ENTRY fill for order '{order_id}' arrived after position "
+                        f"'{position_id}' was CLOSED. Ledger has real open exposure that "
+                        "is not tracked. Flag this run as UNRESOLVED and halt new orders "
+                        "on this epoch until the discrepancy is resolved manually."
+                    )
                 # Compute remaining = total_entry - already_exited.
                 # Must NOT just use total_entry: position may be partially exited.
                 total_exit = c.execute("""
