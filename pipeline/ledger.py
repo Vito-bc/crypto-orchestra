@@ -788,6 +788,7 @@ def apply_fill(
             "status": new_status,
             "position_id": position_id,
             "reconciliation": reconciliation_mode,
+            "replayed": False,
         }
 
     if conn:
@@ -803,6 +804,7 @@ def apply_fill(
             return result
         except Exception:
             conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
+            conn.execute(f"RELEASE SAVEPOINT {sp}")
             raise
     else:
         with get_db() as c:
