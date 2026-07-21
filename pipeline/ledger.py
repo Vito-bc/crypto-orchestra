@@ -299,16 +299,66 @@ def run_migrations(path: Optional[Path] = None) -> None:
 
     # V4 → V5: non-destructive in-place migration.
     # Adds rejection_reason column and one-active-entry-per-asset UNIQUE index.
+    # Wrapped in BEGIN IMMEDIATE so that all three DDL statements are atomic:
+    # if the index cannot be created (e.g. existing duplicate active ENTRY rows),
+    # the whole migration rolls back and user_version stays V4 — safe to retry.
     if version == 4:
         conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
         try:
-            conn.execute("ALTER TABLE orders ADD COLUMN rejection_reason TEXT")
-            conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_entry_per_asset
-                    ON orders(asset) WHERE purpose='ENTRY'
-                    AND status IN ('SUBMITTING','OPEN','PARTIAL')
-            """)
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # Idempotent column add: skip if rejection_reason already exists
+                # (handles the partial-failure / re-run scenario).
+                existing_cols = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(orders)")
+                }
+                if "rejection_reason" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE orders ADD COLUMN rejection_reason TEXT"
+                    )
+
+                # Detect conflicting rows before attempting to create the UNIQUE
+                # index — a failed CREATE INDEX inside a transaction still rolls
+                # back cleanly, but a clear error message is far more actionable.
+                conflicts = conn.execute("""
+                    SELECT asset, COUNT(*) AS cnt
+                    FROM orders
+                    WHERE purpose='ENTRY'
+                      AND status IN ('SUBMITTING','OPEN','PARTIAL')
+                    GROUP BY asset
+                    HAVING COUNT(*) > 1
+                """).fetchall()
+                if conflicts:
+                    details = ", ".join(
+                        f"{r[0]} ({r[1]} orders)" for r in conflicts
+                    )
+                    raise RuntimeError(
+                        f"V4→V5 migration blocked: duplicate active ENTRY orders "
+                        f"exist for {details}. Cancel the duplicates manually "
+                        "(leaving at most one SUBMITTING/OPEN/PARTIAL per asset) "
+                        "then run again."
+                    )
+
+                # Idempotent index creation: skip if already present.
+                idx_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master"
+                    " WHERE type='index'"
+                    "   AND name='idx_one_active_entry_per_asset'"
+                ).fetchone()
+                if not idx_exists:
+                    conn.execute("""
+                        CREATE UNIQUE INDEX idx_one_active_entry_per_asset
+                            ON orders(asset)
+                            WHERE purpose='ENTRY'
+                              AND status IN ('SUBMITTING','OPEN','PARTIAL')
+                    """)
+
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         finally:
             conn.close()
         return

@@ -1718,6 +1718,148 @@ def test_schema_has_one_active_entry_per_asset_index(tmp_db: Path) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# V4→V5 migration atomicity
+# ---------------------------------------------------------------------------
+
+_V4_SCHEMA = """
+CREATE TABLE risk_epochs (
+    epoch_id TEXT PRIMARY KEY, paper_capital REAL NOT NULL, reason TEXT NOT NULL,
+    started_at TEXT NOT NULL, ended_at TEXT
+);
+CREATE TABLE orders (
+    id TEXT PRIMARY KEY,
+    epoch_id TEXT NOT NULL REFERENCES risk_epochs(epoch_id),
+    asset TEXT NOT NULL, side TEXT NOT NULL, order_type TEXT NOT NULL,
+    purpose TEXT NOT NULL, position_id TEXT,
+    qty_base_requested REAL, qty_usd_requested REAL, limit_price REAL,
+    placed_at TEXT NOT NULL, expires_at TEXT, reasoning TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'SUBMITTING',
+    exchange_order_id TEXT UNIQUE, cancelled_at TEXT, expired_at TEXT,
+    rejected_at TEXT
+);
+CREATE TABLE positions (
+    id TEXT PRIMARY KEY, entry_order_id TEXT NOT NULL UNIQUE,
+    epoch_id TEXT NOT NULL, asset TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN'
+);
+CREATE TABLE fills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL REFERENCES orders(id),
+    exchange_fill_id TEXT UNIQUE, fill_price REAL NOT NULL, fill_qty_base REAL NOT NULL,
+    fill_qty_usd REAL NOT NULL, fee_usd REAL NOT NULL DEFAULT 0.0,
+    is_taker INTEGER NOT NULL DEFAULT 1, filled_at TEXT NOT NULL
+);
+CREATE TABLE trade_intents (
+    order_id TEXT PRIMARY KEY REFERENCES orders(id),
+    stop_price REAL NOT NULL, target_price REAL NOT NULL, recorded_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_one_active_epoch ON risk_epochs(1) WHERE ended_at IS NULL;
+"""
+
+
+def _make_v4_db(path: Path, extra_sql: str = "") -> None:
+    """Create a minimal V4 DB (no rejection_reason column, no stacking index)."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(_V4_SCHEMA)
+    if extra_sql:
+        conn.executescript(extra_sql)
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+    conn.close()
+
+
+def test_v4_to_v5_migration_conflicts_roll_back(tmp_path: Path) -> None:
+    """
+    If two SUBMITTING ENTRY orders exist for the same asset, the UNIQUE index
+    cannot be created.  The entire migration rolls back atomically: user_version
+    stays V4 and rejection_reason column is NOT permanently added.
+
+    A clear RuntimeError is raised.  Re-running produces the same error (not
+    'duplicate column'), proving the rollback was complete.
+    """
+    db = tmp_path / "ledger_v4_conflict.db"
+    _make_v4_db(db, extra_sql="""
+        INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)
+            VALUES ('EP1', 100.0, 'test', '2025-01-01T00:00:00Z');
+        INSERT INTO orders(id, epoch_id, asset, side, order_type, purpose, placed_at,
+                           qty_usd_requested, status)
+            VALUES ('ORD-1', 'EP1', 'ZEC-USD', 'BUY', 'LIMIT', 'ENTRY',
+                    '2025-01-01T00:00:00Z', 10.0, 'SUBMITTING');
+        INSERT INTO orders(id, epoch_id, asset, side, order_type, purpose, placed_at,
+                           qty_usd_requested, status)
+            VALUES ('ORD-2', 'EP1', 'ZEC-USD', 'BUY', 'LIMIT', 'ENTRY',
+                    '2025-01-01T00:01:00Z', 10.0, 'SUBMITTING');
+    """)
+
+    with pytest.raises(RuntimeError, match="V4→V5 migration blocked"):
+        run_migrations(db)
+
+    # user_version must still be 4 — rollback was atomic
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert ver == 4, "user_version must stay 4 after failed migration"
+
+    # rejection_reason column must NOT be present — DDL was rolled back
+    with sqlite3.connect(str(db)) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+    assert "rejection_reason" not in cols, (
+        "rejection_reason column must not be permanently added when migration fails"
+    )
+
+    # Second run must raise the same domain error, NOT 'duplicate column'
+    with pytest.raises(RuntimeError, match="V4→V5 migration blocked"):
+        run_migrations(db)
+
+
+def test_v4_to_v5_migration_idempotent_after_column_exists(tmp_path: Path) -> None:
+    """
+    If rejection_reason column already exists (e.g. manual partial migration),
+    the migration skips ALTER TABLE and still completes successfully.
+    """
+    db = tmp_path / "ledger_v4_col.db"
+    _make_v4_db(db, extra_sql="""
+        INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)
+            VALUES ('EP1', 100.0, 'test', '2025-01-01T00:00:00Z');
+    """)
+    # Manually add the column, simulating a partial prior migration
+    conn = sqlite3.connect(str(db))
+    conn.execute("ALTER TABLE orders ADD COLUMN rejection_reason TEXT")
+    conn.commit()
+    conn.close()
+
+    run_migrations(db)  # must not raise "duplicate column"
+
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert ver == SCHEMA_VERSION
+
+
+def test_v4_to_v5_migration_idempotent_after_index_exists(tmp_path: Path) -> None:
+    """
+    If idx_one_active_entry_per_asset already exists, migration skips
+    CREATE INDEX and completes successfully.
+    """
+    db = tmp_path / "ledger_v4_idx.db"
+    _make_v4_db(db, extra_sql="""
+        INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)
+            VALUES ('EP1', 100.0, 'test', '2025-01-01T00:00:00Z');
+    """)
+    conn = sqlite3.connect(str(db))
+    conn.execute("ALTER TABLE orders ADD COLUMN rejection_reason TEXT")
+    conn.execute("""
+        CREATE UNIQUE INDEX idx_one_active_entry_per_asset
+            ON orders(asset) WHERE purpose='ENTRY'
+              AND status IN ('SUBMITTING','OPEN','PARTIAL')
+    """)
+    conn.commit()
+    conn.close()
+
+    run_migrations(db)  # must not raise "index already exists"
+
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert ver == SCHEMA_VERSION
+
+
 def test_idempotent_replay_with_reconciliation_mode_returns_correct_flags(
     db_with_epoch: Path,
 ) -> None:

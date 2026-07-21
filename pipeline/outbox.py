@@ -143,13 +143,16 @@ def place_order_outbox(
         # Idempotency: if this order_id already exists return its current state
         # without any Coinbase call or new writes.
         existing = conn.execute(
-            "SELECT status, exchange_order_id FROM orders WHERE id=?", (order_id,)
+            "SELECT status, exchange_order_id, rejection_reason"
+            " FROM orders WHERE id=?",
+            (order_id,),
         ).fetchone()
         if existing is not None:
             return PlaceResult(
                 status=existing["status"],
                 order_id=order_id,
                 exchange_order_id=existing["exchange_order_id"],
+                rejection_reason=existing["rejection_reason"],
             )
 
         epoch = get_active_epoch(conn)

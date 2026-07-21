@@ -552,3 +552,28 @@ def test_coinbase_order_rejected_from_adapter_is_handled(tmp_db_ep: Path) -> Non
         ).fetchone()
     assert row["status"] == "REJECTED"
     assert row["rejection_reason"] == "INVALID_LIMIT_PRICE_POST_ONLY"
+
+
+def test_idempotent_replay_of_rejected_order_returns_rejection_reason(
+    tmp_db_ep: Path,
+) -> None:
+    """
+    P2 fix: second call with a REJECTED order_id must return rejection_reason.
+    Before fix: existing-order query omitted rejection_reason → returned None.
+    """
+    from exchange.coinbase_client import CoinbaseOrderRejected
+
+    order_id = str(uuid.uuid4())
+
+    def adapter_reject(cid): raise CoinbaseOrderRejected("INSUFFICIENT_FUND: no funds")
+
+    r1 = place_order_outbox(**_base_kwargs(tmp_db_ep, order_id=order_id, coinbase_fn=adapter_reject))
+    assert r1.status == "REJECTED"
+    assert r1.rejection_reason == "INSUFFICIENT_FUND: no funds"
+
+    # Second call — idempotency path
+    r2 = place_order_outbox(**_base_kwargs(tmp_db_ep, order_id=order_id, coinbase_fn=adapter_reject))
+    assert r2.status == "REJECTED"
+    assert r2.rejection_reason == "INSUFFICIENT_FUND: no funds", (
+        "Idempotent replay must return rejection_reason from DB, not None"
+    )
