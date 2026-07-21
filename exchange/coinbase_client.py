@@ -22,6 +22,7 @@ Coinbase API key setup:
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
@@ -166,8 +167,6 @@ def cancel_order(exchange_order_id: str) -> bool:
     Caller should treat False as UNRESOLVED and re-check on the next
     reconciliation run.
     """
-    import time
-
     if _DRY_RUN or exchange_order_id.startswith("DRY-"):
         print(f"[Coinbase DRY] cancel order {exchange_order_id}")
         return True
@@ -181,6 +180,10 @@ def cancel_order(exchange_order_id: str) -> bool:
             return False
 
         # Cancel request accepted — poll get_order to confirm CANCELLED is effective.
+        # Continue polling through any live state (CANCEL_QUEUED, PENDING_CANCEL,
+        # OPEN, PENDING, QUEUED — the last three cover read-model lag).
+        # Stop only on terminal or unknown states.
+        _poll_continue = frozenset({"CANCEL_QUEUED", "PENDING_CANCEL", "OPEN", "PENDING", "QUEUED"})
         status = ""
         for attempt in range(3):
             if attempt:
@@ -191,8 +194,8 @@ def cancel_order(exchange_order_id: str) -> bool:
             if status == "CANCELLED":
                 print(f"[Coinbase LIVE] order {exchange_order_id} confirmed CANCELLED")
                 return True
-            if status not in ("CANCEL_QUEUED", "PENDING_CANCEL"):
-                break  # Not transitioning to CANCELLED — stop polling
+            if status not in _poll_continue:
+                break  # Terminal or unexpected state — stop polling
 
         print(
             f"[Coinbase LIVE] cancel requested for {exchange_order_id} "

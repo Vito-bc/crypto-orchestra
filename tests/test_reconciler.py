@@ -352,6 +352,16 @@ def _setup_expired_then_new_entry(
     return oid_a, oid_b
 
 
+def _get_order_no_fills(exchange_id: str) -> CoinbaseOrder:
+    """Stub get_order_fn: returns cancelled order with no partial fills."""
+    return CoinbaseOrder(
+        client_order_id="?",
+        exchange_order_id=exchange_id,
+        status="CANCELLED",
+        fills=[],
+    )
+
+
 def test_late_fill_stacking_cancel_succeeds(tmp_db: Path) -> None:
     """
     Late-fill stacking scenario (ADR 001 Decision 4):
@@ -361,9 +371,10 @@ def test_late_fill_stacking_cancel_succeeds(tmp_db: Path) -> None:
           1. Detect late fill for A via late-fill check on terminal orders.
           2. Apply fill → create position for asset.
           3. Detect stacking conflict (B is OPEN).
-          4. Cancel B (Coinbase confirms).
-          5. Transition B → CANCELLED.
-          6. Report: allowed_to_trade = True.
+          4. Cancel B (Coinbase confirms via cancel_order_fn).
+          5. Fetch B's final state via get_order_fn → no partial fills.
+          6. Transition B → CANCELLED.
+          7. Report: allowed_to_trade = True.
     """
     oid_a, oid_b = _setup_expired_then_new_entry(
         tmp_db, exchange_id_a="CB-A-EXPIRED", exchange_id_b="CB-B-OPEN"
@@ -385,6 +396,7 @@ def test_late_fill_stacking_cancel_succeeds(tmp_db: Path) -> None:
     report = run_startup_reconciliation(
         list_orders_fn=lambda: cb_orders,
         cancel_order_fn=confirming_cancel,
+        get_order_fn=_get_order_no_fills,
         db_path=tmp_db,
     )
 
@@ -738,3 +750,184 @@ def test_gate_malformed_unresolved_json_blocks_entry(tmp_db: Path) -> None:
     allowed, reason = is_entry_placement_allowed(tmp_db, freshness_minutes=60)
     assert not allowed
     assert "unparseable" in reason or "malformed" in reason
+
+
+# ---------------------------------------------------------------------------
+# 22. Stacking cancel confirmed but get_order_fn=None → UNRESOLVED
+# ---------------------------------------------------------------------------
+
+def test_stacking_cancel_confirmed_without_get_order_fn_is_unresolved(tmp_db: Path) -> None:
+    """
+    Cancel is confirmed by cancel_order_fn=True, but get_order_fn is not
+    provided.  Without get_order_fn we cannot verify fills from the
+    cancellation window, so the reconciler must leave stacking UNRESOLVED
+    rather than blindly assuming zero fills and unlocking the asset.
+    """
+    oid_a, oid_b = _setup_expired_then_new_entry(
+        tmp_db, exchange_id_a="CB-A-NOFN", exchange_id_b="CB-B-NOFN"
+    )
+
+    fill = _cb_fill("FILL-NOFN", price=102.0, qty=0.098)
+    cb_orders = [
+        _cb_order(oid_a, "CB-A-NOFN", "EXPIRED", fills=[fill]),
+        _cb_order(oid_b, "CB-B-NOFN", "OPEN"),
+    ]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_cancel_ok,   # confirms cancel
+        get_order_fn=None,            # not provided
+        db_path=tmp_db,
+    )
+
+    assert not report.allowed_to_trade
+    assert any(u.reason == "cancelled_fills_unverified" for u in report.unresolved), (
+        f"expected cancelled_fills_unverified, got: {report.unresolved}"
+    )
+    # B must NOT be CANCELLED — fills not verified, so we cannot close stacking.
+    with get_db(tmp_db) as conn:
+        b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
+    assert b_row["status"] == "OPEN"
+
+
+# ---------------------------------------------------------------------------
+# 23. Stacking cancel confirmed with partial fills from cancel window
+# ---------------------------------------------------------------------------
+
+def test_stacking_cancel_confirmed_applies_partial_fills_from_cancel_window(
+    tmp_db: Path,
+) -> None:
+    """
+    Cancel is confirmed AND get_order_fn returns partial fills that occurred
+    between Phase A (stacking detection) and the cancel becoming effective.
+    Reconciler must apply those fills before transitioning B to CANCELLED.
+    The fills create a position for B's asset — visible in the ledger.
+    """
+    oid_a, oid_b = _setup_expired_then_new_entry(
+        tmp_db, exchange_id_a="CB-A-PF", exchange_id_b="CB-B-PF"
+    )
+
+    fill_a = _cb_fill("FILL-A-PF", price=102.0, qty=0.098)
+    cb_orders = [
+        _cb_order(oid_a, "CB-A-PF", "EXPIRED", fills=[fill_a]),
+        _cb_order(oid_b, "CB-B-PF", "OPEN"),
+    ]
+
+    # B was partially filled during the cancel window
+    cancel_window_fill = _cb_fill("FILL-B-PARTIAL", price=103.0, qty=0.05)
+
+    def get_order_with_partial(exchange_id: str) -> CoinbaseOrder:
+        return CoinbaseOrder(
+            client_order_id="?",
+            exchange_order_id=exchange_id,
+            status="CANCELLED",
+            fills=[cancel_window_fill],
+        )
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_cancel_ok,
+        get_order_fn=get_order_with_partial,
+        db_path=tmp_db,
+    )
+
+    assert report.allowed_to_trade, f"unresolved: {report.unresolved}"
+
+    with get_db(tmp_db) as conn:
+        b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
+        b_fills = conn.execute("SELECT * FROM fills WHERE order_id=?", (oid_b,)).fetchall()
+        b_pos = conn.execute(
+            "SELECT * FROM positions WHERE entry_order_id=?", (oid_b,)
+        ).fetchone()
+
+    assert b_row["status"] == "CANCELLED"
+    assert len(b_fills) == 1, "partial fill from cancel window must be recorded"
+    assert b_pos is not None, "partial fill creates a position (P1: two-position scenario)"
+
+    resolved_actions = [r.action for r in report.resolved]
+    assert "stacking_cancelled" in resolved_actions
+    stacking_item = next(r for r in report.resolved if r.action == "stacking_cancelled")
+    assert "partial fill" in stacking_item.detail or "1 partial fill" in stacking_item.detail
+
+
+# ---------------------------------------------------------------------------
+# 24. Deduplication: multiple late-fill orders targeting same active ENTRY
+# ---------------------------------------------------------------------------
+
+def test_duplicate_pending_cancels_deduplicated(tmp_db: Path) -> None:
+    """
+    Two EXPIRED orders for the same asset both receive late fills in the same
+    reconciliation run.  Both detect order B (OPEN for same asset) as a
+    stacking conflict and generate a _PendingCancel targeting B.
+    After deduplication, only one cancel is sent to Coinbase, and the CANCELLED
+    transition is applied exactly once.
+    """
+    asset = "ZEC-USD"
+
+    # Order A1: EXPIRED with exchange_order_id
+    oid_a1 = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=oid_a1, epoch_id=_EPOCH_ID, asset=asset,
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_usd_requested=10.0, conn=conn,
+        )
+        insert_trade_intent(oid_a1, stop_price=90.0, target_price=115.0, conn=conn)
+        transition_order(oid_a1, "OPEN", exchange_order_id="CB-A1-EXP", conn=conn)
+        transition_order(oid_a1, "EXPIRED", conn=conn)
+
+    # Order A2: also EXPIRED for same asset (allowed — both are terminal)
+    oid_a2 = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=oid_a2, epoch_id=_EPOCH_ID, asset=asset,
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_usd_requested=10.0, conn=conn,
+        )
+        insert_trade_intent(oid_a2, stop_price=91.0, target_price=116.0, conn=conn)
+        transition_order(oid_a2, "OPEN", exchange_order_id="CB-A2-EXP", conn=conn)
+        transition_order(oid_a2, "EXPIRED", conn=conn)
+
+    # Order B: new ENTRY, OPEN (placed after both A1, A2 expired)
+    oid_b = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=oid_b, epoch_id=_EPOCH_ID, asset=asset,
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_usd_requested=10.0, conn=conn,
+        )
+        insert_trade_intent(oid_b, stop_price=92.0, target_price=117.0, conn=conn)
+        transition_order(oid_b, "OPEN", exchange_order_id="CB-B-DEDUP", conn=conn)
+
+    cancel_calls: list[str] = []
+
+    def counting_cancel(exchange_id: str) -> bool:
+        cancel_calls.append(exchange_id)
+        return True
+
+    # Both A1 and A2 have late fills that will trigger stacking detection
+    fill_a1 = _cb_fill("FILL-A1", price=100.0, qty=0.101)
+    fill_a2 = _cb_fill("FILL-A2", price=100.0, qty=0.101)
+    cb_orders = [
+        _cb_order(oid_a1, "CB-A1-EXP", "EXPIRED", fills=[fill_a1]),
+        _cb_order(oid_a2, "CB-A2-EXP", "EXPIRED", fills=[fill_a2]),
+        _cb_order(oid_b, "CB-B-DEDUP", "OPEN"),
+    ]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=counting_cancel,
+        get_order_fn=_get_order_no_fills,
+        db_path=tmp_db,
+    )
+
+    # Exactly one cancel call to CB-B-DEDUP (not two)
+    assert cancel_calls.count("CB-B-DEDUP") == 1, (
+        f"expected exactly 1 cancel call for CB-B-DEDUP, got {cancel_calls}"
+    )
+
+    assert report.allowed_to_trade, f"unresolved: {report.unresolved}"
+
+    with get_db(tmp_db) as conn:
+        b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
+    assert b_row["status"] == "CANCELLED"

@@ -1,29 +1,42 @@
 """
-Unit tests for exchange/coinbase_client.py — place_limit_buy() response parsing.
+Unit tests for exchange/coinbase_client.py.
 
-These tests exercise the Python parsing logic without hitting the real Coinbase
-API.  _get_client() is patched so create_order() returns a controlled dict.
-DRY_RUN is forced False for every test via monkeypatching the module-level flag.
+place_limit_buy() response parsing (tests 1-9):
+  These exercise the Python parsing logic without hitting the real Coinbase API.
+  _get_client() is patched so create_order() returns a controlled dict.
+
+cancel_order() polling behaviour (tests 10-17):
+  Tests exercise the cancel-then-poll loop introduced in ADR 001 Decision 7.
+  _get_client() is patched so cancel_orders() / get_order() return controlled dicts.
+  'time' module is also patched to skip actual sleeps.
 
 Scenarios covered:
-  1. success=True + success_response.order_id        → returns order_id
-  2. success=True + top-level order_id               → returns order_id
-  3. success=False + known code (INSUFFICIENT_FUND)  → CoinbaseOrderRejected
-  4. success=False + known code (INVALID_LIMIT_PRICE_POST_ONLY) → CoinbaseOrderRejected
-  5. success=False + unknown code                    → RuntimeError (ambiguous)
-  6. success=False + missing error_response          → RuntimeError (ambiguous)
-  7. success=True but no order_id anywhere           → RuntimeError (malformed)
-  8. success=True + empty string order_id            → RuntimeError (malformed)
-  9. transport/timeout exception                     → propagates unchanged
+  1.  success=True + success_response.order_id        → returns order_id
+  2.  success=True + top-level order_id               → returns order_id
+  3.  success=False + known code (INSUFFICIENT_FUND)  → CoinbaseOrderRejected
+  4.  success=False + known code (INVALID_LIMIT_PRICE_POST_ONLY) → CoinbaseOrderRejected
+  5.  success=False + unknown code                    → RuntimeError (ambiguous)
+  6.  success=False + missing error_response          → RuntimeError (ambiguous)
+  7.  success=True but no order_id anywhere           → RuntimeError (malformed)
+  8.  success=True + empty string order_id            → RuntimeError (malformed)
+  9.  transport/timeout exception                     → propagates unchanged
+  10. cancel request rejected (success=False)         → False immediately
+  11. CANCEL_QUEUED → PENDING_CANCEL → CANCELLED       → True (normal flow)
+  12. Consistently CANCEL_QUEUED for all 3 polls       → False (never confirms)
+  13. OPEN read-model lag → CANCEL_QUEUED → CANCELLED  → True (continues polling)
+  14. FILLED during cancel window                      → False (stop polling)
+  15. malformed get_order response (no status)         → False
+  16. transport exception in get_order after cancel    → False
+  17. cancel_orders transport exception                → False
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 import exchange.coinbase_client as _mod
-from exchange.coinbase_client import CoinbaseOrderRejected, place_limit_buy
+from exchange.coinbase_client import CoinbaseOrderRejected, cancel_order, place_limit_buy
 
 
 # ---------------------------------------------------------------------------
@@ -197,3 +210,111 @@ def test_dry_run_returns_synthetic_id_without_network_call() -> None:
 
     mock_get.assert_not_called()
     assert result.startswith("DRY-")
+
+
+# ---------------------------------------------------------------------------
+# cancel_order() polling behaviour — tests 10–17
+# ---------------------------------------------------------------------------
+
+def _cancel_client(cancel_success: bool, get_order_statuses: list[str]) -> MagicMock:
+    """
+    Mock RESTClient for cancel_order() tests.
+    cancel_orders() returns {results: [{success: cancel_success}]}.
+    get_order() returns each status from get_order_statuses in sequence;
+    once exhausted, returns "UNKNOWN".
+    """
+    client = MagicMock()
+    client.cancel_orders.return_value = {
+        "results": [{"success": cancel_success}]
+    }
+    status_iter = iter(get_order_statuses)
+
+    def get_order_side_effect(order_id, **kw):
+        return {"order": {"status": next(status_iter, "UNKNOWN")}}
+
+    client.get_order.side_effect = get_order_side_effect
+    return client
+
+
+def _run_cancel(cancel_success: bool, get_order_statuses: list[str]) -> bool:
+    """Run cancel_order() with a patched client and patched time.sleep."""
+    client = _cancel_client(cancel_success, get_order_statuses)
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client), \
+         patch("exchange.coinbase_client.time") as mock_time:
+        mock_time.sleep = MagicMock()
+        return cancel_order("CB-ORD-TEST")
+
+
+# 10. Cancel request rejected → False without polling
+def test_cancel_request_rejected_returns_false() -> None:
+    """Batch Cancel success=False → return False immediately, no get_order call."""
+    client = _cancel_client(cancel_success=False, get_order_statuses=[])
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client), \
+         patch("exchange.coinbase_client.time"):
+        result = cancel_order("CB-ORD-REJ")
+    assert result is False
+    client.get_order.assert_not_called()
+
+
+# 11. Normal flow: CANCEL_QUEUED → PENDING_CANCEL → CANCELLED → True
+def test_cancel_normal_flow_queued_to_cancelled() -> None:
+    result = _run_cancel(True, ["CANCEL_QUEUED", "PENDING_CANCEL", "CANCELLED"])
+    assert result is True
+
+
+# 12. Consistently CANCEL_QUEUED for all 3 polls → False (never confirms)
+def test_cancel_always_queued_returns_false() -> None:
+    result = _run_cancel(True, ["CANCEL_QUEUED", "CANCEL_QUEUED", "CANCEL_QUEUED"])
+    assert result is False
+
+
+# 13. Read-model lag: OPEN first, then CANCEL_QUEUED, then CANCELLED → True
+def test_cancel_open_lag_then_cancelled() -> None:
+    """OPEN status is read-model lag after cancel request — continue polling."""
+    result = _run_cancel(True, ["OPEN", "CANCEL_QUEUED", "CANCELLED"])
+    assert result is True
+
+
+# 14. FILLED during cancel window → False (stop polling, order executed)
+def test_cancel_filled_during_window_returns_false() -> None:
+    result = _run_cancel(True, ["CANCEL_QUEUED", "FILLED"])
+    assert result is False
+
+
+# 15. Malformed get_order response (no 'order' key, no 'status') → False
+def test_cancel_malformed_get_order_returns_false() -> None:
+    client = MagicMock()
+    client.cancel_orders.return_value = {"results": [{"success": True}]}
+    client.get_order.return_value = {}  # no 'order' key, no 'status'
+
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client), \
+         patch("exchange.coinbase_client.time"):
+        result = cancel_order("CB-MALFORMED")
+    assert result is False
+
+
+# 16. Transport exception in get_order after successful cancel request → False
+def test_cancel_get_order_transport_error_returns_false() -> None:
+    client = MagicMock()
+    client.cancel_orders.return_value = {"results": [{"success": True}]}
+    client.get_order.side_effect = TimeoutError("read timeout")
+
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client), \
+         patch("exchange.coinbase_client.time"):
+        result = cancel_order("CB-TIMEOUT")
+    assert result is False
+
+
+# 17. Transport exception in cancel_orders → False
+def test_cancel_orders_transport_error_returns_false() -> None:
+    client = MagicMock()
+    client.cancel_orders.side_effect = ConnectionResetError("reset by peer")
+
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client):
+        result = cancel_order("CB-CONN-ERR")
+    assert result is False

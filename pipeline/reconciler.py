@@ -392,20 +392,27 @@ def run_startup_reconciliation(
     *,
     list_orders_fn: Callable[[], list[CoinbaseOrder]],
     cancel_order_fn: Callable[[str], bool],
+    get_order_fn: Callable[[str], Optional[CoinbaseOrder]] | None = None,
     db_path: Optional[Path] = None,
 ) -> ReconciliationReport:
     """
     Mandatory startup gate.  Resolves SUBMITTING orders and late fills on
     terminal orders before any new ENTRY placement is allowed.
 
-    cancel_order_fn(exchange_order_id) → bool
+    cancel_order_fn(exchange_order_id) -> bool
       Must return True ONLY when Coinbase CONFIRMS the order is CANCELLED.
-      Batch Cancel success=True is NOT confirmation — it queues the request.
-      Use a cancel-then-poll implementation (see coinbase_client.cancel_order).
+      Batch Cancel success=True is NOT confirmation (it queues the request).
+
+    get_order_fn(exchange_order_id) -> Optional[CoinbaseOrder]
+      Required for safe stacking resolution.  After a cancel is confirmed,
+      the reconciler fetches the cancelled order's final fills and applies
+      any partial fills that occurred in the cancellation window.
+      If None, stacking stays UNRESOLVED(cancelled_fills_unverified) — safer
+      than assuming zero fills and immediately unblocking the asset.
 
     v1 limitation: if no local SUBMITTING or EXPIRED/CANCELLED rows exist,
-    returns COMPLETE without querying Coinbase.  This is documented in ADR 001
-    Decision 6 and is acceptable for shadow mode only.
+    returns COMPLETE without querying Coinbase.  Orphan orders, OPEN/PARTIAL
+    fills, and balances are not checked (ADR 001 Decision 6).
     """
     started_at = datetime.now(timezone.utc).isoformat()
 
@@ -443,7 +450,7 @@ def run_startup_reconciliation(
             }
 
             # ── Phase A: apply fills/transitions, detect stacking (no network) ──
-            pending_cancels: list[_PendingCancel] = []
+            raw_pending: list[_PendingCancel] = []
 
             for row in submitting_rows:
                 order_id, asset = row["id"], row["asset"]
@@ -464,7 +471,7 @@ def run_startup_reconciliation(
                 if unres:
                     unresolved.append(unres)
                 if pending:
-                    pending_cancels.append(pending)
+                    raw_pending.append(pending)
 
             for row in terminal_rows:
                 order_id, asset = row["id"], row["asset"]
@@ -487,7 +494,17 @@ def run_startup_reconciliation(
                 if unres:
                     unresolved.append(unres)
                 if pending:
-                    pending_cancels.append(pending)
+                    raw_pending.append(pending)
+
+            # Deduplicate by conflicting_order_id: multiple terminal orders for
+            # the same asset may all detect the same active ENTRY as a conflict.
+            # Send at most one cancel per conflicting order.
+            seen_conflict_ids: set[str] = set()
+            pending_cancels: list[_PendingCancel] = []
+            for pc in raw_pending:
+                if pc.conflicting_order_id not in seen_conflict_ids:
+                    seen_conflict_ids.add(pc.conflicting_order_id)
+                    pending_cancels.append(pc)
 
             # ── Phase B: issue cancels (no SQLite held) ───────────────────────
             cancel_results: dict[str, bool] = {}
@@ -504,22 +521,71 @@ def run_startup_reconciliation(
                         f"stacking_cancel_error:{exc}",
                     ))
 
-            # ── Phase C: commit cancel outcomes (short transactions) ──────────
+            # ── Phase C: verify fills then commit cancel outcomes ─────────────
+            # A confirmed cancel does NOT mean zero fills: an order may have
+            # partially filled between Phase A and the cancel becoming effective.
+            # get_order_fn fetches the final state with fills.  Without it we
+            # cannot safely declare stacking resolved.
             for pc in pending_cancels:
                 if pc.conflicting_order_id in cancel_errors:
                     continue  # already added to unresolved via exception path
+
                 confirmed = cancel_results.get(pc.conflicting_order_id, False)
-                if confirmed:
-                    with get_db(db_path) as conn:
-                        transition_order(pc.conflicting_order_id, "CANCELLED", conn=conn)
-                    resolved.append(ResolvedItem(
-                        pc.triggering_order_id, pc.asset, "stacking_cancelled",
-                        detail=f"cancelled conflicting entry {pc.conflicting_order_id}",
-                    ))
-                else:
+                if not confirmed:
                     unresolved.append(UnresolvedItem(
                         pc.conflicting_order_id, pc.asset, "stacking_cancel_failed",
                     ))
+                    continue
+
+                if get_order_fn is None:
+                    # Fills unverified — leave UNRESOLVED; next reconciliation
+                    # will re-check once get_order_fn is wired.
+                    unresolved.append(UnresolvedItem(
+                        pc.conflicting_order_id, pc.asset, "cancelled_fills_unverified",
+                    ))
+                    continue
+
+                try:
+                    conflict_cb = get_order_fn(pc.conflicting_exchange_id)
+                except Exception as exc:
+                    unresolved.append(UnresolvedItem(
+                        pc.conflicting_order_id, pc.asset,
+                        f"stacking_get_order_error:{exc}",
+                    ))
+                    continue
+
+                fills_applied = 0
+                try:
+                    with get_db(db_path) as conn:
+                        if conflict_cb and conflict_cb.fills:
+                            already_applied = _already_applied_fills(
+                                pc.conflicting_order_id, conn
+                            )
+                            new_fills = [
+                                f for f in conflict_cb.fills
+                                if f.exchange_fill_id not in already_applied
+                            ]
+                            if new_fills:
+                                _apply_coinbase_fills(
+                                    pc.conflicting_order_id, new_fills, conn,
+                                    reconciliation_mode=True,
+                                    already_applied=already_applied,
+                                )
+                                fills_applied = len(new_fills)
+                        transition_order(pc.conflicting_order_id, "CANCELLED", conn=conn)
+                except Exception as exc:
+                    unresolved.append(UnresolvedItem(
+                        pc.conflicting_order_id, pc.asset,
+                        f"stacking_commit_error:{exc}",
+                    ))
+                    continue
+
+                detail = f"cancelled conflicting entry {pc.conflicting_order_id}"
+                if fills_applied:
+                    detail += f"; {fills_applied} partial fill(s) applied from cancel window"
+                resolved.append(ResolvedItem(
+                    pc.triggering_order_id, pc.asset, "stacking_cancelled", detail=detail,
+                ))
 
     except Exception:
         # Ensure the run never stays in RUNNING state after an unexpected error.
