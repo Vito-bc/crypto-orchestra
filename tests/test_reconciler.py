@@ -831,7 +831,13 @@ def test_stacking_cancel_confirmed_applies_partial_fills_from_cancel_window(
         db_path=tmp_db,
     )
 
-    assert report.allowed_to_trade, f"unresolved: {report.unresolved}"
+    # Partial fills from the cancel window created a position for B while A's
+    # position is already OPEN — stacked exposure must block trading until
+    # a human or a future reconciliation pass resolves the two-position state.
+    assert not report.allowed_to_trade, f"expected blocked; resolved: {report.resolved}"
+    assert any(u.reason == "stacked_exposure_after_partial_fill" for u in report.unresolved), (
+        f"expected stacked_exposure_after_partial_fill, got: {report.unresolved}"
+    )
 
     with get_db(tmp_db) as conn:
         b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
@@ -840,14 +846,11 @@ def test_stacking_cancel_confirmed_applies_partial_fills_from_cancel_window(
             "SELECT * FROM positions WHERE entry_order_id=?", (oid_b,)
         ).fetchone()
 
+    # B must be committed to CANCELLED and have its fill recorded —
+    # the UNRESOLVED is about the resulting stacked exposure, not a commit failure.
     assert b_row["status"] == "CANCELLED"
     assert len(b_fills) == 1, "partial fill from cancel window must be recorded"
-    assert b_pos is not None, "partial fill creates a position (P1: two-position scenario)"
-
-    resolved_actions = [r.action for r in report.resolved]
-    assert "stacking_cancelled" in resolved_actions
-    stacking_item = next(r for r in report.resolved if r.action == "stacking_cancelled")
-    assert "partial fill" in stacking_item.detail or "1 partial fill" in stacking_item.detail
+    assert b_pos is not None, "partial fill creates an OPEN position for B (stacked with A)"
 
 
 # ---------------------------------------------------------------------------
@@ -931,3 +934,85 @@ def test_duplicate_pending_cancels_deduplicated(tmp_db: Path) -> None:
     with get_db(tmp_db) as conn:
         b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
     assert b_row["status"] == "CANCELLED"
+
+
+# ---------------------------------------------------------------------------
+# 25. get_order_fn returns None → UNRESOLVED, B stays OPEN
+# ---------------------------------------------------------------------------
+
+def test_stacking_cancel_get_order_returns_none_is_unresolved(tmp_db: Path) -> None:
+    """
+    cancel_order_fn confirms the cancel (True), but get_order_fn returns None.
+    A None response is unverifiable — the reconciler must NOT transition B to
+    CANCELLED without knowing the final fill state.  B must stay OPEN.
+    """
+    oid_a, oid_b = _setup_expired_then_new_entry(
+        tmp_db, exchange_id_a="CB-A-NONE", exchange_id_b="CB-B-NONE"
+    )
+
+    fill = _cb_fill("FILL-NONE", price=102.0, qty=0.098)
+    cb_orders = [
+        _cb_order(oid_a, "CB-A-NONE", "EXPIRED", fills=[fill]),
+        _cb_order(oid_b, "CB-B-NONE", "OPEN"),
+    ]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_cancel_ok,
+        get_order_fn=lambda _eid: None,
+        db_path=tmp_db,
+    )
+
+    assert not report.allowed_to_trade
+    assert any(u.reason == "cancelled_get_order_returned_none" for u in report.unresolved), (
+        f"expected cancelled_get_order_returned_none, got: {report.unresolved}"
+    )
+
+    with get_db(tmp_db) as conn:
+        b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
+    assert b_row["status"] == "OPEN", "must not CANCEL without verified fills"
+
+
+# ---------------------------------------------------------------------------
+# 26. get_order_fn returns non-CANCELLED status → UNRESOLVED, B stays OPEN
+# ---------------------------------------------------------------------------
+
+def test_stacking_cancel_get_order_wrong_status_is_unresolved(tmp_db: Path) -> None:
+    """
+    cancel_order_fn confirms the cancel (True), but get_order_fn returns the
+    order still in CANCEL_QUEUED — the exchange has not propagated the state yet.
+    Reconciler must leave B OPEN and report UNRESOLVED(cancelled_unexpected_status).
+    """
+    oid_a, oid_b = _setup_expired_then_new_entry(
+        tmp_db, exchange_id_a="CB-A-WSTAT", exchange_id_b="CB-B-WSTAT"
+    )
+
+    fill = _cb_fill("FILL-WSTAT", price=101.0, qty=0.099)
+    cb_orders = [
+        _cb_order(oid_a, "CB-A-WSTAT", "EXPIRED", fills=[fill]),
+        _cb_order(oid_b, "CB-B-WSTAT", "OPEN"),
+    ]
+
+    def get_order_still_queued(exchange_id: str) -> CoinbaseOrder:
+        return CoinbaseOrder(
+            client_order_id="?",
+            exchange_order_id=exchange_id,
+            status="CANCEL_QUEUED",
+            fills=[],
+        )
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_cancel_ok,
+        get_order_fn=get_order_still_queued,
+        db_path=tmp_db,
+    )
+
+    assert not report.allowed_to_trade
+    assert any(
+        "cancelled_unexpected_status" in u.reason for u in report.unresolved
+    ), f"expected cancelled_unexpected_status, got: {report.unresolved}"
+
+    with get_db(tmp_db) as conn:
+        b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
+    assert b_row["status"] == "OPEN", "must not CANCEL while exchange status is CANCEL_QUEUED"

@@ -554,10 +554,35 @@ def run_startup_reconciliation(
                     ))
                     continue
 
+                # Validate the response before trusting it — any deviation from
+                # what we expect must leave B untouched in the ledger.
+                if conflict_cb is None:
+                    unresolved.append(UnresolvedItem(
+                        pc.conflicting_order_id, pc.asset,
+                        "cancelled_get_order_returned_none",
+                    ))
+                    continue
+                if conflict_cb.exchange_order_id != pc.conflicting_exchange_id:
+                    unresolved.append(UnresolvedItem(
+                        pc.conflicting_order_id, pc.asset,
+                        f"cancelled_order_id_mismatch:"
+                        f"expected={pc.conflicting_exchange_id},"
+                        f"got={conflict_cb.exchange_order_id}",
+                    ))
+                    continue
+                if conflict_cb.status != "CANCELLED":
+                    # Exchange may not have propagated the state yet.
+                    unresolved.append(UnresolvedItem(
+                        pc.conflicting_order_id, pc.asset,
+                        f"cancelled_unexpected_status:{conflict_cb.status}",
+                    ))
+                    continue
+
                 fills_applied = 0
+                stacked_exposure = False
                 try:
                     with get_db(db_path) as conn:
-                        if conflict_cb and conflict_cb.fills:
+                        if conflict_cb.fills:
                             already_applied = _already_applied_fills(
                                 pc.conflicting_order_id, conn
                             )
@@ -573,6 +598,17 @@ def run_startup_reconciliation(
                                 )
                                 fills_applied = len(new_fills)
                         transition_order(pc.conflicting_order_id, "CANCELLED", conn=conn)
+                        # Partial fills from the cancel window may have created an
+                        # OPEN position for B while A's position is already OPEN —
+                        # two OPEN positions for the same asset need human review.
+                        if fills_applied > 0:
+                            b_pos = conn.execute(
+                                "SELECT 1 FROM positions"
+                                " WHERE entry_order_id=? AND status='OPEN'",
+                                (pc.conflicting_order_id,),
+                            ).fetchone()
+                            if b_pos:
+                                stacked_exposure = True
                 except Exception as exc:
                     unresolved.append(UnresolvedItem(
                         pc.conflicting_order_id, pc.asset,
@@ -580,12 +616,20 @@ def run_startup_reconciliation(
                     ))
                     continue
 
-                detail = f"cancelled conflicting entry {pc.conflicting_order_id}"
-                if fills_applied:
-                    detail += f"; {fills_applied} partial fill(s) applied from cancel window"
-                resolved.append(ResolvedItem(
-                    pc.triggering_order_id, pc.asset, "stacking_cancelled", detail=detail,
-                ))
+                if stacked_exposure:
+                    unresolved.append(UnresolvedItem(
+                        pc.conflicting_order_id, pc.asset,
+                        "stacked_exposure_after_partial_fill",
+                    ))
+                else:
+                    detail = f"cancelled conflicting entry {pc.conflicting_order_id}"
+                    if fills_applied:
+                        detail += (
+                            f"; {fills_applied} partial fill(s) applied from cancel window"
+                        )
+                    resolved.append(ResolvedItem(
+                        pc.triggering_order_id, pc.asset, "stacking_cancelled", detail=detail,
+                    ))
 
     except Exception:
         # Ensure the run never stays in RUNNING state after an unexpected error.

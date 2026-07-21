@@ -232,6 +232,36 @@ def check_order_filled(exchange_order_id: str) -> tuple[bool, float | None]:
         return False, None
 
 
+def fetch_fills_for_order(exchange_order_id: str, page_limit: int = 250) -> list[dict]:
+    """
+    Fetch all fills for a single order via paginated Coinbase List Fills.
+
+    Returns a list of raw fill dicts (keys: entry_id, trade_id, price, size,
+    commission, time, order_id, etc.).  Raises on transport errors — let the
+    caller decide whether to treat that as UNRESOLVED or propagate.
+
+    DRY_RUN / DRY- prefixed IDs return [] immediately without any API call.
+    """
+    if _DRY_RUN or exchange_order_id.startswith("DRY-"):
+        return []
+
+    client = _get_client()
+    fills: list[dict] = []
+    cursor: str | None = None
+    while True:
+        kwargs: dict = {"order_id": exchange_order_id, "limit": page_limit}
+        if cursor:
+            kwargs["cursor"] = cursor
+        resp = client.list_fills(**kwargs)
+        page: list[dict] = resp.get("fills", [])
+        fills.extend(page)
+        # Stop when the API returns no cursor or an empty page.
+        cursor = resp.get("cursor") if page else None
+        if not cursor:
+            break
+    return fills
+
+
 def place_market_sell(
     product_id: str,
     base_size_coins: float,

@@ -36,7 +36,12 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import exchange.coinbase_client as _mod
-from exchange.coinbase_client import CoinbaseOrderRejected, cancel_order, place_limit_buy
+from exchange.coinbase_client import (
+    CoinbaseOrderRejected,
+    cancel_order,
+    fetch_fills_for_order,
+    place_limit_buy,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -318,3 +323,69 @@ def test_cancel_orders_transport_error_returns_false() -> None:
          patch.object(_mod, "_get_client", return_value=client):
         result = cancel_order("CB-CONN-ERR")
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# fetch_fills_for_order() — tests 18–22
+# ---------------------------------------------------------------------------
+
+def _fills_client(pages: list[list[dict]], cursors: list[str | None]) -> MagicMock:
+    """
+    Mock RESTClient whose list_fills() returns pages sequentially.
+    Each call returns {"fills": pages[i], "cursor": cursors[i]}.
+    """
+    client = MagicMock()
+    responses = [
+        {"fills": page, "cursor": cursor}
+        for page, cursor in zip(pages, cursors)
+    ]
+    client.list_fills.side_effect = responses
+    return client
+
+
+def _run_fetch(pages: list[list[dict]], cursors: list[str | None]) -> list[dict]:
+    client = _fills_client(pages, cursors)
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client):
+        return fetch_fills_for_order("CB-ORD-FILL")
+
+
+# 18. Single page, no cursor → returns all fills without a second call
+def test_fetch_fills_single_page_no_cursor() -> None:
+    fills = [{"entry_id": "F1"}, {"entry_id": "F2"}]
+    result = _run_fetch(pages=[fills], cursors=[None])
+    assert result == fills
+
+
+# 19. Multi-page pagination → all pages fetched and concatenated
+def test_fetch_fills_multi_page_pagination() -> None:
+    page1 = [{"entry_id": "F1"}, {"entry_id": "F2"}]
+    page2 = [{"entry_id": "F3"}]
+    result = _run_fetch(pages=[page1, page2], cursors=["cursor-token", None])
+    assert result == page1 + page2
+
+
+# 20. Empty result → []
+def test_fetch_fills_empty_result() -> None:
+    result = _run_fetch(pages=[[]], cursors=[None])
+    assert result == []
+
+
+# 21. DRY_RUN → [] without any API call
+def test_fetch_fills_dry_run_returns_empty_without_api_call() -> None:
+    with patch.object(_mod, "_DRY_RUN", True), \
+         patch.object(_mod, "_get_client") as mock_get:
+        result = fetch_fills_for_order("CB-ORD-DRY")
+    mock_get.assert_not_called()
+    assert result == []
+
+
+# 22. Transport exception propagates unchanged (caller decides UNRESOLVED vs re-raise)
+def test_fetch_fills_transport_exception_propagates() -> None:
+    client = MagicMock()
+    client.list_fills.side_effect = TimeoutError("connection timed out")
+
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client):
+        with pytest.raises(TimeoutError, match="connection timed out"):
+            fetch_fills_for_order("CB-ORD-TIMEOUT")
