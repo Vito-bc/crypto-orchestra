@@ -230,6 +230,17 @@ def test_run_migrations_v2_creates_backup(tmp_path: Path) -> None:
     assert (tmp_path / "ledger.v2.bak").exists()
 
 
+def test_run_migrations_v3_creates_backup(tmp_path: Path) -> None:
+    """v3 (pre-outbox) is a pre-live prototype — backup+reset to v4."""
+    db = tmp_path / "ledger.db"
+    _make_proto_db(db, user_version=3)
+    run_migrations(db)
+    assert (tmp_path / "ledger.v3.bak").exists()
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert ver == SCHEMA_VERSION
+
+
 def test_schema_has_one_active_epoch_index(tmp_db: Path) -> None:
     with get_db(tmp_db) as conn:
         row = conn.execute(
@@ -1267,6 +1278,38 @@ def test_run_migrations_fresh_empty_file_no_backup(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # 14. State machine: PARTIAL → EXPIRED
 # ---------------------------------------------------------------------------
+
+def test_submitting_order_can_transition_to_rejected(db_with_epoch: Path) -> None:
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_usd_requested=10.0, conn=conn,
+        )
+    with get_db(db_with_epoch) as conn:
+        transition_order(oid, "REJECTED", conn=conn)
+    with get_db(db_with_epoch) as conn:
+        row = conn.execute(
+            "SELECT status, rejected_at FROM orders WHERE id=?", (oid,)
+        ).fetchone()
+    assert row["status"] == "REJECTED"
+    assert row["rejected_at"] is not None
+
+
+def test_rejected_order_is_terminal(db_with_epoch: Path) -> None:
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_usd_requested=10.0, conn=conn,
+        )
+        transition_order(oid, "REJECTED", conn=conn)
+    with pytest.raises(ValueError, match="invalid transition"):
+        with get_db(db_with_epoch) as conn:
+            transition_order(oid, "OPEN", conn=conn)
+
 
 def test_partial_order_can_transition_to_expired(db_with_epoch: Path) -> None:
     oid = _oid()

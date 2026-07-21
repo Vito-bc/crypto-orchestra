@@ -44,18 +44,19 @@ from typing import Iterator, Optional
 ROOT    = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "logs" / "ledger.db"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _TRANSITIONS: dict[str, set[str]] = {
-    "SUBMITTING": {"OPEN", "CANCELLED"},
+    "SUBMITTING": {"OPEN", "CANCELLED", "REJECTED"},
     "OPEN":       {"PARTIAL", "FILLED", "CANCELLED", "EXPIRED"},
     "PARTIAL":    {"FILLED", "CANCELLED", "EXPIRED"},
     "FILLED":     set(),
     "CANCELLED":  set(),
     "EXPIRED":    set(),
+    "REJECTED":   set(),
 }
 
-_TERMINAL_STATES = {"FILLED", "CANCELLED", "EXPIRED"}
+_TERMINAL_STATES = {"FILLED", "CANCELLED", "EXPIRED", "REJECTED"}
 
 
 class LedgerConsistencyError(RuntimeError):
@@ -72,11 +73,18 @@ class LedgerConsistencyError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 @contextmanager
-def get_db(path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
+def get_db(
+    path: Optional[Path] = None,
+    begin_immediate: bool = False,
+) -> Iterator[sqlite3.Connection]:
     """
     Yield a WAL-mode SQLite connection inside an explicit transaction.
     busy_timeout=10s handles transient database-locked errors.
     foreign_keys=ON enforced per-connection. Commits on clean exit; rolls back on error.
+
+    begin_immediate=True: use BEGIN IMMEDIATE to acquire the write lock up-front.
+    Required for operations that do a gate-check followed by an insert, to prevent
+    another writer from slipping in between the check and the write.
     """
     db_path = path or DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +94,7 @@ def get_db(path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("BEGIN")
+        conn.execute("BEGIN IMMEDIATE" if begin_immediate else "BEGIN")
         yield conn
         conn.execute("COMMIT")
     except Exception:
@@ -100,7 +108,7 @@ def get_db(path: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
 # Schema V3 (externally "V2.1")
 # ---------------------------------------------------------------------------
 
-_SCHEMA_V3 = """
+_SCHEMA_V4 = """
 CREATE TABLE IF NOT EXISTS risk_epochs (
     epoch_id      TEXT    PRIMARY KEY,
     paper_capital REAL    NOT NULL CHECK(paper_capital > 0),
@@ -124,10 +132,11 @@ CREATE TABLE IF NOT EXISTS orders (
     expires_at         TEXT,
     reasoning          TEXT  NOT NULL DEFAULT '',
     status             TEXT  NOT NULL DEFAULT 'SUBMITTING'
-                             CHECK(status IN ('SUBMITTING','OPEN','PARTIAL','FILLED','CANCELLED','EXPIRED')),
+                             CHECK(status IN ('SUBMITTING','OPEN','PARTIAL','FILLED','CANCELLED','EXPIRED','REJECTED')),
     exchange_order_id  TEXT  UNIQUE,
     cancelled_at       TEXT,
     expired_at         TEXT,
+    rejected_at        TEXT,
     CHECK((purpose = 'ENTRY') OR (purpose = 'EXIT' AND position_id IS NOT NULL))
 );
 
@@ -252,14 +261,16 @@ def run_migrations(path: Optional[Path] = None) -> None:
     """
     Apply schema migrations. Called on every startup before any DB access.
 
-    v0 (no DB or fresh file): fresh install of V3 schema.
+    v0 (no DB or fresh file): fresh install of V4 schema.
     v0 (file exists with user tables): unversioned prototype (e.g. from commit 972eac3
-        which never called PRAGMA user_version). Backed up to .v0.bak, then fresh V3.
-    v1/v2 (prototype, never wired): backed up to .vN.bak, then fresh V3.
-    v3: already current — no-op.
+        which never called PRAGMA user_version). Backed up to .v0.bak, then fresh V4.
+    v1/v2/v3 (prototype/pre-outbox, never wired live): backed up to .vN.bak, then fresh V4.
+    v4: already current — no-op.
 
-    The backup+reset approach is safe for all pre-wiring prototypes.
-    Future in-place migrations (v3 → v4, etc.) should use ALTER TABLE.
+    Backup+reset is safe for all pre-live prototypes (no real orders in DB).
+    Future in-place migrations (v4 → v5, etc.) must use the 12-step SQLite
+    ALTER TABLE workaround for constraint changes; simple column additions
+    can use ALTER TABLE ... ADD COLUMN.
     """
     db_path = path or DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +303,7 @@ def run_migrations(path: Optional[Path] = None) -> None:
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(_SCHEMA_V3)
+        conn.executescript(_SCHEMA_V4)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     finally:
         conn.close()
@@ -464,6 +475,8 @@ def transition_order(
             extra["cancelled_at"] = now
         elif new_status == "EXPIRED":
             extra["expired_at"] = now
+        elif new_status == "REJECTED":
+            extra["rejected_at"] = now
         set_clause = ", ".join(f"{k}=?" for k in extra)
         c.execute(f"UPDATE orders SET {set_clause} WHERE id=?", (*extra.values(), order_id))
 
