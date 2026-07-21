@@ -1016,3 +1016,59 @@ def test_stacking_cancel_get_order_wrong_status_is_unresolved(tmp_db: Path) -> N
     with get_db(tmp_db) as conn:
         b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
     assert b_row["status"] == "OPEN", "must not CANCEL while exchange status is CANCEL_QUEUED"
+
+
+# ---------------------------------------------------------------------------
+# 27. Stacked exposure detected even when fills_applied=0 (idempotent replay)
+# ---------------------------------------------------------------------------
+
+def test_stacked_exposure_detected_on_idempotent_replay(tmp_db: Path) -> None:
+    """
+    A previous crashed reconciliation run applied fills to B and created its
+    position, but did not finish the commit.  On the next run, get_order_fn
+    returns CANCELLED with no new fills (already applied), so fills_applied=0.
+
+    The stacked exposure check must still fire — it must not be gated on
+    fills_applied > 0.  Without this fix, the reconciler would add
+    stacking_cancelled to resolved and incorrectly allow trading.
+    """
+    oid_a, oid_b = _setup_expired_then_new_entry(
+        tmp_db, exchange_id_a="CB-A-REPLAY", exchange_id_b="CB-B-REPLAY"
+    )
+
+    # Simulate previous crashed run: B got a PARTIAL fill (9.0 USD < 9.99 threshold
+    # → PARTIAL, not FILLED).  Position is created on the first fill regardless.
+    # The run crashed before transition_order(CANCELLED) and commit.
+    with get_db(tmp_db) as conn:
+        apply_fill(
+            order_id=oid_b,
+            fill_price=100.0,
+            fill_qty_base=0.09,  # 9.0 USD → PARTIAL, leaves B in active PARTIAL state
+            fee_usd=0.01,
+            exchange_fill_id="FILL-B-REPLAY-PREV",
+            filled_at=_now(),
+            conn=conn,
+        )
+
+    fill_a = _cb_fill("FILL-A-REPLAY", price=102.0, qty=0.098)
+    cb_orders = [
+        _cb_order(oid_a, "CB-A-REPLAY", "EXPIRED", fills=[fill_a]),
+        _cb_order(oid_b, "CB-B-REPLAY", "OPEN"),
+    ]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_cancel_ok,
+        get_order_fn=_get_order_no_fills,  # CANCELLED, no new fills this run
+        db_path=tmp_db,
+    )
+
+    # fills_applied=0 this run, but B's pre-existing position must trigger the guard.
+    assert not report.allowed_to_trade, f"expected blocked; resolved: {report.resolved}"
+    assert any(u.reason == "stacked_exposure_after_partial_fill" for u in report.unresolved), (
+        f"expected stacked_exposure_after_partial_fill, got: {report.unresolved}"
+    )
+
+    with get_db(tmp_db) as conn:
+        b_status = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
+    assert b_status["status"] == "CANCELLED", "B must still be committed to CANCELLED"

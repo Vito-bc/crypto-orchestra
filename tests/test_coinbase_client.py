@@ -326,48 +326,67 @@ def test_cancel_orders_transport_error_returns_false() -> None:
 
 
 # ---------------------------------------------------------------------------
-# fetch_fills_for_order() — tests 18–22
+# fetch_fills_for_order() — tests 18–25
 # ---------------------------------------------------------------------------
 
-def _fills_client(pages: list[list[dict]], cursors: list[str | None]) -> MagicMock:
+_ORDER_ID = "CB-ORD-FILL"
+
+
+def _fill(entry_id: str, order_id: str = _ORDER_ID) -> dict:
+    """Minimal fill dict matching Coinbase List Fills response structure."""
+    return {
+        "entry_id": entry_id,
+        "order_id": order_id,
+        "price": "100.0",
+        "size": "0.1",
+        "commission": "0.01",
+        "trade_time": "2025-01-01T00:00:00Z",
+    }
+
+
+def _fills_client(pages: list[list[dict]], cursors: list[str]) -> MagicMock:
     """
-    Mock RESTClient whose list_fills() returns pages sequentially.
-    Each call returns {"fills": pages[i], "cursor": cursors[i]}.
+    Mock RESTClient for fetch_fills_for_order() tests.
+    get_fills() returns each page/cursor pair in sequence.
+    Returns plain dicts (simulating _resp_to_dict passthrough).
     """
     client = MagicMock()
     responses = [
         {"fills": page, "cursor": cursor}
         for page, cursor in zip(pages, cursors)
     ]
-    client.list_fills.side_effect = responses
+    client.get_fills.side_effect = responses
     return client
 
 
-def _run_fetch(pages: list[list[dict]], cursors: list[str | None]) -> list[dict]:
+def _run_fetch(pages: list[list[dict]], cursors: list[str]) -> list[dict]:
+    """Run fetch_fills_for_order(); asserts get_fills (not list_fills) was called."""
     client = _fills_client(pages, cursors)
     with patch.object(_mod, "_DRY_RUN", False), \
          patch.object(_mod, "_get_client", return_value=client):
-        return fetch_fills_for_order("CB-ORD-FILL")
+        result = fetch_fills_for_order(_ORDER_ID)
+    client.get_fills.assert_called()
+    return result
 
 
-# 18. Single page, no cursor → returns all fills without a second call
+# 18. Single page, no cursor → all fills returned in one call
 def test_fetch_fills_single_page_no_cursor() -> None:
-    fills = [{"entry_id": "F1"}, {"entry_id": "F2"}]
-    result = _run_fetch(pages=[fills], cursors=[None])
-    assert result == fills
+    fills = [_fill("F1"), _fill("F2")]
+    result = _run_fetch(pages=[fills], cursors=[""])
+    assert [f["entry_id"] for f in result] == ["F1", "F2"]
 
 
-# 19. Multi-page pagination → all pages fetched and concatenated
+# 19. Multi-page pagination → all pages fetched and concatenated in order
 def test_fetch_fills_multi_page_pagination() -> None:
-    page1 = [{"entry_id": "F1"}, {"entry_id": "F2"}]
-    page2 = [{"entry_id": "F3"}]
-    result = _run_fetch(pages=[page1, page2], cursors=["cursor-token", None])
-    assert result == page1 + page2
+    page1 = [_fill("F1"), _fill("F2")]
+    page2 = [_fill("F3")]
+    result = _run_fetch(pages=[page1, page2], cursors=["page-cursor", ""])
+    assert [f["entry_id"] for f in result] == ["F1", "F2", "F3"]
 
 
 # 20. Empty result → []
 def test_fetch_fills_empty_result() -> None:
-    result = _run_fetch(pages=[[]], cursors=[None])
+    result = _run_fetch(pages=[[]], cursors=[""])
     assert result == []
 
 
@@ -383,9 +402,33 @@ def test_fetch_fills_dry_run_returns_empty_without_api_call() -> None:
 # 22. Transport exception propagates unchanged (caller decides UNRESOLVED vs re-raise)
 def test_fetch_fills_transport_exception_propagates() -> None:
     client = MagicMock()
-    client.list_fills.side_effect = TimeoutError("connection timed out")
+    client.get_fills.side_effect = TimeoutError("connection timed out")
 
     with patch.object(_mod, "_DRY_RUN", False), \
          patch.object(_mod, "_get_client", return_value=client):
         with pytest.raises(TimeoutError, match="connection timed out"):
             fetch_fills_for_order("CB-ORD-TIMEOUT")
+
+
+# 23. Stray fills (order_id mismatch) are silently dropped
+def test_fetch_fills_stray_order_id_dropped() -> None:
+    own_fill = _fill("F1", order_id=_ORDER_ID)
+    stray_fill = _fill("F2", order_id="DIFFERENT-ORDER")
+    result = _run_fetch(pages=[[own_fill, stray_fill]], cursors=[""])
+    assert [f["entry_id"] for f in result] == ["F1"]
+
+
+# 24. Cursor cycle detected → loop terminates, no infinite recursion
+def test_fetch_fills_cursor_cycle_terminates() -> None:
+    page = [_fill("F1")]
+    # Both pages return the same cursor — cycle guard must break on second page.
+    result = _run_fetch(pages=[page, page, page], cursors=["same", "same", ""])
+    assert [f["entry_id"] for f in result] == ["F1"]
+
+
+# 25. Duplicate entry_id across pages deduplicated idempotently
+def test_fetch_fills_duplicate_entry_id_deduplicated() -> None:
+    page1 = [_fill("F1"), _fill("F2")]
+    page2 = [_fill("F2"), _fill("F3")]  # F2 repeated
+    result = _run_fetch(pages=[page1, page2], cursors=["cursor-1", ""])
+    assert [f["entry_id"] for f in result] == ["F1", "F2", "F3"]

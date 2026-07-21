@@ -598,17 +598,16 @@ def run_startup_reconciliation(
                                 )
                                 fills_applied = len(new_fills)
                         transition_order(pc.conflicting_order_id, "CANCELLED", conn=conn)
-                        # Partial fills from the cancel window may have created an
-                        # OPEN position for B while A's position is already OPEN —
-                        # two OPEN positions for the same asset need human review.
-                        if fills_applied > 0:
-                            b_pos = conn.execute(
-                                "SELECT 1 FROM positions"
-                                " WHERE entry_order_id=? AND status='OPEN'",
-                                (pc.conflicting_order_id,),
-                            ).fetchone()
-                            if b_pos:
-                                stacked_exposure = True
+                        # Check for a B position regardless of whether fills were
+                        # applied this run — a previous crashed run may have
+                        # already applied fills and created the position.
+                        b_pos = conn.execute(
+                            "SELECT 1 FROM positions"
+                            " WHERE entry_order_id=? AND status IN ('OPEN', 'CLOSING')",
+                            (pc.conflicting_order_id,),
+                        ).fetchone()
+                        if b_pos:
+                            stacked_exposure = True
                 except Exception as exc:
                     unresolved.append(UnresolvedItem(
                         pc.conflicting_order_id, pc.asset,

@@ -232,14 +232,28 @@ def check_order_filled(exchange_order_id: str) -> tuple[bool, float | None]:
         return False, None
 
 
+_MAX_FILL_PAGES = 100  # guard against cursor-cycle infinite loops
+
+
+def _resp_to_dict(resp) -> dict:
+    """Normalize SDK response object or plain dict to a plain dict for uniform access."""
+    return resp.to_dict() if hasattr(resp, "to_dict") else resp
+
+
 def fetch_fills_for_order(exchange_order_id: str, page_limit: int = 250) -> list[dict]:
     """
     Fetch all fills for a single order via paginated Coinbase List Fills.
 
-    Returns a list of raw fill dicts (keys: entry_id, trade_id, price, size,
-    commission, time, order_id, etc.).  Raises on transport errors — let the
-    caller decide whether to treat that as UNRESOLVED or propagate.
+    Uses get_fills(order_ids=[...]) — the correct SDK method; responses are
+    normalized to plain dicts via to_dict() so callers never see SDK objects.
 
+    Safety invariants:
+      - Stray fills (order_id mismatch) are silently dropped.
+      - Duplicate entries (same entry_id across pages) are dropped idempotently.
+      - Repeated cursor is detected and breaks the loop (Coinbase unstable pagination).
+      - Loop terminates after _MAX_FILL_PAGES regardless of cursor state.
+
+    Raises on transport errors — let the caller decide UNRESOLVED vs re-raise.
     DRY_RUN / DRY- prefixed IDs return [] immediately without any API call.
     """
     if _DRY_RUN or exchange_order_id.startswith("DRY-"):
@@ -247,18 +261,36 @@ def fetch_fills_for_order(exchange_order_id: str, page_limit: int = 250) -> list
 
     client = _get_client()
     fills: list[dict] = []
+    seen_ids: set[str] = set()
+    seen_cursors: set[str] = set()
     cursor: str | None = None
-    while True:
-        kwargs: dict = {"order_id": exchange_order_id, "limit": page_limit}
+
+    for _ in range(_MAX_FILL_PAGES):
+        kwargs: dict = {"order_ids": [exchange_order_id], "limit": page_limit}
         if cursor:
             kwargs["cursor"] = cursor
-        resp = client.list_fills(**kwargs)
+        resp = _resp_to_dict(client.get_fills(**kwargs))
         page: list[dict] = resp.get("fills", [])
-        fills.extend(page)
-        # Stop when the API returns no cursor or an empty page.
-        cursor = resp.get("cursor") if page else None
-        if not cursor:
-            break
+
+        for fill in page:
+            # Drop stray fills the API should not have included.
+            if fill.get("order_id") != exchange_order_id:
+                continue
+            fid = fill.get("entry_id", "")
+            if fid and fid in seen_ids:
+                continue  # idempotent dedup across pages
+            if fid:
+                seen_ids.add(fid)
+            fills.append(fill)
+
+        raw_cursor: str = resp.get("cursor") or ""
+        if not raw_cursor or not page:
+            break  # no more pages or empty page
+        if raw_cursor in seen_cursors:
+            break  # cycle guard: Coinbase docs note pagination is unstable
+        seen_cursors.add(raw_cursor)
+        cursor = raw_cursor
+
     return fills
 
 
