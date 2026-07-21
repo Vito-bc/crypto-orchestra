@@ -322,6 +322,55 @@ def fetch_fills_for_order(exchange_order_id: str, page_limit: int = 250) -> list
     )
 
 
+def list_open_orders(page_limit: int = 250) -> list[dict]:
+    """
+    Fetch all non-terminal orders from Coinbase via paginated List Orders.
+
+    Returns a list of raw order dicts, each containing at minimum:
+      order_id, client_order_id, status, product_id.
+
+    Used by make_list_orders_fn() in adapter.py to build the CoinbaseOrder
+    list that run_startup_reconciliation() searches for SUBMITTING local orders
+    by client_order_id.
+
+    Only fetches live statuses (OPEN, PENDING, QUEUED, CANCEL_QUEUED,
+    PENDING_CANCEL) — terminal orders are not needed for reconciliation lookup.
+
+    Returns [] immediately in DRY_RUN mode (no real orders exist).
+    """
+    if _DRY_RUN:
+        return []
+
+    client = _get_client()
+    orders: list[dict] = []
+    seen_ids: set[str] = set()
+    cursor: str | None = None
+    _MAX_ORDER_PAGES = 20  # 20 × 250 = 5 000 orders — well above any realistic open-order count
+
+    for _ in range(_MAX_ORDER_PAGES):
+        kwargs: dict = {"order_status": ["OPEN", "PENDING", "QUEUED"], "limit": page_limit}
+        if cursor:
+            kwargs["cursor"] = cursor
+        resp = _resp_to_dict(client.get_orders(**kwargs))
+        page: list[dict] = resp.get("orders", [])
+
+        for order in page:
+            oid = order.get("order_id", "")
+            if oid and oid not in seen_ids:
+                seen_ids.add(oid)
+                orders.append(order)
+
+        raw_cursor: str = resp.get("cursor") or ""
+        if not raw_cursor:
+            return orders  # normal termination
+
+        cursor = raw_cursor
+
+    print(f"[Coinbase LIVE] list_open_orders: exhausted {_MAX_ORDER_PAGES} pages — "
+          f"returning {len(orders)} orders (truncated)")
+    return orders
+
+
 def place_market_sell(
     product_id: str,
     base_size_coins: float,

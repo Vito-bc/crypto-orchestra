@@ -62,6 +62,44 @@ def _normalize_fill(f: dict, exchange_order_id: str) -> Optional[CoinbaseFill]:
     )
 
 
+def make_list_orders_fn() -> Callable[[], list[CoinbaseOrder]]:
+    """
+    Return a list_orders_fn: Callable[[], list[CoinbaseOrder]].
+
+    Fetches all non-terminal orders from Coinbase via list_open_orders() and
+    normalises each to a CoinbaseOrder with no fills (fills are fetched per-order
+    by make_get_order_fn() only when needed for stacking resolution).
+
+    Returns [] in DRY_RUN mode.  Silently drops orders with empty client_order_id
+    or exchange_order_id — they cannot be matched against local orders.
+    """
+    def _fn() -> list[CoinbaseOrder]:
+        if _cb._DRY_RUN:
+            return []
+        try:
+            raw_orders = _cb.list_open_orders()
+        except Exception as exc:
+            print(f"[Adapter] list_open_orders error: {exc}")
+            return []
+
+        result: list[CoinbaseOrder] = []
+        for o in raw_orders:
+            client_id = o.get("client_order_id", "")
+            exchange_id = o.get("order_id", "")
+            status = o.get("status", "")
+            if not client_id or not exchange_id:
+                continue
+            result.append(CoinbaseOrder(
+                client_order_id=client_id,
+                exchange_order_id=exchange_id,
+                status=status,
+                fills=[],  # fills fetched per-order only when needed
+            ))
+        return result
+
+    return _fn
+
+
 def make_get_order_fn() -> Callable[[str], Optional[CoinbaseOrder]]:
     """
     Return a get_order_fn: Callable[[str], Optional[CoinbaseOrder]].

@@ -987,8 +987,64 @@ _DAILY_EMA_PERIOD: dict[str, int] = {
 }
 
 
+def _startup_reconciliation() -> bool:
+    """
+    Run startup reconciliation and return True if trading is allowed.
+
+    Wires make_list_orders_fn() and make_get_order_fn() from exchange/adapter.py
+    into run_startup_reconciliation().  Returns False if UNRESOLVED items exist
+    or if reconciliation itself errors — fail-closed.
+
+    Always runs run_migrations() first so the SQLite ledger schema is up-to-date.
+    """
+    from pipeline.ledger import run_migrations
+    from pipeline.reconciler import run_startup_reconciliation
+    from exchange.adapter import make_get_order_fn, make_list_orders_fn
+    from exchange.coinbase_client import cancel_order, is_dry_run
+
+    run_migrations()
+
+    try:
+        report = run_startup_reconciliation(
+            list_orders_fn=make_list_orders_fn(),
+            cancel_order_fn=cancel_order,
+            get_order_fn=make_get_order_fn(),
+        )
+    except Exception as exc:
+        msg = f"[Startup] Reconciliation failed with exception: {exc}"
+        print(msg)
+        send_telegram_message(msg)
+        return False
+
+    mode = "DRY_RUN" if is_dry_run() else "LIVE"
+    if report.unresolved:
+        msg = (
+            f"[Startup {mode}] Reconciliation BLOCKED — "
+            f"{len(report.unresolved)} unresolved item(s):\n" +
+            "\n".join(f"  • {u['order_id']} ({u['asset']}): {u['reason']}"
+                      for u in report.unresolved)
+        )
+        print(msg)
+        send_telegram_message(msg)
+        return False
+
+    if report.resolved:
+        print(
+            f"[Startup {mode}] Reconciliation complete — "
+            f"{len(report.resolved)} resolved, 0 unresolved"
+        )
+    else:
+        print(f"[Startup {mode}] Reconciliation complete — no pending orders")
+
+    return True
+
+
 def run_all_assets() -> dict[str, TradeDecision]:
     """Run the full pipeline for every configured asset sequentially."""
+    if not _startup_reconciliation():
+        print("[Startup] Halting — reconciliation blocked new orders.")
+        return {}
+
     results = {}
     for asset in ASSETS:
         print(f"\n{'='*65}")
