@@ -98,6 +98,29 @@ stale reconciliation is treated the same as no reconciliation.
 cancellations that arrived in the last 3 hours.  The threshold is configurable
 for testing.
 
+### 7. Cancel confirmation requires a follow-up poll — Batch Cancel is a request
+
+**Problem:** Coinbase Batch Cancel (`cancel_orders`) returns `success=True` when
+the cancel REQUEST is accepted.  It does not mean the order is cancelled.  The
+order transitions to `CANCEL_QUEUED`, then `PENDING_CANCEL`, and only reaches
+`CANCELLED` after processing.  During this window the order may still execute.
+
+**Decision:** `cancel_order_fn` passed to the reconciler must return `True` ONLY
+when a subsequent `get_order` call confirms `status == "CANCELLED"`.  The
+implementation in `coinbase_client.cancel_order` polls `get_order` up to 3 times
+after a successful Batch Cancel request.
+
+**CANCEL_QUEUED and PENDING_CANCEL:** both are indeterminate.  They are classified
+as live statuses (`_CB_LIVE`), not terminal.  A SUBMITTING order found in either
+state is resolved to `OPEN` (exchange acknowledged) and marked
+`UNRESOLVED(cancel_pending)`.  The stacking guard remains active for the asset
+until the next reconciliation confirms `CANCELLED`.
+
+**Why not wait longer in the reconciler?**  Blocking startup for unbounded time on
+a single cancel is operationally risky.  After 3 poll attempts the order is left
+`UNRESOLVED`; the next reconciliation run picks it up via its `OPEN` status and
+checks Coinbase again.
+
 ### 6. Reconciliation scope for initial implementation (v1)
 
 The first implementation covers:

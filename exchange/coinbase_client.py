@@ -154,9 +154,20 @@ def place_limit_buy(
 
 def cancel_order(exchange_order_id: str) -> bool:
     """
-    Cancel a pending limit order by its exchange order ID.
-    Returns True if cancelled, False if already filled/unknown.
+    Request cancellation and confirm CANCELLED status via a follow-up poll.
+
+    Coinbase Batch Cancel returns success=True when the cancel REQUEST is
+    accepted, placing the order into CANCEL_QUEUED.  Cancellation is only
+    effective once the status transitions to CANCELLED.  This function polls
+    get_order up to 3 times to confirm.
+
+    Returns True only when CANCELLED is confirmed.
+    Returns False for CANCEL_QUEUED, PENDING_CANCEL, already-filled, errors.
+    Caller should treat False as UNRESOLVED and re-check on the next
+    reconciliation run.
     """
+    import time
+
     if _DRY_RUN or exchange_order_id.startswith("DRY-"):
         print(f"[Coinbase DRY] cancel order {exchange_order_id}")
         return True
@@ -165,10 +176,28 @@ def cancel_order(exchange_order_id: str) -> bool:
         client = _get_client()
         resp = client.cancel_orders(order_ids=[exchange_order_id])
         results = resp.get("results", [])
-        if results and results[0].get("success"):
-            print(f"[Coinbase LIVE] order {exchange_order_id} cancelled")
-            return True
-        print(f"[Coinbase LIVE] cancel failed for {exchange_order_id}: {results}")
+        if not (results and results[0].get("success")):
+            print(f"[Coinbase LIVE] cancel request rejected for {exchange_order_id}: {results}")
+            return False
+
+        # Cancel request accepted — poll get_order to confirm CANCELLED is effective.
+        status = ""
+        for attempt in range(3):
+            if attempt:
+                time.sleep(1.0)
+            order_resp = client.get_order(order_id=exchange_order_id)
+            order = order_resp.get("order", order_resp)
+            status = order.get("status", "")
+            if status == "CANCELLED":
+                print(f"[Coinbase LIVE] order {exchange_order_id} confirmed CANCELLED")
+                return True
+            if status not in ("CANCEL_QUEUED", "PENDING_CANCEL"):
+                break  # Not transitioning to CANCELLED — stop polling
+
+        print(
+            f"[Coinbase LIVE] cancel requested for {exchange_order_id} "
+            f"but status={status!r} — leaving UNRESOLVED for next reconciliation"
+        )
         return False
     except Exception as exc:
         print(f"[Coinbase LIVE] cancel error for {exchange_order_id}: {exc}")

@@ -5,24 +5,29 @@ Every test uses a fresh on-disk DB.  Coinbase API calls are injected via
 list_orders_fn / cancel_order_fn so no network is required.
 
 Coverage:
-  1. No SUBMITTING orders → COMPLETE, allowed_to_trade=True
-  2. SUBMITTING → found OPEN on Coinbase → OPEN in ledger
-  3. SUBMITTING → found FILLED on Coinbase → fills applied, position created
-  4. SUBMITTING → found CANCELLED (no fills) → OPEN → CANCELLED in ledger
-  5. SUBMITTING → found CANCELLED (with fills) → OPEN → fills applied → CANCELLED
-  6. SUBMITTING → found EXPIRED (no fills) → OPEN → EXPIRED in ledger
-  7. SUBMITTING → not found → UNRESOLVED, allowed_to_trade=False
-  8. Late-fill stacking: expired order filled → creates position → active ENTRY
-     cancelled → resolved
-  9. Late-fill stacking: cancel not confirmed → stacking order UNRESOLVED,
-     allowed_to_trade=False
- 10. is_entry_placement_allowed: no reconciliation ever → False
- 11. is_entry_placement_allowed: UNRESOLVED in last run → False
- 12. is_entry_placement_allowed: stale reconciliation → False
- 13. is_entry_placement_allowed: clean recent reconciliation → True
- 14. is_entry_placement_allowed: RUNNING reconciliation → False
- 15. UNRESOLVED does not block EXIT orders or CANCEL (gate is ENTRY-only)
- 16. Multiple SUBMITTING orders — mix of found and not found
+  1.  No SUBMITTING orders → COMPLETE, allowed_to_trade=True
+  2.  SUBMITTING → found OPEN on Coinbase → OPEN in ledger
+  3.  SUBMITTING → found FILLED on Coinbase → fills applied, position created
+  4.  SUBMITTING → found CANCELLED (no fills) → OPEN → CANCELLED in ledger
+  5.  SUBMITTING → found CANCELLED (with fills) → OPEN → fills applied → CANCELLED
+  6.  SUBMITTING → found EXPIRED (no fills) → OPEN → EXPIRED in ledger
+  7.  SUBMITTING → not found → UNRESOLVED, allowed_to_trade=False
+  8.  Late-fill stacking: expired order filled → creates position → active ENTRY
+      cancelled → resolved
+  9.  Late-fill stacking: cancel not confirmed → stacking order UNRESOLVED,
+      allowed_to_trade=False
+ 10.  is_entry_placement_allowed: no reconciliation ever → False
+ 11.  is_entry_placement_allowed: UNRESOLVED in last run → False
+ 12.  is_entry_placement_allowed: stale reconciliation → False
+ 13.  is_entry_placement_allowed: clean recent reconciliation → True
+ 14.  is_entry_placement_allowed: RUNNING reconciliation → False
+ 15.  UNRESOLVED does not block EXIT orders or CANCEL (gate is ENTRY-only)
+ 16.  Multiple SUBMITTING orders — mix of found and not found
+ 17.  SUBMITTING → CANCEL_QUEUED → OPEN + UNRESOLVED(cancel_pending)
+ 18.  SUBMITTING → PENDING_CANCEL → OPEN + UNRESOLVED(cancel_pending)
+ 19.  SUBMITTING → FILLED (no fills in List Orders) → OPEN + UNRESOLVED(filled_missing_fills)
+ 20.  Terminal status mismatch: local=EXPIRED, Coinbase=OPEN → UNRESOLVED(status_mismatch)
+ 21.  is_entry_placement_allowed: malformed unresolved JSON → False (fail-closed)
 """
 from __future__ import annotations
 
@@ -563,3 +568,173 @@ def test_multiple_submitting_mix_found_and_not_found(tmp_db: Path) -> None:
         b_row = conn.execute("SELECT status FROM orders WHERE id=?", (oid_b,)).fetchone()
     assert a_row["status"] == "FILLED"
     assert b_row["status"] == "SUBMITTING"  # not touched
+
+
+# ---------------------------------------------------------------------------
+# 17. CANCEL_QUEUED → OPEN + UNRESOLVED(cancel_pending)
+# ---------------------------------------------------------------------------
+
+def test_submitting_found_cancel_queued_leaves_unresolved(tmp_db: Path) -> None:
+    """
+    Coinbase accepted the order and then queued a cancel request.
+    The cancel is not yet effective — the order may still execute.
+    Local order must be OPEN (exchange acknowledged) + UNRESOLVED(cancel_pending).
+    allowed_to_trade=False until CANCELLED is confirmed on the next reconciliation.
+    """
+    oid = _insert_submitting_entry(tmp_db)
+    cb_orders = [_cb_order(oid, "CB-CQ-1", "CANCEL_QUEUED")]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_no_cancel,
+        db_path=tmp_db,
+    )
+
+    assert not report.allowed_to_trade
+    assert len(report.unresolved) == 1
+    assert report.unresolved[0].reason == "cancel_pending"
+
+    with get_db(tmp_db) as conn:
+        row = conn.execute(
+            "SELECT status, exchange_order_id FROM orders WHERE id=?", (oid,)
+        ).fetchone()
+    assert row["status"] == "OPEN", "exchange acknowledged — must be OPEN, not SUBMITTING"
+    assert row["exchange_order_id"] == "CB-CQ-1"
+
+
+# ---------------------------------------------------------------------------
+# 18. PENDING_CANCEL → OPEN + UNRESOLVED(cancel_pending)
+# ---------------------------------------------------------------------------
+
+def test_submitting_found_pending_cancel_leaves_unresolved(tmp_db: Path) -> None:
+    """
+    Same as test 17 but with PENDING_CANCEL status.
+    PENDING_CANCEL is still an indeterminate state — cancel not yet effective.
+    """
+    oid = _insert_submitting_entry(tmp_db)
+    cb_orders = [_cb_order(oid, "CB-PC-1", "PENDING_CANCEL")]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_no_cancel,
+        db_path=tmp_db,
+    )
+
+    assert not report.allowed_to_trade
+    assert report.unresolved[0].reason == "cancel_pending"
+
+    with get_db(tmp_db) as conn:
+        row = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
+    assert row["status"] == "OPEN", "must not be locally CANCELLED without Coinbase confirmation"
+
+
+# ---------------------------------------------------------------------------
+# 19. FILLED with no fill records → OPEN + UNRESOLVED(filled_missing_fills)
+# ---------------------------------------------------------------------------
+
+def test_submitting_found_filled_no_fills_leaves_unresolved(tmp_db: Path) -> None:
+    """
+    Coinbase says FILLED but the List Orders response has no fill records.
+    List Orders is not a reliable source of fill data (see ADR 001).
+    Without fills we cannot create a position or confirm execution quantity.
+    Order must stay OPEN (exchange acknowledged) + UNRESOLVED(filled_missing_fills).
+    allowed_to_trade=False until fills are obtained via List Fills.
+    """
+    oid = _insert_submitting_entry(tmp_db)
+    cb_orders = [_cb_order(oid, "CB-FILLED-NOFILL", "FILLED", fills=[])]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_no_cancel,
+        db_path=tmp_db,
+    )
+
+    assert not report.allowed_to_trade
+    assert len(report.unresolved) == 1
+    assert report.unresolved[0].reason == "filled_missing_fills"
+
+    with get_db(tmp_db) as conn:
+        row = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
+        pos = conn.execute(
+            "SELECT * FROM positions WHERE entry_order_id=?", (oid,)
+        ).fetchone()
+    assert row["status"] == "OPEN", (
+        "order must be OPEN (exchange acknowledged), not FILLED — fills not yet applied"
+    )
+    assert pos is None, "no position must be created without fill records"
+
+
+# ---------------------------------------------------------------------------
+# 20. Terminal status mismatch: local=EXPIRED, Coinbase=OPEN → UNRESOLVED
+# ---------------------------------------------------------------------------
+
+def test_terminal_status_mismatch_local_expired_cb_open_leaves_unresolved(tmp_db: Path) -> None:
+    """
+    The ledger considers the order EXPIRED but Coinbase reports it as OPEN.
+    This can happen with GTC orders: the exchange never received or processed
+    the expiry (e.g. from a wrong local clock or missed WebSocket event).
+    Must be UNRESOLVED — we cannot unilaterally cancel without knowing the
+    current Coinbase state, and we cannot treat it as expired while it's live.
+    """
+    oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=oid, epoch_id=_EPOCH_ID, asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_usd_requested=10.0, conn=conn,
+        )
+        insert_trade_intent(oid, stop_price=90.0, target_price=115.0, conn=conn)
+        transition_order(oid, "OPEN", exchange_order_id="CB-MISMATCH-1", conn=conn)
+        transition_order(oid, "EXPIRED", conn=conn)
+
+    # Coinbase shows it still OPEN
+    cb_orders = [_cb_order(oid, "CB-MISMATCH-1", "OPEN")]
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: cb_orders,
+        cancel_order_fn=_no_cancel,
+        db_path=tmp_db,
+    )
+
+    assert not report.allowed_to_trade
+    assert len(report.unresolved) == 1
+    assert report.unresolved[0].reason.startswith("status_mismatch:"), (
+        f"expected status_mismatch reason, got: {report.unresolved[0].reason}"
+    )
+    assert "local=EXPIRED" in report.unresolved[0].reason
+    assert "cb=OPEN" in report.unresolved[0].reason
+
+    # Local order must stay EXPIRED — we do not overwrite local state based on
+    # a single reconciliation observation; human review is required.
+    with get_db(tmp_db) as conn:
+        row = conn.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
+    assert row["status"] == "EXPIRED"
+
+
+# ---------------------------------------------------------------------------
+# 21. is_entry_placement_allowed: malformed unresolved JSON → False (fail-closed)
+# ---------------------------------------------------------------------------
+
+def test_gate_malformed_unresolved_json_blocks_entry(tmp_db: Path) -> None:
+    """
+    If the reconciliation_runs.unresolved field contains invalid JSON,
+    is_entry_placement_allowed must return False (fail-closed), never True.
+    Silently treating a parse error as 'no unresolved items' would allow
+    trading on an unknown state.
+    """
+    run_startup_reconciliation(
+        list_orders_fn=lambda: [],
+        cancel_order_fn=_no_cancel,
+        db_path=tmp_db,
+    )
+
+    # Corrupt the unresolved field of the completed run.
+    with get_db(tmp_db) as conn:
+        conn.execute(
+            "UPDATE reconciliation_runs SET unresolved=? WHERE status='COMPLETE'",
+            ("{not valid json",),
+        )
+
+    allowed, reason = is_entry_placement_allowed(tmp_db, freshness_minutes=60)
+    assert not allowed
+    assert "unparseable" in reason or "malformed" in reason
