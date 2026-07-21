@@ -91,6 +91,7 @@ def place_order_outbox(
     order_id: Optional[str] = None,
     coinbase_fn: Callable[[str], str],
     db_path: Optional[Path] = None,
+    gate_freshness_minutes: Optional[int] = 60,
 ) -> PlaceResult:
     """
     Place an ENTRY limit BUY order via the two-transaction outbox pattern.
@@ -113,6 +114,12 @@ def place_order_outbox(
                       any other exception = ambiguous → leaves order SUBMITTING;
                       returning a falsy value = also treated as ambiguous
         db_path:      override DB path (tests only)
+        gate_freshness_minutes:
+                      check reconciliation gate INSIDE the BEGIN IMMEDIATE
+                      transaction so the check is atomic with the INSERT.
+                      None = skip (tests that are not testing the gate).
+                      Default 60 — production callers must have reconciled
+                      within the last hour; set lower for tighter enforcement.
 
     Returns PlaceResult with:
         status "OPEN"        — accepted by Coinbase, TX-B committed
@@ -154,6 +161,20 @@ def place_order_outbox(
                 exchange_order_id=existing["exchange_order_id"],
                 rejection_reason=existing["rejection_reason"],
             )
+
+        # Reconciliation gate — checked inside BEGIN IMMEDIATE so the read
+        # and the INSERT below are atomic.  No reconciliation run can complete
+        # (write to reconciliation_runs) between this check and our COMMIT
+        # because we hold the write lock.  Skipped only when explicitly
+        # disabled (tests that exercise other outbox mechanics).
+        if gate_freshness_minutes is not None:
+            from pipeline.reconciler import _gate_check_on_conn
+            allowed, reason = _gate_check_on_conn(conn, gate_freshness_minutes)
+            if not allowed:
+                raise PlacementBlocked(
+                    f"Reconciliation gate closed for {asset}: {reason}. "
+                    "Run reconciliation first, then retry."
+                )
 
         epoch = get_active_epoch(conn)
         if epoch is None:

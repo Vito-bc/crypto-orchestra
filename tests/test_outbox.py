@@ -25,6 +25,7 @@ from pipeline.ledger import (
     transition_order,
 )
 from pipeline.outbox import CoinbaseRejected, PlacementBlocked, PlaceResult, place_order_outbox
+from pipeline.reconciler import run_startup_reconciliation
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,7 +36,12 @@ _CAPITAL  = 1000.0
 
 
 def _base_kwargs(db: Path, **overrides) -> dict:
-    """Minimal valid kwargs for place_order_outbox()."""
+    """Minimal valid kwargs for place_order_outbox().
+
+    gate_freshness_minutes=None disables the reconciliation gate so tests
+    that exercise other outbox mechanics don't need a prior reconciliation run.
+    Gate-specific tests use tmp_db_ep_recon and omit this override.
+    """
     kw: dict = dict(
         asset="ZEC-USD",
         limit_price=100.0,
@@ -44,6 +50,7 @@ def _base_kwargs(db: Path, **overrides) -> dict:
         target_price=115.0,
         coinbase_fn=lambda cid: f"CB-{cid[:8]}",
         db_path=db,
+        gate_freshness_minutes=None,  # disabled; gate tests use tmp_db_ep_recon
     )
     kw.update(overrides)
     return kw
@@ -577,3 +584,67 @@ def test_idempotent_replay_of_rejected_order_returns_rejection_reason(
     assert r2.rejection_reason == "INSUFFICIENT_FUND: no funds", (
         "Idempotent replay must return rejection_reason from DB, not None"
     )
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation gate embedded in TX-A (TOCTOU fix)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def tmp_db_ep_recon(tmp_db_ep: Path) -> Path:
+    """DB with epoch + a fresh clean reconciliation run (gate open)."""
+    run_startup_reconciliation(
+        list_orders_fn=lambda: [],
+        cancel_order_fn=lambda eid: True,
+        db_path=tmp_db_ep,
+    )
+    return tmp_db_ep
+
+
+def test_gate_blocks_placement_when_no_reconciliation_ever(tmp_db_ep: Path) -> None:
+    """
+    With gate_freshness_minutes set (default), placing an order before any
+    reconciliation has ever run must raise PlacementBlocked — not SUBMITTING.
+    This closes the TOCTOU: the check and INSERT are now atomic inside TX-A.
+    """
+    with pytest.raises(PlacementBlocked, match="gate closed"):
+        place_order_outbox(**_base_kwargs(
+            tmp_db_ep,
+            gate_freshness_minutes=60,  # explicit — production default
+        ))
+
+    # No order should have been inserted
+    with get_db(tmp_db_ep) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    assert count == 0, "TX-A must not commit when the gate is closed"
+
+
+def test_gate_allows_placement_after_clean_reconciliation(tmp_db_ep_recon: Path) -> None:
+    """After a clean reconciliation run, placement with gate enabled must succeed."""
+    result = place_order_outbox(**_base_kwargs(
+        tmp_db_ep_recon,
+        gate_freshness_minutes=60,
+    ))
+    assert result.status == "OPEN"
+
+
+def test_gate_idempotent_replay_bypasses_gate(tmp_db_ep: Path) -> None:
+    """
+    Idempotent replay (same order_id that already exists) must succeed even
+    when the gate would otherwise block.  The gate is only for new ENTRY
+    placements; resolving a SUBMITTING order that survived a crash must not
+    be blocked by a stale reconciliation window.
+    """
+    # Place order with gate disabled
+    order_id = str(uuid.uuid4())
+    r1 = place_order_outbox(**_base_kwargs(
+        tmp_db_ep, order_id=order_id, gate_freshness_minutes=None
+    ))
+    assert r1.status == "OPEN"
+
+    # Replay with gate enabled — hits idempotency path before gate check
+    r2 = place_order_outbox(**_base_kwargs(
+        tmp_db_ep, order_id=order_id, gate_freshness_minutes=60
+    ))
+    assert r2.status == "OPEN"
+    assert r2.order_id == order_id

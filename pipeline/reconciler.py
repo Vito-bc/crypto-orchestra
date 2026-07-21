@@ -663,35 +663,31 @@ def run_startup_reconciliation(
     )
 
 
-def is_entry_placement_allowed(
-    db_path: Optional[Path] = None,
-    freshness_minutes: int = 60,
+def _gate_check_on_conn(
+    conn,
+    freshness_minutes: int,
 ) -> tuple[bool, str]:
     """
-    Gate check for new ENTRY placements.
+    Evaluate the ENTRY placement gate against an existing open connection.
 
-    Returns (True, "ok") when:
-      - no reconciliation is RUNNING
-      - last completed reconciliation has zero unresolved items
-      - last completed reconciliation is within freshness_minutes
+    Called from within a BEGIN IMMEDIATE transaction so the check and any
+    subsequent INSERT are atomic — no reconciliation run can complete between
+    the check and the write while we hold the write lock.
 
-    Returns (False, reason) otherwise.
-    Fails closed on malformed unresolved JSON — does not silently allow trading.
-
-    DOES NOT block: signal scanner, EXIT orders, CANCEL orders.
+    Same semantics as is_entry_placement_allowed() but accepts a connection
+    rather than opening one.  Callers must NOT commit/rollback the connection.
     """
-    with get_db(db_path) as conn:
-        running = conn.execute(
-            "SELECT 1 FROM reconciliation_runs WHERE status='RUNNING' LIMIT 1"
-        ).fetchone()
-        if running:
-            return False, "reconciliation is currently RUNNING"
+    running = conn.execute(
+        "SELECT 1 FROM reconciliation_runs WHERE status='RUNNING' LIMIT 1"
+    ).fetchone()
+    if running:
+        return False, "reconciliation is currently RUNNING"
 
-        last = conn.execute(
-            "SELECT status, completed_at, unresolved FROM reconciliation_runs"
-            " WHERE status != 'RUNNING'"
-            " ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+    last = conn.execute(
+        "SELECT status, completed_at, unresolved FROM reconciliation_runs"
+        " WHERE status != 'RUNNING'"
+        " ORDER BY id DESC LIMIT 1"
+    ).fetchone()
 
     if last is None:
         return False, "no reconciliation has ever completed"
@@ -728,3 +724,27 @@ def is_entry_placement_allowed(
         )
 
     return True, "ok"
+
+
+def is_entry_placement_allowed(
+    db_path: Optional[Path] = None,
+    freshness_minutes: int = 60,
+) -> tuple[bool, str]:
+    """
+    Gate check for new ENTRY placements.
+
+    Returns (True, "ok") when:
+      - no reconciliation is RUNNING
+      - last completed reconciliation has zero unresolved items
+      - last completed reconciliation is within freshness_minutes
+
+    Returns (False, reason) otherwise.
+    Fails closed on malformed unresolved JSON — does not silently allow trading.
+
+    DOES NOT block: signal scanner, EXIT orders, CANCEL orders.
+
+    For atomic enforcement inside the outbox TX-A, use _gate_check_on_conn()
+    with the existing connection rather than this function.
+    """
+    with get_db(db_path) as conn:
+        return _gate_check_on_conn(conn, freshness_minutes)
