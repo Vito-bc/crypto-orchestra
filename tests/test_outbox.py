@@ -24,7 +24,7 @@ from pipeline.ledger import (
     run_migrations,
     transition_order,
 )
-from pipeline.outbox import CoinbaseRejected, PlaceResult, place_order_outbox
+from pipeline.outbox import CoinbaseRejected, PlacementBlocked, PlaceResult, place_order_outbox
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -316,23 +316,63 @@ def test_rejected_order_cannot_be_filled(tmp_db_ep: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Parallel scheduler runs — BEGIN IMMEDIATE serialises write access
+# 7. Parallel scheduler runs — gate check prevents stacking; BEGIN IMMEDIATE
+#    guarantees only one writer passes the check
 # ---------------------------------------------------------------------------
 
-def test_parallel_placements_both_succeed_without_corruption(tmp_db_ep: Path) -> None:
+def test_stacking_guard_blocks_second_entry_for_same_asset(tmp_db_ep: Path) -> None:
     """
-    Two concurrent calls both complete successfully.
-    BEGIN IMMEDIATE in TX-A serialises them; no orders are lost or duplicated.
+    Sequential second call for the same asset raises PlacementBlocked.
+    The first call succeeds; the gate check inside TX-A sees the OPEN order.
     """
-    results: list[PlaceResult | BaseException] = []
-    errors: list[BaseException] = []
+    r1 = place_order_outbox(**_base_kwargs(tmp_db_ep, coinbase_fn=_accepted))
+    assert r1.status == "OPEN"
+
+    with pytest.raises(PlacementBlocked, match="ZEC-USD"):
+        place_order_outbox(**_base_kwargs(tmp_db_ep, coinbase_fn=_accepted))
+
+
+def test_stacking_guard_blocks_on_submitting_order(tmp_db_ep: Path) -> None:
+    """
+    If a previous call left an order SUBMITTING (timeout), a new placement
+    for the same asset must be blocked — the SUBMITTING order is still active.
+    """
+    def timeout_fn(cid): raise TimeoutError("timeout")
+
+    r1 = place_order_outbox(**_base_kwargs(tmp_db_ep, coinbase_fn=timeout_fn))
+    assert r1.status == "SUBMITTING"
+
+    with pytest.raises(PlacementBlocked, match="ZEC-USD"):
+        place_order_outbox(**_base_kwargs(tmp_db_ep, coinbase_fn=_accepted))
+
+
+def test_stacking_guard_allows_different_asset(tmp_db_ep: Path) -> None:
+    """Placing a second order for a DIFFERENT asset must succeed."""
+    r1 = place_order_outbox(**_base_kwargs(tmp_db_ep, asset="ZEC-USD", coinbase_fn=_accepted))
+    r2 = place_order_outbox(**_base_kwargs(tmp_db_ep, asset="ETH-USD", coinbase_fn=_accepted))
+    assert r1.status == "OPEN"
+    assert r2.status == "OPEN"
+    assert r1.order_id != r2.order_id
+
+
+def test_parallel_placements_same_asset_one_blocked(tmp_db_ep: Path) -> None:
+    """
+    Two concurrent calls for the same asset: exactly one succeeds (OPEN),
+    the other raises PlacementBlocked.  BEGIN IMMEDIATE serialises TX-A so
+    no duplicate orders are created.
+    """
+    results: list[PlaceResult] = []
+    blocked: list[PlacementBlocked] = []
+    other_errors: list[BaseException] = []
 
     def place_once() -> None:
         try:
             r = place_order_outbox(**_base_kwargs(tmp_db_ep, coinbase_fn=_accepted))
             results.append(r)
+        except PlacementBlocked as exc:
+            blocked.append(exc)
         except BaseException as exc:
-            errors.append(exc)
+            other_errors.append(exc)
 
     threads = [threading.Thread(target=place_once) for _ in range(2)]
     for t in threads:
@@ -340,14 +380,14 @@ def test_parallel_placements_both_succeed_without_corruption(tmp_db_ep: Path) ->
     for t in threads:
         t.join()
 
-    assert not errors, f"unexpected errors: {errors}"
-    assert len(results) == 2
-    assert all(r.status == "OPEN" for r in results)
-    assert results[0].order_id != results[1].order_id
+    assert not other_errors, f"unexpected errors: {other_errors}"
+    assert len(results) == 1, "exactly one placement must succeed"
+    assert len(blocked) == 1, "exactly one placement must be blocked"
+    assert results[0].status == "OPEN"
 
     with get_db(tmp_db_ep) as conn:
         count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-    assert count == 2
+    assert count == 1, "only one order must be in the DB"
 
 
 # ---------------------------------------------------------------------------
@@ -450,3 +490,65 @@ def test_accepted_order_has_exchange_order_id_in_db(tmp_db_ep: Path) -> None:
         ).fetchone()
     assert row["status"] == "OPEN"
     assert row["exchange_order_id"] == result.exchange_order_id
+
+
+def test_empty_string_exchange_order_id_leaves_submitting(tmp_db_ep: Path) -> None:
+    """
+    coinbase_fn returning "" (empty string) is treated as an ambiguous response —
+    we cannot confirm acceptance — so the order stays SUBMITTING.
+    The reconciler resolves it by searching Coinbase by client_order_id.
+    """
+    result = place_order_outbox(
+        **_base_kwargs(tmp_db_ep, coinbase_fn=lambda cid: "")
+    )
+    assert result.status == "SUBMITTING"
+    assert result.exchange_order_id is None
+
+    with get_db(tmp_db_ep) as conn:
+        row = conn.execute("SELECT status FROM orders WHERE id=?", (result.order_id,)).fetchone()
+    assert row["status"] == "SUBMITTING"
+
+
+def test_none_exchange_order_id_leaves_submitting(tmp_db_ep: Path) -> None:
+    """coinbase_fn returning None is also treated as ambiguous (falsy)."""
+    result = place_order_outbox(
+        **_base_kwargs(tmp_db_ep, coinbase_fn=lambda cid: None)
+    )
+    assert result.status == "SUBMITTING"
+    assert result.exchange_order_id is None
+
+
+def test_rejection_reason_persisted_in_db(tmp_db_ep: Path) -> None:
+    """TX-B writes rejection_reason to the orders row when REJECTED."""
+    def reject(cid): raise CoinbaseRejected("INSUFFICIENT_FUND: balance is $0.00")
+
+    result = place_order_outbox(**_base_kwargs(tmp_db_ep, coinbase_fn=reject))
+    assert result.status == "REJECTED"
+
+    with get_db(tmp_db_ep) as conn:
+        row = conn.execute(
+            "SELECT rejection_reason FROM orders WHERE id=?", (result.order_id,)
+        ).fetchone()
+    assert row["rejection_reason"] == "INSUFFICIENT_FUND: balance is $0.00"
+
+
+def test_coinbase_order_rejected_from_adapter_is_handled(tmp_db_ep: Path) -> None:
+    """
+    CoinbaseOrderRejected raised by coinbase_client.place_limit_buy() is treated
+    identically to the outbox's own CoinbaseRejected — results in REJECTED.
+    """
+    from exchange.coinbase_client import CoinbaseOrderRejected
+
+    def adapter_reject(cid): raise CoinbaseOrderRejected("INVALID_LIMIT_PRICE_POST_ONLY")
+
+    result = place_order_outbox(**_base_kwargs(tmp_db_ep, coinbase_fn=adapter_reject))
+    assert result.status == "REJECTED"
+    assert result.rejection_reason == "INVALID_LIMIT_PRICE_POST_ONLY"
+
+    with get_db(tmp_db_ep) as conn:
+        row = conn.execute(
+            "SELECT status, rejection_reason FROM orders WHERE id=?",
+            (result.order_id,),
+        ).fetchone()
+    assert row["status"] == "REJECTED"
+    assert row["rejection_reason"] == "INVALID_LIMIT_PRICE_POST_ONLY"

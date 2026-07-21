@@ -1,38 +1,38 @@
 """
-Two-transaction outbox for order placement.
+Two-transaction outbox for ENTRY order placement.
 
-Guarantees that every order is durably recorded in SUBMITTING state before
-any network call.  A crash at any point leaves the system in a recoverable
-state: startup reconciliation finds SUBMITTING orders, searches Coinbase by
+Guarantees every order is durably recorded in SUBMITTING state before any
+network call.  A crash at any point leaves the system in a recoverable state:
+startup reconciliation finds SUBMITTING orders, searches Coinbase by
 client_order_id, and completes the TX-B that was never committed.
 
-  TX-A  (BEGIN IMMEDIATE — no concurrent writer can slip between check and insert):
+  TX-A  (BEGIN IMMEDIATE):
     verify active epoch
-    INSERT order(status=SUBMITTING, id=<local UUID> = client_order_id)
+    verify no active ENTRY order for this asset     ← PlacementBlocked if violated
+    verify no active position for this asset         ← PlacementBlocked if violated
+    INSERT order(status=SUBMITTING, id=<local UUID>)
     INSERT trade_intent(stop, target)
     COMMIT
-  ─── no SQLite connection held open beyond this point ───────────────────────
+  ─── no SQLite connection held open during network I/O ───────────────────────
 
   External:
-    coinbase_fn(client_order_id) → exchange_order_id
+    coinbase_fn(client_order_id) → exchange_order_id  (non-empty str)
       raise CoinbaseRejected for definitive refusals (400 + known error code)
+      raise CoinbaseOrderRejected (from coinbase_client) — treated identically
       raise anything else for ambiguous outcomes (timeout, 5xx, dropped conn)
+      return falsy value → treated as ambiguous (leave SUBMITTING)
 
   TX-B  (BEGIN):
-    accepted      → transition_order(OPEN,  exchange_order_id=...)  COMMIT
-    CoinbaseRejected → transition_order(REJECTED)                   COMMIT
-    any other exc → order stays SUBMITTING (TX-B skipped)
+    accepted (truthy exchange_order_id) → OPEN  +  exchange_order_id set
+    CoinbaseRejected / CoinbaseOrderRejected  →  REJECTED  + rejection_reason
+    ambiguous / falsy id  →  order stays SUBMITTING (TX-B skipped)
 
 On timeout / ambiguous error, do NOT retry with a new UUID.  The startup
 reconciler searches Coinbase by client_order_id to resolve SUBMITTING orders.
 
 REJECTED vs CANCELLED:
-  REJECTED  — Coinbase never accepted the order (insufficient funds, crossing)
+  REJECTED  — Coinbase never accepted the order (e.g. INSUFFICIENT_FUND)
   CANCELLED — order was accepted, then cancelled by us or Coinbase
-
-State transitions added in this module:
-  SUBMITTING → OPEN      (accepted)
-  SUBMITTING → REJECTED  (definitive refusal)
 """
 
 from __future__ import annotations
@@ -52,6 +52,14 @@ from pipeline.ledger import (
 )
 
 _ORDER_TTL_HOURS = 24
+
+
+class PlacementBlocked(Exception):
+    """
+    Raised when TX-A gate checks prevent placing a new ENTRY order.
+    Signals to the scheduler that this asset already has an active order or
+    position — do not place a second one.
+    """
 
 
 class CoinbaseRejected(Exception):
@@ -80,37 +88,47 @@ def place_order_outbox(
     target_price: float,
     reasoning: str = "",
     ttl_hours: int = _ORDER_TTL_HOURS,
-    purpose: str = "ENTRY",
-    side: str = "BUY",
-    order_type: str = "LIMIT",
-    position_id: Optional[str] = None,
     order_id: Optional[str] = None,
     coinbase_fn: Callable[[str], str],
     db_path: Optional[Path] = None,
 ) -> PlaceResult:
     """
-    Place a limit order via the two-transaction outbox pattern.
+    Place an ENTRY limit BUY order via the two-transaction outbox pattern.
+
+    This function is intentionally restricted to ENTRY/BUY/LIMIT orders.
+    EXIT orders require qty_base_requested (not qty_usd) and a different
+    capital allocation path — implement them in a separate function.
 
     Args:
         asset:        e.g. "ZEC-USD"
         limit_price:  limit price in USD
-        qty_usd:      USD notional from active epoch capital (not PAPER_BALANCE)
-        stop_price:   stop-loss price — written to trade_intent before Coinbase call
-        target_price: take-profit price — written to trade_intent before Coinbase call
+        qty_usd:      USD notional from active epoch capital (NOT PAPER_BALANCE)
+        stop_price:   stop-loss written to trade_intent in TX-A (durable before crash)
+        target_price: take-profit written to trade_intent in TX-A
         order_id:     supply to replay an existing SUBMITTING order (idempotent);
                       if None, a fresh UUID is generated
         coinbase_fn:  callable(client_order_id: str) -> exchange_order_id: str
-                      raise CoinbaseRejected for definitive failures;
-                      any other exception = ambiguous → leaves order SUBMITTING
-        db_path:      override DB path (used in tests)
+                      raise CoinbaseRejected for definitive refusals;
+                      raise CoinbaseOrderRejected (from coinbase_client) for the same;
+                      any other exception = ambiguous → leaves order SUBMITTING;
+                      returning a falsy value = also treated as ambiguous
+        db_path:      override DB path (tests only)
 
-    Returns:
-        PlaceResult.status:
-          "OPEN"        — accepted by Coinbase, TX-B committed
-          "REJECTED"    — definitively refused, TX-B committed
-          "SUBMITTING"  — timeout or ambiguous error, TX-A committed only;
-                          startup reconciler will resolve via client_order_id
+    Returns PlaceResult with:
+        status "OPEN"        — accepted by Coinbase, TX-B committed
+        status "REJECTED"    — definitively refused, TX-B committed, reason in ledger
+        status "SUBMITTING"  — timeout/ambiguous, only TX-A committed;
+                               do NOT retry with a new UUID —
+                               startup reconciler resolves via client_order_id
+
+    Raises:
+        PlacementBlocked — active ENTRY order or OPEN/CLOSING position already
+                           exists for this asset (checked inside BEGIN IMMEDIATE)
+        RuntimeError     — no active epoch
     """
+    # Import here to avoid circular import (coinbase_client has no pipeline deps).
+    from exchange.coinbase_client import CoinbaseOrderRejected
+
     if order_id is None:
         order_id = str(uuid.uuid4())
 
@@ -119,11 +137,11 @@ def place_order_outbox(
     expires_at = (now + timedelta(hours=ttl_hours)).isoformat()
 
     # ── TX-A ─────────────────────────────────────────────────────────────────
-    # BEGIN IMMEDIATE prevents a second writer from passing the epoch gate
-    # check and inserting a conflicting order between our check and our insert.
+    # BEGIN IMMEDIATE acquires the write lock up-front, making the gate checks
+    # and the INSERT atomic.  No concurrent writer can slip an order in between.
     with get_db(db_path, begin_immediate=True) as conn:
-        # Idempotency: if this order_id is already in the ledger, return its
-        # current state without touching Coinbase or writing anything.
+        # Idempotency: if this order_id already exists return its current state
+        # without any Coinbase call or new writes.
         existing = conn.execute(
             "SELECT status, exchange_order_id FROM orders WHERE id=?", (order_id,)
         ).fetchone()
@@ -141,18 +159,44 @@ def place_order_outbox(
                 "Call start_epoch() before placing orders."
             )
 
+        # Gate: no active ENTRY order for this asset.
+        active_entry = conn.execute(
+            "SELECT COUNT(*) FROM orders"
+            " WHERE asset=? AND purpose='ENTRY'"
+            " AND status IN ('SUBMITTING','OPEN','PARTIAL')",
+            (asset,),
+        ).fetchone()[0]
+        if active_entry:
+            raise PlacementBlocked(
+                f"Cannot place ENTRY for {asset}: "
+                f"{active_entry} active ENTRY order(s) already exist. "
+                "Wait for them to fill, expire, or be cancelled."
+            )
+
+        # Gate: no open position for this asset.
+        active_pos = conn.execute(
+            "SELECT COUNT(*) FROM positions"
+            " WHERE asset=? AND status IN ('OPEN','CLOSING')",
+            (asset,),
+        ).fetchone()[0]
+        if active_pos:
+            raise PlacementBlocked(
+                f"Cannot place ENTRY for {asset}: "
+                f"{active_pos} active position(s) already open. "
+                "Close existing positions before entering again."
+            )
+
         insert_order(
             order_id=order_id,
             epoch_id=epoch["epoch_id"],
             asset=asset,
-            side=side,
-            order_type=order_type,
-            purpose=purpose,
+            side="BUY",
+            order_type="LIMIT",
+            purpose="ENTRY",
             placed_at=placed_at,
             qty_usd_requested=qty_usd,
             limit_price=limit_price,
             expires_at=expires_at,
-            position_id=position_id,
             reasoning=reasoning,
             conn=conn,
         )
@@ -160,16 +204,19 @@ def place_order_outbox(
             order_id, stop_price=stop_price, target_price=target_price, conn=conn
         )
     # TX-A committed.
-    # ── No SQLite connection is held open during the network call ─────────────
+    # ── No SQLite connection held open during the network call ─────────────────
 
     exchange_order_id: Optional[str] = None
     rejection_reason: Optional[str] = None
     final_status = "SUBMITTING"
 
     try:
-        exchange_order_id = coinbase_fn(order_id)
-        final_status = "OPEN"
-    except CoinbaseRejected as exc:
+        result = coinbase_fn(order_id)
+        if result:
+            exchange_order_id = result
+            final_status = "OPEN"
+        # If result is falsy (None, ""), leave as SUBMITTING — ambiguous response.
+    except (CoinbaseRejected, CoinbaseOrderRejected) as exc:
         rejection_reason = str(exc)
         final_status = "REJECTED"
     except Exception:
@@ -179,7 +226,7 @@ def place_order_outbox(
         pass
 
     # ── TX-B ─────────────────────────────────────────────────────────────────
-    # Skip if ambiguous (order stays SUBMITTING — reconciler handles it).
+    # Skip entirely if ambiguous — order stays SUBMITTING, reconciler handles it.
     if final_status != "SUBMITTING":
         with get_db(db_path) as conn:
             transition_order(
@@ -188,6 +235,11 @@ def place_order_outbox(
                 exchange_order_id=exchange_order_id,
                 conn=conn,
             )
+            if rejection_reason:
+                conn.execute(
+                    "UPDATE orders SET rejection_reason=? WHERE id=?",
+                    (rejection_reason, order_id),
+                )
 
     return PlaceResult(
         status=final_status,

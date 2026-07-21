@@ -26,6 +26,30 @@ import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
+
+class CoinbaseOrderRejected(Exception):
+    """
+    Raised by place_limit_buy() when Coinbase definitively refuses the order.
+    The error code comes from error_response.error in the API response body.
+    Caller (outbox.py) records the order as REJECTED — do NOT retry.
+
+    Not raised for ambiguous failures (timeouts, 5xx, UNKNOWN_FAILURE_REASON).
+    Those cause a plain RuntimeError so the outbox leaves the order SUBMITTING.
+    """
+
+
+# Coinbase Advanced Trade error codes that mean the order was definitively
+# rejected at submission time — retrying with the same params will not help.
+_DEFINITE_REJECTION_CODES: frozenset[str] = frozenset({
+    "INSUFFICIENT_FUND",              # not enough USD balance
+    "INVALID_LIMIT_PRICE_POST_ONLY",  # post-only order would cross the book
+    "PRODUCT_OFFLINE",                # pair suspended / not trading
+    "ORDER_ENTRY_DISABLED",           # trading halted for this product
+    "INVALID_PRODUCT_ID",             # malformed or unknown pair
+    "INVALID_QUANTITY",               # quantity below minimum
+    "OVER_SIZE",                      # quantity above maximum
+})
+
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
@@ -105,6 +129,19 @@ def place_limit_buy(
             }
         },
     )
+    # Definitive rejection: success=False with a known error code.
+    if resp.get("success") is False:
+        err = resp.get("error_response") or {}
+        code = err.get("error", "")
+        msg  = err.get("message", code) or code
+        if code in _DEFINITE_REJECTION_CODES:
+            raise CoinbaseOrderRejected(f"{code}: {msg}")
+        # Ambiguous rejection (UNKNOWN_FAILURE_REASON, 5xx body, etc.).
+        raise RuntimeError(
+            f"Coinbase rejected {product_id} BUY with ambiguous code '{code}': {msg}. "
+            f"Raw response keys: {list(resp.keys())}"
+        )
+
     order_id = resp.get("order_id") or resp.get("success_response", {}).get("order_id", "")
     if not order_id:
         raise RuntimeError(

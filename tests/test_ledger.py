@@ -447,11 +447,12 @@ def test_transition_missing_order_raises(db_with_epoch: Path) -> None:
 
 
 def test_exchange_order_id_unique_across_orders(db_with_epoch: Path) -> None:
+    # Use different assets so idx_one_active_entry_per_asset allows both inserts.
     oid1, oid2 = _oid(), _oid()
     with get_db(db_with_epoch) as conn:
         insert_order(oid1, "EP1", "ZEC-USD", "BUY", "LIMIT", "ENTRY",
                      _now(), qty_usd_requested=5.0, conn=conn)
-        insert_order(oid2, "EP1", "ZEC-USD", "BUY", "LIMIT", "ENTRY",
+        insert_order(oid2, "EP1", "ETH-USD", "BUY", "LIMIT", "ENTRY",
                      _now(), qty_usd_requested=5.0, conn=conn)
         transition_order(oid1, "OPEN", exchange_order_id="SAME-CB-ID", conn=conn)
     with pytest.raises(sqlite3.IntegrityError):
@@ -622,10 +623,11 @@ def test_apply_fill_idempotency_same_exchange_fill_id(db_with_epoch: Path) -> No
 def test_apply_fill_cross_order_duplicate_fill_id_raises(db_with_epoch: Path) -> None:
     """Same exchange_fill_id submitted for two different local orders is a hard stop."""
     oid1, oid2 = _oid(), _oid()
+    # Different assets so idx_one_active_entry_per_asset allows both ENTRY orders.
     with get_db(db_with_epoch) as conn:
-        for oid in (oid1, oid2):
+        for oid, asset in ((oid1, "ZEC-USD"), (oid2, "ETH-USD")):
             insert_order(
-                order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+                order_id=oid, epoch_id="EP1", asset=asset,
                 side="BUY", order_type="LIMIT", purpose="ENTRY",
                 placed_at=_now(), qty_base_requested=1.0, conn=conn,
             )
@@ -1615,6 +1617,105 @@ def test_idempotent_exit_fill_returns_position_id(db_with_epoch: Path) -> None:
         "Before fix: used entry_order_id lookup which always returns None for EXIT orders."
     )
     assert r2.get("replayed") is True
+
+
+def test_run_migrations_v4_to_v5_inplace(tmp_path: Path) -> None:
+    """
+    V4→V5 is a non-destructive in-place migration: no backup created, existing
+    data preserved, rejection_reason column added, new UNIQUE index created.
+    """
+    from pipeline.ledger import _SCHEMA_V5 as _schema  # noqa: F401
+
+    # Build a V4 DB: fresh V5 schema minus the rejection_reason column/index, then
+    # downgrade the user_version to 4 to simulate a pre-stacking-guard DB.
+    db = tmp_path / "ledger_v4.db"
+    conn = sqlite3.connect(str(db))
+    # Use the full V5 schema to create tables; then drop rejection_reason via recreate
+    # isn't trivial in SQLite.  Instead we simulate V4 by creating a minimal schema
+    # that matches V4 (no rejection_reason, no idx_one_active_entry_per_asset).
+    conn.executescript("""
+        CREATE TABLE risk_epochs (
+            epoch_id TEXT PRIMARY KEY, paper_capital REAL NOT NULL, reason TEXT NOT NULL,
+            started_at TEXT NOT NULL, ended_at TEXT
+        );
+        CREATE TABLE orders (
+            id TEXT PRIMARY KEY,
+            epoch_id TEXT NOT NULL REFERENCES risk_epochs(epoch_id),
+            asset TEXT NOT NULL, side TEXT NOT NULL, order_type TEXT NOT NULL,
+            purpose TEXT NOT NULL, position_id TEXT,
+            qty_base_requested REAL, qty_usd_requested REAL, limit_price REAL,
+            placed_at TEXT NOT NULL, expires_at TEXT, reasoning TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'SUBMITTING',
+            exchange_order_id TEXT UNIQUE, cancelled_at TEXT, expired_at TEXT,
+            rejected_at TEXT
+        );
+        CREATE TABLE positions (
+            id TEXT PRIMARY KEY, entry_order_id TEXT NOT NULL UNIQUE,
+            epoch_id TEXT NOT NULL, asset TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN'
+        );
+        CREATE TABLE fills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL REFERENCES orders(id),
+            exchange_fill_id TEXT UNIQUE, fill_price REAL NOT NULL,
+            fill_qty_base REAL NOT NULL, fill_qty_usd REAL NOT NULL,
+            fee_usd REAL NOT NULL DEFAULT 0.0, is_taker INTEGER NOT NULL DEFAULT 1,
+            filled_at TEXT NOT NULL
+        );
+        CREATE TABLE trade_intents (
+            order_id TEXT PRIMARY KEY REFERENCES orders(id),
+            stop_price REAL NOT NULL, target_price REAL NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_one_active_epoch ON risk_epochs(1) WHERE ended_at IS NULL;
+        INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)
+            VALUES ('EP_V4', 500.0, 'pre-migration epoch', '2025-01-01T00:00:00Z');
+    """)
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+    conn.close()
+
+    # No backup should exist before migration
+    assert not (tmp_path / "ledger_v4.v4.bak").exists()
+
+    run_migrations(db)
+
+    # No backup created (in-place migration)
+    assert not (tmp_path / "ledger_v4.v4.bak").exists(), (
+        "V4→V5 is in-place — no backup expected"
+    )
+
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert ver == SCHEMA_VERSION, f"expected V{SCHEMA_VERSION}, got V{ver}"
+
+        # rejection_reason column must now exist
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+        assert "rejection_reason" in cols, "rejection_reason column missing after V4→V5"
+
+        # existing data preserved
+        row = conn.execute("SELECT epoch_id FROM risk_epochs").fetchone()
+        assert row[0] == "EP_V4", "pre-migration data must survive in-place migration"
+
+        # UNIQUE INDEX must exist
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+            " AND name='idx_one_active_entry_per_asset'"
+        ).fetchone()
+        assert idx is not None, "idx_one_active_entry_per_asset not created by V4→V5 migration"
+
+
+def test_schema_has_one_active_entry_per_asset_index(tmp_db: Path) -> None:
+    """Fresh V5 schema must include the partial UNIQUE index on active ENTRY orders."""
+    with get_db(tmp_db) as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+            " AND name='idx_one_active_entry_per_asset'"
+        ).fetchone()
+    assert row is not None, (
+        "idx_one_active_entry_per_asset missing from fresh V5 schema. "
+        "This index is the DB-level defence-in-depth against duplicate ENTRY orders."
+    )
 
 
 def test_idempotent_replay_with_reconciliation_mode_returns_correct_flags(

@@ -44,7 +44,7 @@ from typing import Iterator, Optional
 ROOT    = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "logs" / "ledger.db"
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _TRANSITIONS: dict[str, set[str]] = {
     "SUBMITTING": {"OPEN", "CANCELLED", "REJECTED"},
@@ -108,7 +108,7 @@ def get_db(
 # Schema V3 (externally "V2.1")
 # ---------------------------------------------------------------------------
 
-_SCHEMA_V4 = """
+_SCHEMA_V5 = """
 CREATE TABLE IF NOT EXISTS risk_epochs (
     epoch_id      TEXT    PRIMARY KEY,
     paper_capital REAL    NOT NULL CHECK(paper_capital > 0),
@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS orders (
     cancelled_at       TEXT,
     expired_at         TEXT,
     rejected_at        TEXT,
+    rejection_reason   TEXT,
     CHECK((purpose = 'ENTRY') OR (purpose = 'EXIT' AND position_id IS NOT NULL))
 );
 
@@ -223,6 +224,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_one_running_reconciliation
 CREATE INDEX IF NOT EXISTS idx_orders_asset_status    ON orders(asset, status);
 CREATE INDEX IF NOT EXISTS idx_orders_epoch           ON orders(epoch_id);
 CREATE INDEX IF NOT EXISTS idx_orders_position        ON orders(position_id) WHERE position_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_entry_per_asset
+    ON orders(asset) WHERE purpose='ENTRY'
+    AND status IN ('SUBMITTING','OPEN','PARTIAL');
 CREATE INDEX IF NOT EXISTS idx_fills_order            ON fills(order_id);
 CREATE INDEX IF NOT EXISTS idx_positions_epoch_status ON positions(epoch_id, status);
 CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id);
@@ -261,16 +266,16 @@ def run_migrations(path: Optional[Path] = None) -> None:
     """
     Apply schema migrations. Called on every startup before any DB access.
 
-    v0 (no DB or fresh file): fresh install of V4 schema.
-    v0 (file exists with user tables): unversioned prototype (e.g. from commit 972eac3
-        which never called PRAGMA user_version). Backed up to .v0.bak, then fresh V4.
-    v1/v2/v3 (prototype/pre-outbox, never wired live): backed up to .vN.bak, then fresh V4.
-    v4: already current — no-op.
+    v0 (no DB or fresh file):       fresh install of V5 schema.
+    v0 (file with user tables):     unversioned prototype — backup to .v0.bak, fresh V5.
+    v1/v2/v3 (pre-outbox proto):    backup to .vN.bak, fresh V5.
+    v4 (outbox, pre-stacking-guard): in-place — ALTER TABLE ADD COLUMN + new index.
+    v5: already current — no-op.
 
-    Backup+reset is safe for all pre-live prototypes (no real orders in DB).
-    Future in-place migrations (v4 → v5, etc.) must use the 12-step SQLite
-    ALTER TABLE workaround for constraint changes; simple column additions
-    can use ALTER TABLE ... ADD COLUMN.
+    Backup+reset is safe for v0–v3 (no live orders were ever in those DBs).
+    In-place migration v4→v5 uses ALTER TABLE ... ADD COLUMN (safe, non-destructive).
+    Future constraint changes (CHECK, UNIQUE on existing data) require the 12-step
+    SQLite rename workaround; column additions always use ALTER TABLE ADD COLUMN.
     """
     db_path = path or DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -281,8 +286,7 @@ def run_migrations(path: Optional[Path] = None) -> None:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version == SCHEMA_VERSION:
             return
-        # Detect unversioned prototype: user_version=0 but user tables already exist.
-        # Distinguishes "legacy DB without user_version" from "brand-new empty file".
+        # Detect unversioned prototype: user_version=0 but user tables exist.
         has_user_tables = (
             version == 0
             and conn.execute(
@@ -293,7 +297,24 @@ def run_migrations(path: Optional[Path] = None) -> None:
     finally:
         conn.close()
 
-    is_legacy = (0 < version < SCHEMA_VERSION) or (version == 0 and has_user_tables)
+    # V4 → V5: non-destructive in-place migration.
+    # Adds rejection_reason column and one-active-entry-per-asset UNIQUE index.
+    if version == 4:
+        conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
+        try:
+            conn.execute("ALTER TABLE orders ADD COLUMN rejection_reason TEXT")
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_entry_per_asset
+                    ON orders(asset) WHERE purpose='ENTRY'
+                    AND status IN ('SUBMITTING','OPEN','PARTIAL')
+            """)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        finally:
+            conn.close()
+        return
+
+    # V0/V1/V2/V3: backup + fresh install.
+    is_legacy = (0 < version < 4) or (version == 0 and has_user_tables)
     if is_legacy and db_path.exists():
         backup = db_path.with_suffix(f".v{version}.bak")
         shutil.copy2(str(db_path), str(backup))
@@ -303,7 +324,7 @@ def run_migrations(path: Optional[Path] = None) -> None:
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(_SCHEMA_V4)
+        conn.executescript(_SCHEMA_V5)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     finally:
         conn.close()
