@@ -39,6 +39,19 @@ class CoinbaseOrderRejected(Exception):
     """
 
 
+class IncompleteFillHistory(RuntimeError):
+    """
+    Raised by fetch_fills_for_order() when pagination terminates before all
+    fills are retrieved.  Possible causes:
+      - A cursor appeared twice (Coinbase unstable pagination cycle).
+      - An empty page was returned while a cursor was still present.
+      - _MAX_FILL_PAGES pages were fetched without seeing an empty cursor.
+
+    Callers MUST treat this as UNRESOLVED — the fill set is not reliable
+    and must not be used to compute position size or NAV.
+    """
+
+
 # Coinbase Advanced Trade error codes that mean the order was definitively
 # rejected at submission time — retrying with the same params will not help.
 _DEFINITE_REJECTION_CODES: frozenset[str] = frozenset({
@@ -247,11 +260,14 @@ def fetch_fills_for_order(exchange_order_id: str, page_limit: int = 250) -> list
     Uses get_fills(order_ids=[...]) — the correct SDK method; responses are
     normalized to plain dicts via to_dict() so callers never see SDK objects.
 
-    Safety invariants:
-      - Stray fills (order_id mismatch) are silently dropped.
-      - Duplicate entries (same entry_id across pages) are dropped idempotently.
-      - Repeated cursor is detected and breaks the loop (Coinbase unstable pagination).
-      - Loop terminates after _MAX_FILL_PAGES regardless of cursor state.
+    Safety invariants — all abnormal exits raise IncompleteFillHistory so
+    the caller (adapter) can return None/UNRESOLVED instead of silently
+    accepting a truncated fill set that would understate position size:
+      - Normal termination: empty cursor returned by API → return fills.
+      - Empty page with non-empty cursor → IncompleteFillHistory (API bug).
+      - Cursor cycle (same cursor seen twice) → IncompleteFillHistory.
+      - _MAX_FILL_PAGES pages without empty cursor → IncompleteFillHistory.
+    Stray fills (order_id mismatch) and duplicate entry_ids are filtered.
 
     Raises on transport errors — let the caller decide UNRESOLVED vs re-raise.
     DRY_RUN / DRY- prefixed IDs return [] immediately without any API call.
@@ -284,14 +300,26 @@ def fetch_fills_for_order(exchange_order_id: str, page_limit: int = 250) -> list
             fills.append(fill)
 
         raw_cursor: str = resp.get("cursor") or ""
-        if not raw_cursor or not page:
-            break  # no more pages or empty page
+        if not raw_cursor:
+            return fills  # normal termination: API says no more pages
+
+        if not page:
+            raise IncompleteFillHistory(
+                f"empty page with pending cursor for order {exchange_order_id!r} — "
+                "Coinbase List Fills pagination is unstable; fill history incomplete"
+            )
         if raw_cursor in seen_cursors:
-            break  # cycle guard: Coinbase docs note pagination is unstable
+            raise IncompleteFillHistory(
+                f"cursor cycle detected for order {exchange_order_id!r} "
+                f"(cursor={raw_cursor!r}) — fill history incomplete"
+            )
         seen_cursors.add(raw_cursor)
         cursor = raw_cursor
 
-    return fills
+    raise IncompleteFillHistory(
+        f"fill history for order {exchange_order_id!r} exhausted "
+        f"{_MAX_FILL_PAGES} pages with a pending cursor — fill history incomplete"
+    )
 
 
 def place_market_sell(

@@ -38,6 +38,7 @@ import pytest
 import exchange.coinbase_client as _mod
 from exchange.coinbase_client import (
     CoinbaseOrderRejected,
+    IncompleteFillHistory,
     cancel_order,
     fetch_fills_for_order,
     place_limit_buy,
@@ -418,12 +419,15 @@ def test_fetch_fills_stray_order_id_dropped() -> None:
     assert [f["entry_id"] for f in result] == ["F1"]
 
 
-# 24. Cursor cycle detected → loop terminates, no infinite recursion
-def test_fetch_fills_cursor_cycle_terminates() -> None:
+# 24. Cursor cycle raises IncompleteFillHistory (not silently breaks)
+def test_fetch_fills_cursor_cycle_raises() -> None:
+    """Repeated cursor means Coinbase pagination is cycling — must raise, not return."""
     page = [_fill("F1")]
-    # Both pages return the same cursor — cycle guard must break on second page.
-    result = _run_fetch(pages=[page, page, page], cursors=["same", "same", ""])
-    assert [f["entry_id"] for f in result] == ["F1"]
+    client = _fills_client(pages=[page, page], cursors=["same-cursor", "same-cursor"])
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client):
+        with pytest.raises(IncompleteFillHistory, match="cycle"):
+            fetch_fills_for_order(_ORDER_ID)
 
 
 # 25. Duplicate entry_id across pages deduplicated idempotently
@@ -432,3 +436,26 @@ def test_fetch_fills_duplicate_entry_id_deduplicated() -> None:
     page2 = [_fill("F2"), _fill("F3")]  # F2 repeated
     result = _run_fetch(pages=[page1, page2], cursors=["cursor-1", ""])
     assert [f["entry_id"] for f in result] == ["F1", "F2", "F3"]
+
+
+# 26. Empty page with pending cursor raises IncompleteFillHistory
+def test_fetch_fills_empty_page_with_cursor_raises() -> None:
+    """Empty page while API still claims more pages → fill history incomplete."""
+    client = _fills_client(pages=[[]], cursors=["pending-cursor"])
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client):
+        with pytest.raises(IncompleteFillHistory, match="empty page"):
+            fetch_fills_for_order(_ORDER_ID)
+
+
+# 27. _MAX_FILL_PAGES exhausted with pending cursor raises IncompleteFillHistory
+def test_fetch_fills_max_pages_exhausted_raises() -> None:
+    """Pagination hit the page cap while cursor is still pending — must raise."""
+    page = [_fill("F1")]
+    # Two pages with unique cursors: patch _MAX_FILL_PAGES=2 so the cap triggers.
+    client = _fills_client(pages=[page, page], cursors=["cursor-1", "cursor-2"])
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=client), \
+         patch.object(_mod, "_MAX_FILL_PAGES", 2):
+        with pytest.raises(IncompleteFillHistory, match="exhausted"):
+            fetch_fills_for_order(_ORDER_ID)
