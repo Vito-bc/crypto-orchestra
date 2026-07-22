@@ -1145,7 +1145,9 @@ ASSETS = ["ETH-USD", "ZEC-USD"]
 
 # Cooldown for repeated "no price snapshot" Telegram alerts — avoids storm when
 # a data source is down for multiple consecutive ticks (one alert per hour per asset).
-_snapshot_alert_cooldown: dict[str, float] = {}
+# Values are monotonic timestamps; None means "never alerted" (distinct from 0.0,
+# which would suppress the first alert on a system with uptime < 1h).
+_snapshot_alert_cooldown: dict[str, float | None] = {}
 _SNAPSHOT_ALERT_COOLDOWN_S = 3600.0
 
 # Per-asset daily EMA period for the trend gate in _check_entry_filters
@@ -1301,7 +1303,8 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
             snap0 = get_snapshot(asset)
         except Exception as _snap_exc:
             _snap_now = time.monotonic()
-            if _snap_now - _snapshot_alert_cooldown.get(asset, 0.0) >= _SNAPSHOT_ALERT_COOLDOWN_S:
+            _last = _snapshot_alert_cooldown.get(asset)
+            if _last is None or _snap_now - _last >= _SNAPSHOT_ALERT_COOLDOWN_S:
                 _snapshot_alert_cooldown[asset] = _snap_now
                 msg = (
                     f"[ExitExecutor] CRITICAL — price snapshot raised exception for {asset}: "
@@ -1314,10 +1317,17 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
             continue
 
         if snap0:
+            if asset in _snapshot_alert_cooldown:
+                # Data source recovered — clear cooldown and notify once.
+                _snapshot_alert_cooldown.pop(asset)
+                msg = f"[ExitExecutor] RECOVERED — price snapshot restored for {asset}."
+                print(msg)
+                send_telegram_message(msg)
             _check_open_positions(asset, snap0["close"])
         else:
             _snap_now = time.monotonic()
-            if _snap_now - _snapshot_alert_cooldown.get(asset, 0.0) >= _SNAPSHOT_ALERT_COOLDOWN_S:
+            _last = _snapshot_alert_cooldown.get(asset)
+            if _last is None or _snap_now - _last >= _SNAPSHOT_ALERT_COOLDOWN_S:
                 _snapshot_alert_cooldown[asset] = _snap_now
                 msg = (
                     f"[ExitExecutor] CRITICAL — price snapshot unavailable for {asset}. "

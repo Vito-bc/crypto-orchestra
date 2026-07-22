@@ -607,6 +607,67 @@ def test_snapshot_alert_suppressed_within_cooldown():
     )
 
 
+def test_snapshot_alert_fires_with_low_system_uptime():
+    """First alert must fire even when time.monotonic() < cooldown (system uptime < 1h).
+    Old code used 0.0 as default which gave now - 0.0 = uptime, suppressing first alert
+    on a fresh boot.  None sentinel must distinguish 'never alerted' from 'alerted at t=0'.
+    """
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock, patch
+
+    telegram_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        patch("pipeline.runner._get_open_position_assets", return_value=["ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions"),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: telegram_calls.append(m)),
+        patch("pipeline.runner.get_snapshot", return_value=None),
+        patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+        patch("pipeline.runner._snapshot_alert_cooldown", {}),  # empty — never alerted
+        patch("pipeline.runner.time") as mock_time,
+    ):
+        mock_time.monotonic.return_value = 300.0  # only 5 min uptime
+        run_all_assets(target_asset="ZEC-USD")
+
+    assert any("CRITICAL" in m for m in telegram_calls), (
+        "First CRITICAL alert must fire even when system uptime is < 1h (monotonic() == 300)"
+    )
+
+
+def test_snapshot_recovery_clears_cooldown_and_sends_recovered():
+    """Successful snapshot after a failure must clear the cooldown and send RECOVERED alert."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+    import time as _time
+
+    telegram_calls: list[str] = []
+    # Simulate: previous failure was 5 min ago (within cooldown)
+    cooldown_dict: dict = {"ZEC-USD": _time.monotonic() - 300}
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        patch("pipeline.runner._get_open_position_assets", return_value=["ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions"),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: telegram_calls.append(m)),
+        patch("pipeline.runner.get_snapshot", return_value={"close": 50.0}),  # snapshot back
+        patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+        patch("pipeline.runner._snapshot_alert_cooldown", cooldown_dict),
+    ):
+        run_all_assets(target_asset="ZEC-USD")
+
+    assert any("RECOVERED" in m for m in telegram_calls), (
+        "RECOVERED alert must be sent when snapshot is restored after a failure"
+    )
+    assert "ZEC-USD" not in cooldown_dict, (
+        "Asset must be removed from cooldown dict after recovery"
+    )
+
+
 def test_position_read_failure_also_halts_entry_pipeline():
     """When _get_open_position_assets() returns None, ENTRY pipeline must also be halted."""
     from pipeline.runner import run_all_assets
