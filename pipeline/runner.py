@@ -334,16 +334,33 @@ def _check_open_positions(asset: str, current_price: float) -> None:
         reason = action.get("exit_reason")
         pos_id = action["position_id"]
         if result is not None:
-            print(
-                f"[ExitExecutor] EXIT placed {asset}  pos={pos_id[:8]}"
-                f"  reason={reason}  order={result.order_id[:8]}  status={result.status}"
-            )
-            _log_order_event(asset, "EXIT_ORDER_PLACED", {
-                "position_id":    pos_id,
-                "exit_reason":    reason,
-                "order_id":       result.order_id,
+            if result.status == "OPEN":
+                evt = "EXIT_ORDER_OPEN"
+                print(
+                    f"[ExitExecutor] EXIT OPEN {asset}  pos={pos_id[:8]}"
+                    f"  reason={reason}  order={result.order_id[:8]}"
+                    f"  exch={result.exchange_order_id}"
+                )
+            elif result.status == "SUBMITTING":
+                evt = "EXIT_ORDER_SUBMITTING_AMBIGUOUS"
+                print(
+                    f"[ExitExecutor] EXIT AMBIGUOUS (network error — staying SUBMITTING)"
+                    f"  {asset}  pos={pos_id[:8]}  reason={reason}"
+                    f"  order={result.order_id[:8]}"
+                )
+            else:
+                evt = "EXIT_ORDER_REJECTED"
+                print(
+                    f"[ExitExecutor] EXIT REJECTED {asset}  pos={pos_id[:8]}"
+                    f"  reason={reason}  rejection={result.rejection_reason}"
+                )
+            _log_order_event(asset, evt, {
+                "position_id":       pos_id,
+                "exit_reason":       reason,
+                "order_id":          result.order_id,
                 "exchange_order_id": result.exchange_order_id,
-                "status":         result.status,
+                "status":            result.status,
+                "rejection_reason":  result.rejection_reason,
             })
         elif action.get("error"):
             print(f"[ExitExecutor] ERROR {asset}  pos={pos_id[:8]}: {action['error']}")
@@ -669,10 +686,13 @@ def _get_circuit_breaker_state_inner() -> tuple[bool, str, float]:
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
+def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> TradeDecision:
     """
     Run all sub-agents in parallel, then orchestrate a final decision.
     Returns the TradeDecision for downstream use.
+
+    _skip_exit_check: set by run_all_assets() when EXIT executor already ran before
+    the reconciliation gate so we do not call it a second time per tick.
     """
     print(f"\n[Orchestra] Starting pipeline for {asset} …")
     t0 = time.time()
@@ -681,7 +701,8 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
     snap0 = get_snapshot(asset)
     if snap0:
         current_price = snap0["close"]
-        _check_open_positions(asset, current_price)   # stop/target/max-hold
+        if not _skip_exit_check:
+            _check_open_positions(asset, current_price)   # stop/target/max-hold
         _check_pending_fills(asset, current_price)    # fills → open positions
 
     # ── 1.5 Scanner gate — deterministic signal check ────────────────────────
@@ -1178,18 +1199,30 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     """
     Run startup reconciliation then the full pipeline for configured assets.
 
+    EXIT executor runs unconditionally BEFORE the reconciliation gate so that
+    stop-loss / take-profit / max-hold orders are placed even when an unrelated
+    ENTRY order is UNRESOLVED.  A reconciliation failure blocks new ENTRY
+    placement only — it must never block risk-reducing exits.
+
     target_asset: if given, only run that one asset.  The reconciliation gate
     still runs regardless — the single-asset CLI path must not bypass it.
     """
+    assets = [target_asset] if target_asset else ASSETS
+
+    # Phase 0: EXIT executor — unconditional, never blocked by ENTRY gate
+    for asset in assets:
+        snap0 = get_snapshot(asset)
+        if snap0:
+            _check_open_positions(asset, snap0["close"])
+
     if not _startup_reconciliation():
-        print("[Startup] Halting — reconciliation blocked new orders.")
+        print("[Startup] Halting — reconciliation blocked new ENTRY orders.")
         return {}
 
-    assets = [target_asset] if target_asset else ASSETS
     results = {}
     for asset in assets:
         print(f"\n{'='*65}")
-        decision = run_pipeline(asset)
+        decision = run_pipeline(asset, _skip_exit_check=True)
         results[asset] = decision
     return results
 

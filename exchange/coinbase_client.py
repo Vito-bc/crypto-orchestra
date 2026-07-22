@@ -460,6 +460,18 @@ def place_market_sell(
             }
         },
     )
+    # Definitive rejection: success=False with a known error code.
+    if resp.get("success") is False:
+        err = resp.get("error_response") or {}
+        code = err.get("error", "")
+        msg  = err.get("message", code) or code
+        if code in _DEFINITE_REJECTION_CODES:
+            raise CoinbaseOrderRejected(f"{code}: {msg}")
+        # Ambiguous rejection (UNKNOWN_FAILURE_REASON, 5xx body, etc.).
+        raise RuntimeError(
+            f"Coinbase rejected {product_id} SELL with ambiguous code '{code}': {msg}. "
+            f"Raw response keys: {list(resp.keys())}"
+        )
     order_id = resp.get("order_id") or resp.get("success_response", {}).get("order_id", "")
     if not order_id:
         raise RuntimeError(

@@ -436,6 +436,7 @@ def _resolve_one_open_partial(
     asset: str,
     exchange_order_id: str,
     cb_order: CoinbaseOrder,
+    purpose: str = "ENTRY",
     conn,
 ) -> tuple[Optional[ResolvedItem], Optional[UnresolvedItem], Optional[_PendingCancel]]:
     """
@@ -539,23 +540,22 @@ def _resolve_one_open_partial(
         return ResolvedItem(order_id, asset, "expired"), None, None
 
     # OPEN / PENDING / QUEUED — still live.
-    # Check for position stacking: if a position already exists for this asset,
-    # this active ENTRY order should be cancelled to prevent double exposure.
-    # Survives across runs: if Phase E cancel fails, the next run re-detects and retries.
-    # Exclude positions created by THIS order's own fills — those are expected.
-    # Stacking is only a problem when a DIFFERENT order's fills created a position.
-    existing_pos = conn.execute(
-        "SELECT 1 FROM positions"
-        " WHERE asset=? AND status IN ('OPEN', 'CLOSING') AND entry_order_id != ?",
-        (asset, order_id),
-    ).fetchone()
-    if existing_pos:
-        return None, None, _PendingCancel(
-            triggering_order_id=order_id,
-            conflicting_order_id=order_id,
-            conflicting_exchange_id=exchange_order_id,
-            asset=asset,
-        )
+    # Stacking check: only meaningful for ENTRY orders.  An EXIT order is expected
+    # to have a live position for its asset — treating that as a stacking conflict
+    # would cause the reconciler to cancel the protective SELL.
+    if purpose == "ENTRY":
+        existing_pos = conn.execute(
+            "SELECT 1 FROM positions"
+            " WHERE asset=? AND status IN ('OPEN', 'CLOSING') AND entry_order_id != ?",
+            (asset, order_id),
+        ).fetchone()
+        if existing_pos:
+            return None, None, _PendingCancel(
+                triggering_order_id=order_id,
+                conflicting_order_id=order_id,
+                conflicting_exchange_id=exchange_order_id,
+                asset=asset,
+            )
 
     detail = f"{fills_applied} new partial fill(s)" if fills_applied else ""
     return ResolvedItem(order_id, asset, "open", detail=detail), None, None
@@ -634,9 +634,10 @@ def run_startup_reconciliation(
             ).fetchall()
             # OPEN/PARTIAL orders need per-order fill verification on each run.
             # Only query when get_order_fn is wired (v1 limitation: no orphan check).
+            # Include purpose so Phase D can skip stacking/TTL checks for EXIT orders.
             open_partial_rows = (
                 conn.execute(
-                    "SELECT id, asset, exchange_order_id, expires_at FROM orders"
+                    "SELECT id, asset, exchange_order_id, expires_at, purpose FROM orders"
                     " WHERE status IN ('OPEN','PARTIAL')"
                     "   AND exchange_order_id IS NOT NULL"
                 ).fetchall()
@@ -960,6 +961,7 @@ def run_startup_reconciliation(
                 asset = row["asset"]
                 exchange_order_id = row["exchange_order_id"]
                 expires_at_str: str | None = row["expires_at"]
+                order_purpose: str = row["purpose"]
 
                 # Re-check current status: Phase C (stacking cancel) may have
                 # already transitioned this order since the snapshot was taken.
@@ -983,11 +985,12 @@ def run_startup_reconciliation(
                     )
                     continue
 
-                # TTL check: if our local TTL has expired and the order is still
-                # live on Coinbase (GTC orders don't auto-expire), queue for Phase E
-                # cancellation instead of proceeding with normal resolution.
+                # TTL check: only ENTRY orders have a local TTL.  EXIT orders
+                # (purpose='EXIT') protect open risk and must never be TTL-cancelled
+                # by the reconciler regardless of expires_at.
                 _is_ttl_expired = False
-                if (expires_at_str
+                if (order_purpose == "ENTRY"
+                        and expires_at_str
                         and cb_order.status in _CB_LIVE
                         and cb_order.status not in ("CANCEL_QUEUED", "PENDING_CANCEL")):
                     try:
@@ -1021,6 +1024,7 @@ def run_startup_reconciliation(
                             asset=asset,
                             exchange_order_id=exchange_order_id,
                             cb_order=cb_order,
+                            purpose=order_purpose,
                             conn=conn,
                         )
                 except Exception as exc:

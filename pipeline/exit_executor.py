@@ -23,10 +23,13 @@ coinbase_sell_fn interface: Callable[[order_id: str, asset: str, qty_base: float
 
 from __future__ import annotations
 
+import logging
 import types
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
+
+_log = logging.getLogger(__name__)
 
 from pipeline.ledger import (
     get_db,
@@ -141,8 +144,12 @@ def run_exit_executor(
     """
     actions: list[dict] = []
 
-    with get_db(db_path) as conn:
-        positions = list(get_open_positions_for_asset(asset, conn))
+    try:
+        with get_db(db_path) as conn:
+            positions = list(get_open_positions_for_asset(asset, conn))
+    except Exception as exc:
+        return [{"position_id": "UNKNOWN", "asset": asset, "exit_reason": None,
+                 "result": None, "error": f"db_read_positions_failed:{exc}"}]
 
     for pos in positions:
         pos_id = pos["id"]
@@ -159,12 +166,11 @@ def run_exit_executor(
                 with get_db(db_path) as conn:
                     update_position_stop(pos_id, new_stop, new_hwm, conn=conn)
             except Exception as exc:
-                actions.append({
-                    "position_id": pos_id, "asset": asset,
-                    "exit_reason": None, "result": None,
-                    "error": f"update_stop_failed:{exc}",
-                })
-                continue
+                # Log but do NOT skip — a hard stop may already be crossed.
+                # Proceed with exit check using the last known stop_price.
+                _log.warning("update_stop_failed pos=%s exc=%s — continuing with exit check",
+                             pos_id, exc)
+                new_stop = stop_price
         else:
             new_stop = stop_price
 
@@ -183,10 +189,16 @@ def run_exit_executor(
         if reason is None and _needs_extension_review(extensions_used, asset, pos["opened_at"]):
             if on_extension_review is not None:
                 # Wrap Row in SimpleNamespace for attribute access (.entry_price etc.)
-                pos_proxy = types.SimpleNamespace(**dict(pos))
-                pos_proxy.stop_price = new_stop
-                pos_proxy.high_water_mark = new_hwm
-                extend = on_extension_review(pos_proxy)
+                try:
+                    pos_proxy = types.SimpleNamespace(**dict(pos))
+                    pos_proxy.stop_price = new_stop
+                    pos_proxy.high_water_mark = new_hwm
+                    extend = on_extension_review(pos_proxy)
+                except Exception as exc:
+                    _log.warning("extension_review_callback_failed pos=%s exc=%s — treating as MAX_HOLD",
+                                 pos_id, exc)
+                    extend = False
+                    pos_proxy = None
                 if extend:
                     ext_stop = getattr(pos_proxy, "extension_trailing_stop", None)
                     try:
@@ -219,8 +231,16 @@ def run_exit_executor(
             continue
 
         # ── Skip if active EXIT already exists (idempotent) ───────────────────
-        with get_db(db_path) as conn:
-            already_active = _has_active_exit(pos_id, conn)
+        try:
+            with get_db(db_path) as conn:
+                already_active = _has_active_exit(pos_id, conn)
+        except Exception as exc:
+            actions.append({
+                "position_id": pos_id, "asset": asset,
+                "exit_reason": reason, "result": None,
+                "error": f"active_exit_check_failed:{exc}",
+            })
+            continue
         if already_active:
             actions.append({
                 "position_id": pos_id, "asset": asset,

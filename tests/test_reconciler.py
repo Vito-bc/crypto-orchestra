@@ -2514,3 +2514,155 @@ def test_persistent_stacking_invariant_blocks_on_prior_run_positions(
     assert "count=2" in stacking_items[0].reason, (
         f"invariant must report the count, got: {stacking_items[0].reason}"
     )
+
+
+# ---------------------------------------------------------------------------
+# EXIT-order awareness: reconciler must not cancel SELL orders
+# ---------------------------------------------------------------------------
+
+def _create_open_position_with_exit(
+    db: Path,
+    asset: str = "ZEC-USD",
+) -> tuple[str, str, str]:
+    """
+    Helper: insert ENTRY order → fill → OPEN position → SUBMITTING EXIT order.
+    Returns (entry_order_id, position_id, exit_order_id).
+    """
+    import uuid as _uuid
+
+    entry_oid = str(_uuid.uuid4())
+    exit_oid  = str(_uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    with get_db(db) as conn:
+        insert_order(
+            order_id=entry_oid, epoch_id=_EPOCH_ID, asset=asset,
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=now, qty_usd_requested=50.0, conn=conn,
+        )
+        insert_trade_intent(entry_oid, stop_price=90.0, target_price=120.0, conn=conn)
+        transition_order(entry_oid, "OPEN", exchange_order_id=f"CB-E-{entry_oid[:6]}", conn=conn)
+        result = apply_fill(
+            order_id=entry_oid, fill_price=100.0, fill_qty_base=0.5,
+            fee_usd=0.05, filled_at=now, conn=conn,
+        )
+        pos_id = result["position_id"]
+
+    with get_db(db) as conn:
+        epoch_id = conn.execute(
+            "SELECT epoch_id FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()["epoch_id"]
+        insert_order(
+            order_id=exit_oid, epoch_id=epoch_id, asset=asset,
+            side="SELL", order_type="MARKET", purpose="EXIT",
+            position_id=pos_id, placed_at=now, qty_base_requested=0.5,
+            reasoning="STOP_LOSS", conn=conn,
+        )
+
+    return entry_oid, pos_id, exit_oid
+
+
+def test_open_exit_order_not_cancelled_as_stacking(tmp_db: Path) -> None:
+    """
+    P0 regression: an active EXIT (SELL) order that Coinbase shows as OPEN must
+    NOT be cancelled as a position-stacking conflict.
+
+    The reconciler's Phase D stacking check previously queried positions by asset
+    without filtering by purpose, so any OPEN EXIT found a matching position and
+    wrongly returned a _PendingCancel, causing Phase E to cancel the protective SELL.
+    """
+    _, pos_id, exit_oid = _create_open_position_with_exit(tmp_db)
+
+    # Transition the EXIT to OPEN with an exchange_order_id so it appears in
+    # open_partial_rows (Phase D).
+    exit_exch_id = f"CB-EXIT-{exit_oid[:6]}"
+    with get_db(tmp_db) as conn:
+        transition_order(exit_oid, "OPEN", exchange_order_id=exit_exch_id, conn=conn)
+
+    cancel_calls: list[str] = []
+
+    def _cancel(eid: str) -> bool:
+        cancel_calls.append(eid)
+        return True
+
+    # get_order_fn returns the EXIT as still OPEN (no fills yet)
+    def get_order(eid: str) -> CoinbaseOrder:
+        return CoinbaseOrder(
+            client_order_id=exit_oid,
+            exchange_order_id=eid,
+            status="OPEN",
+            fills=[],
+        )
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: [],
+        cancel_order_fn=_cancel,
+        get_order_fn=get_order,
+        db_path=tmp_db,
+    )
+
+    assert exit_exch_id not in cancel_calls, (
+        "reconciler must NOT cancel an active EXIT (SELL) order — "
+        f"cancel_calls={cancel_calls}"
+    )
+    assert report.allowed_to_trade, (
+        f"a live EXIT order must not block trading: {report.unresolved}"
+    )
+
+    with get_db(tmp_db) as conn:
+        row = conn.execute(
+            "SELECT status FROM orders WHERE id=?", (exit_oid,)
+        ).fetchone()
+    assert row["status"] == "OPEN", (
+        f"EXIT order must remain OPEN, got {row['status']!r}"
+    )
+
+
+def test_exit_order_ttl_not_enforced_by_reconciler(tmp_db: Path) -> None:
+    """
+    P0 regression: an OPEN EXIT order whose local expires_at is in the past must
+    NOT be queued for TTL cancellation.
+
+    EXIT orders protect open risk and must never be cancelled by the reconciler's
+    TTL guard, regardless of expires_at.  (In practice place_exit_outbox sets
+    expires_at=None, but the guard should be explicit regardless.)
+    """
+    _, pos_id, exit_oid = _create_open_position_with_exit(tmp_db)
+
+    exit_exch_id = f"CB-EXIT-TTL-{exit_oid[:6]}"
+    # Stamp a past expires_at and set OPEN
+    past_ts = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+    with get_db(tmp_db) as conn:
+        transition_order(exit_oid, "OPEN", exchange_order_id=exit_exch_id, conn=conn)
+        conn.execute(
+            "UPDATE orders SET expires_at=? WHERE id=?", (past_ts, exit_oid)
+        )
+
+    cancel_calls: list[str] = []
+
+    def _cancel(eid: str) -> bool:
+        cancel_calls.append(eid)
+        return True
+
+    def get_order(eid: str) -> CoinbaseOrder:
+        return CoinbaseOrder(
+            client_order_id=exit_oid,
+            exchange_order_id=eid,
+            status="OPEN",
+            fills=[],
+        )
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: [],
+        cancel_order_fn=_cancel,
+        get_order_fn=get_order,
+        db_path=tmp_db,
+    )
+
+    assert exit_exch_id not in cancel_calls, (
+        "reconciler must NOT TTL-cancel an EXIT (SELL) order — "
+        f"cancel_calls={cancel_calls}"
+    )
+    assert report.allowed_to_trade, (
+        f"stale exits_at on EXIT order must not block trading: {report.unresolved}"
+    )
