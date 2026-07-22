@@ -889,33 +889,133 @@ def run_pipeline(asset: str = "ETH-USD") -> TradeDecision:
                               f"(partial correlation veto — decorrelated but BTC in BEAR)")
                     if _cb_size < 1.0:
                         print(f"[CircuitBreaker] Size reduced to {_cb_size:.0%} — {_cb_reason}")
-                    order = place_limit_order(
-                        asset=asset,
-                        limit_price=support,
-                        atr=atr,
-                        position_size_pct=_effective_size,
-                        reasoning=decision.reasoning,
+
+                    # ── Placement ──────────────────────────────────────────
+                    # LIVE mode: SQLite outbox (TX-A before Coinbase call,
+                    # atomic reconciliation gate, full recovery on crash).
+                    # DRY_RUN mode: old JSON system (fill simulation intact).
+                    from exchange.coinbase_client import (
+                        is_dry_run as _is_dry_run,
+                        place_limit_buy as _place_limit_buy,
                     )
+                    from pipeline.limit_orders import _atr_mults
+
+                    _pct = _effective_size or 0.02
+                    _bal = float(os.getenv("LIVE_BALANCE_USD", "10000"))
+                    _qty_usd = round(_bal * _pct, 2)
+                    _stop_mult, _tgt_mult = _atr_mults(asset)
+                    _stop_price   = round(support - _stop_mult * atr, 2)
+                    _target_price = round(support + _tgt_mult * atr, 2)
+
+                    if _is_dry_run():
+                        order = place_limit_order(
+                            asset=asset,
+                            limit_price=support,
+                            atr=atr,
+                            position_size_pct=_effective_size,
+                            reasoning=decision.reasoning,
+                        )
+                        _order_id       = order.id
+                        _order_stop     = order.stop_price
+                        _order_target   = order.target_price
+                        _order_reasoning = order.reasoning
+                        _notify_order   = order  # PendingOrder for Telegram formatter
+                    else:
+                        from pipeline.outbox import place_order_outbox, PlacementBlocked
+                        from types import SimpleNamespace as _NS
+                        try:
+                            _result = place_order_outbox(
+                                asset=asset,
+                                limit_price=support,
+                                qty_usd=_qty_usd,
+                                stop_price=_stop_price,
+                                target_price=_target_price,
+                                reasoning=decision.reasoning,
+                                coinbase_fn=lambda cid: _place_limit_buy(
+                                    asset, _qty_usd, support, client_order_id=cid
+                                ),
+                            )
+                        except PlacementBlocked as _exc:
+                            print(f"[Outbox] Placement blocked by gate: {_exc}")
+                            decision = TradeDecision(
+                                asset=asset, timestamp=decision.timestamp,
+                                action=TradeAction.HOLD,
+                                confidence=decision.confidence,
+                                reasoning=f"[Outbox] Gate blocked: {_exc}. " + decision.reasoning,
+                                votes=decision.votes, overrides=decision.overrides,
+                                veto_triggered=True,
+                                veto_reason=str(_exc),
+                                position_size_pct=None, stop_loss_price=None,
+                                take_profit_price=None,
+                            )
+                            _log_decision(asset, signals, decision)
+                            _print_decision(asset, signals, decision)
+                            return decision
+                        _order_id        = _result.order_id
+                        _order_stop      = _stop_price
+                        _order_target    = _target_price
+                        _order_reasoning = decision.reasoning
+                        _notify_order    = _NS(
+                            id=_result.order_id,
+                            limit_price=support,
+                            stop_price=_stop_price,
+                            target_price=_target_price,
+                            reasoning=decision.reasoning,
+                        )
+                        _result_status   = _result.status
+
+                    # ── Status-aware log + notification ───────────────────
                     dist_str = f"{dist:.1f}x ATR away" if dist else "at support"
-                    print(f"[LimitOrder] PLACED #{order.id} — limit ${order.limit_price:,.2f}  "
-                          f"stop ${order.stop_price:,.2f}  target ${order.target_price:,.2f}  "
-                          f"({dist_str})  expires 24h")
-                    _log_order_event(asset, "LIMIT_ORDER_PLACED", {
-                        "order_id":    order.id,
-                        "limit_price": order.limit_price,
-                        "stop_price":  order.stop_price,
-                        "target_price": order.target_price,
-                        "dist_atr":    dist,
-                        "maker_fee":   MAKER_FEE_RATE,
-                        "reasoning":   order.reasoning,
-                    })
-                    send_telegram_message(format_limit_order_placed(asset, order, levels))
-                    # Downgrade to HOLD — the live action is the pending order, not an immediate trade
+                    if _is_dry_run() or _result_status == "OPEN":
+                        print(f"[LimitOrder] PLACED #{_order_id} — limit ${support:,.2f}  "
+                              f"stop ${_order_stop:,.2f}  target ${_order_target:,.2f}  "
+                              f"({dist_str})  expires 24h")
+                        _log_order_event(asset, "LIMIT_ORDER_PLACED", {
+                            "order_id":    _order_id,
+                            "limit_price": support,
+                            "stop_price":  _order_stop,
+                            "target_price": _order_target,
+                            "dist_atr":    dist,
+                            "maker_fee":   MAKER_FEE_RATE,
+                            "reasoning":   _order_reasoning,
+                        })
+                        send_telegram_message(format_limit_order_placed(asset, _notify_order, levels))
+                    elif _result_status == "SUBMITTING":
+                        # Network timeout / ambiguous response — TX-A committed,
+                        # TX-B was not.  Startup reconciler will resolve via
+                        # client_order_id.  Do NOT send "order placed" — it hasn't
+                        # been confirmed by Coinbase.
+                        _msg = (
+                            f"[{asset}] ⚠️ SUBMISSION UNKNOWN — order #{_order_id} "
+                            f"at ${support:,.2f} left in SUBMITTING state. "
+                            "Startup reconciler will resolve on next run."
+                        )
+                        print(f"[LimitOrder] {_msg}")
+                        _log_order_event(asset, "LIMIT_ORDER_SUBMISSION_UNKNOWN", {
+                            "order_id": _order_id,
+                            "limit_price": support,
+                            "reasoning": _order_reasoning,
+                        })
+                        send_telegram_message(_msg)
+                    elif _result_status == "REJECTED":
+                        _msg = (
+                            f"[{asset}] ❌ ORDER REJECTED — #{_order_id} at ${support:,.2f}: "
+                            f"{_result.rejection_reason or 'no reason provided'}"
+                        )
+                        print(f"[LimitOrder] {_msg}")
+                        _log_order_event(asset, "LIMIT_ORDER_REJECTED", {
+                            "order_id": _order_id,
+                            "limit_price": support,
+                            "rejection_reason": _result.rejection_reason,
+                            "reasoning": _order_reasoning,
+                        })
+                        send_telegram_message(_msg)
+                    # Downgrade to HOLD — the live action is the pending order
                     decision = TradeDecision(
                         asset=asset, timestamp=decision.timestamp,
                         action=TradeAction.HOLD,
                         confidence=decision.confidence,
-                        reasoning=f"[Limit] Order #{order.id} placed at support ${support:,.2f}. " + decision.reasoning,
+                        reasoning=f"[Limit] Order #{_order_id} ({_result_status if not _is_dry_run() else 'OPEN'}) at support ${support:,.2f}. " + decision.reasoning,
                         votes=decision.votes, overrides=decision.overrides,
                         veto_triggered=decision.veto_triggered, veto_reason=decision.veto_reason,
                         position_size_pct=None, stop_loss_price=None, take_profit_price=None,
@@ -1021,7 +1121,7 @@ def _startup_reconciliation() -> bool:
         msg = (
             f"[Startup {mode}] Reconciliation BLOCKED — "
             f"{len(report.unresolved)} unresolved item(s):\n" +
-            "\n".join(f"  • {u['order_id']} ({u['asset']}): {u['reason']}"
+            "\n".join(f"  • {u.order_id} ({u.asset}): {u.reason}"
                       for u in report.unresolved)
         )
         print(msg)
@@ -1039,14 +1139,20 @@ def _startup_reconciliation() -> bool:
     return True
 
 
-def run_all_assets() -> dict[str, TradeDecision]:
-    """Run the full pipeline for every configured asset sequentially."""
+def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
+    """
+    Run startup reconciliation then the full pipeline for configured assets.
+
+    target_asset: if given, only run that one asset.  The reconciliation gate
+    still runs regardless — the single-asset CLI path must not bypass it.
+    """
     if not _startup_reconciliation():
         print("[Startup] Halting — reconciliation blocked new orders.")
         return {}
 
+    assets = [target_asset] if target_asset else ASSETS
     results = {}
-    for asset in ASSETS:
+    for asset in assets:
         print(f"\n{'='*65}")
         decision = run_pipeline(asset)
         results[asset] = decision
@@ -1066,7 +1172,9 @@ if __name__ == "__main__":
         sys.stdout = io.TextIOWrapper(_log_fh.buffer, encoding="utf-8", line_buffering=True)
         sys.stderr = sys.stdout
 
-    if len(sys.argv) > 1:
-        run_pipeline(sys.argv[1])
-    else:
-        run_all_assets()
+    # Always go through run_all_assets() so the reconciliation gate runs
+    # regardless of whether a specific asset is given on the command line.
+    # Direct run_pipeline() calls bypass the gate and must not be used as
+    # a live entry point.
+    target = sys.argv[1] if len(sys.argv) > 1 else None
+    run_all_assets(target_asset=target)

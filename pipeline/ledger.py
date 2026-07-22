@@ -44,7 +44,7 @@ from typing import Iterator, Optional
 ROOT    = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "logs" / "ledger.db"
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _TRANSITIONS: dict[str, set[str]] = {
     "SUBMITTING": {"OPEN", "CANCELLED", "REJECTED"},
@@ -108,7 +108,9 @@ def get_db(
 # Schema V3 (externally "V2.1")
 # ---------------------------------------------------------------------------
 
-_SCHEMA_V5 = """
+# V6 full schema (used for fresh installs).  Renamed from _SCHEMA_V5 when V6 was
+# introduced; kept as _SCHEMA_CURRENT going forward so the name tracks the version.
+_SCHEMA_CURRENT = """
 CREATE TABLE IF NOT EXISTS risk_epochs (
     epoch_id      TEXT    PRIMARY KEY,
     paper_capital REAL    NOT NULL CHECK(paper_capital > 0),
@@ -138,6 +140,7 @@ CREATE TABLE IF NOT EXISTS orders (
     expired_at         TEXT,
     rejected_at        TEXT,
     rejection_reason   TEXT,
+    fills_finalized_at TEXT,
     CHECK((purpose = 'ENTRY') OR (purpose = 'EXIT' AND position_id IS NOT NULL))
 );
 
@@ -230,6 +233,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_entry_per_asset
     AND status IN ('SUBMITTING','OPEN','PARTIAL');
 CREATE INDEX IF NOT EXISTS idx_fills_order            ON fills(order_id);
 CREATE INDEX IF NOT EXISTS idx_positions_epoch_status ON positions(epoch_id, status);
+CREATE INDEX IF NOT EXISTS idx_unfinalized_terminal
+    ON orders(id)
+    WHERE status IN ('EXPIRED','CANCELLED')
+    AND exchange_order_id IS NOT NULL
+    AND fills_finalized_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id);
 
 CREATE TRIGGER IF NOT EXISTS trg_fills_no_update
@@ -257,6 +265,9 @@ BEGIN
 END;
 """
 
+# Backward-compat alias — tests and tools that imported _SCHEMA_V5 by name.
+_SCHEMA_V5 = _SCHEMA_CURRENT
+
 
 # ---------------------------------------------------------------------------
 # Schema versioning and migrations
@@ -266,14 +277,15 @@ def run_migrations(path: Optional[Path] = None) -> None:
     """
     Apply schema migrations. Called on every startup before any DB access.
 
-    v0 (no DB or fresh file):       fresh install of V5 schema.
-    v0 (file with user tables):     unversioned prototype — backup to .v0.bak, fresh V5.
-    v1/v2/v3 (pre-outbox proto):    backup to .vN.bak, fresh V5.
-    v4 (outbox, pre-stacking-guard): in-place — ALTER TABLE ADD COLUMN + new index.
-    v5: already current — no-op.
+    v0 (no DB or fresh file):       fresh install of V6 schema.
+    v0 (file with user tables):     unversioned prototype — backup to .v0.bak, fresh V6.
+    v1/v2/v3 (pre-outbox proto):    backup to .vN.bak, fresh V6.
+    v4 (outbox, pre-stacking-guard): in-place — ALTER TABLE ADD COLUMN + new index → V5.
+    v5 (pre-terminal-finalization):  in-place — ADD COLUMN fills_finalized_at → V6.
+    v6: already current — no-op.
 
     Backup+reset is safe for v0–v3 (no live orders were ever in those DBs).
-    In-place migration v4→v5 uses ALTER TABLE ... ADD COLUMN (safe, non-destructive).
+    In-place migrations v4→v5 and v5→v6 use ALTER TABLE ADD COLUMN (non-destructive).
     Future constraint changes (CHECK, UNIQUE on existing data) require the 12-step
     SQLite rename workaround; column additions always use ALTER TABLE ADD COLUMN.
     """
@@ -354,6 +366,43 @@ def run_migrations(path: Optional[Path] = None) -> None:
                               AND status IN ('SUBMITTING','OPEN','PARTIAL')
                     """)
 
+                conn.execute("PRAGMA user_version = 5")
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+        version = 5  # fall through to V5→V6 migration
+
+    # V5 → V6: adds fills_finalized_at column for terminal-order finalization.
+    # Excludes finalized terminal orders from startup reconciliation, preventing
+    # O(total-history) growth of Coinbase API calls on each bot restart.
+    if version == 5:
+        conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing_cols = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(orders)")
+                }
+                if "fills_finalized_at" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE orders ADD COLUMN fills_finalized_at TEXT"
+                    )
+                # Add partial index for unfinalized terminal orders if not present.
+                idx_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master"
+                    " WHERE type='index' AND name='idx_unfinalized_terminal'"
+                ).fetchone()
+                if not idx_exists:
+                    conn.execute("""
+                        CREATE INDEX idx_unfinalized_terminal ON orders(id)
+                        WHERE status IN ('EXPIRED','CANCELLED')
+                          AND exchange_order_id IS NOT NULL
+                          AND fills_finalized_at IS NULL
+                    """)
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 conn.execute("COMMIT")
             except Exception:
@@ -374,7 +423,7 @@ def run_migrations(path: Optional[Path] = None) -> None:
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(_SCHEMA_V5)
+        conn.executescript(_SCHEMA_CURRENT)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     finally:
         conn.close()

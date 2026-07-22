@@ -66,21 +66,23 @@ def make_list_orders_fn() -> Callable[[], list[CoinbaseOrder]]:
     """
     Return a list_orders_fn: Callable[[], list[CoinbaseOrder]].
 
-    Fetches all non-terminal orders from Coinbase via list_open_orders() and
-    normalises each to a CoinbaseOrder with no fills (fills are fetched per-order
-    by make_get_order_fn() only when needed for stacking resolution).
+    Fetches live + recent terminal orders from Coinbase via
+    list_reconciliation_orders() and normalises each to a CoinbaseOrder
+    with no fills (fills are fetched per-order by make_get_order_fn()
+    only when needed for stacking resolution).
 
-    Returns [] in DRY_RUN mode.  Silently drops orders with empty client_order_id
+    Returns [] in DRY_RUN mode.  Drops orders with empty client_order_id
     or exchange_order_id — they cannot be matched against local orders.
+
+    Exceptions propagate: an exchange outage must produce a failed
+    reconciliation, not an empty order list that appears clean.
     """
     def _fn() -> list[CoinbaseOrder]:
         if _cb._DRY_RUN:
             return []
-        try:
-            raw_orders = _cb.list_open_orders()
-        except Exception as exc:
-            print(f"[Adapter] list_open_orders error: {exc}")
-            return []
+        # Let exceptions propagate — exchange outage must not look like
+        # 'no pending orders'; the reconciler will catch and report FAILED.
+        raw_orders = _cb.list_reconciliation_orders()
 
         result: list[CoinbaseOrder] = []
         for o in raw_orders:

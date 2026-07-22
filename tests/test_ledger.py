@@ -1860,6 +1860,221 @@ def test_v4_to_v5_migration_idempotent_after_index_exists(tmp_path: Path) -> Non
     assert ver == SCHEMA_VERSION
 
 
+# ---------------------------------------------------------------------------
+# V5→V6 migration: fills_finalized_at column + idx_unfinalized_terminal
+# ---------------------------------------------------------------------------
+
+def _make_v5_db(path: Path) -> None:
+    """
+    Build a V5 database: full V6 schema minus fills_finalized_at column and
+    idx_unfinalized_terminal, then stamp user_version=5.
+    Simulates a pre-terminal-finalization production DB.
+    """
+    conn = sqlite3.connect(str(path))
+    conn.executescript("""
+        CREATE TABLE risk_epochs (
+            epoch_id TEXT PRIMARY KEY, paper_capital REAL NOT NULL,
+            reason TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT
+        );
+        CREATE TABLE orders (
+            id TEXT PRIMARY KEY,
+            epoch_id TEXT NOT NULL REFERENCES risk_epochs(epoch_id),
+            asset TEXT NOT NULL, side TEXT NOT NULL, order_type TEXT NOT NULL,
+            purpose TEXT NOT NULL, position_id TEXT,
+            qty_base_requested REAL, qty_usd_requested REAL, limit_price REAL,
+            placed_at TEXT NOT NULL, expires_at TEXT,
+            reasoning TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'SUBMITTING',
+            exchange_order_id TEXT UNIQUE,
+            cancelled_at TEXT, expired_at TEXT, rejected_at TEXT,
+            rejection_reason TEXT
+        );
+        CREATE UNIQUE INDEX idx_one_active_entry_per_asset
+            ON orders(asset) WHERE purpose='ENTRY'
+            AND status IN ('SUBMITTING','OPEN','PARTIAL');
+        CREATE TABLE fills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL REFERENCES orders(id),
+            exchange_fill_id TEXT UNIQUE, fill_price REAL NOT NULL,
+            fill_qty_base REAL NOT NULL, fill_qty_usd REAL NOT NULL,
+            fee_usd REAL NOT NULL DEFAULT 0.0, is_taker INTEGER NOT NULL DEFAULT 1,
+            filled_at TEXT NOT NULL
+        );
+        CREATE TABLE positions (
+            id TEXT PRIMARY KEY, entry_order_id TEXT NOT NULL UNIQUE,
+            epoch_id TEXT NOT NULL, asset TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN'
+        );
+        CREATE TABLE trade_intents (
+            order_id TEXT PRIMARY KEY REFERENCES orders(id),
+            stop_price REAL NOT NULL, target_price REAL NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX idx_one_active_epoch
+            ON risk_epochs(1) WHERE ended_at IS NULL;
+        INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)
+            VALUES ('EP_V5', 500.0, 'pre-V6 epoch', '2025-01-01T00:00:00Z');
+        INSERT INTO orders(
+            id, epoch_id, asset, side, order_type, purpose,
+            placed_at, status, exchange_order_id,
+            cancelled_at, rejection_reason
+        ) VALUES (
+            'ORD-V5-TERMINAL', 'EP_V5', 'ZEC-USD', 'BUY', 'LIMIT', 'ENTRY',
+            '2025-01-01T00:00:00Z', 'CANCELLED', 'CB-V5-EX-1',
+            '2025-01-01T01:00:00Z', 'manual test order'
+        );
+    """)
+    conn.execute("PRAGMA user_version = 5")
+    conn.commit()
+    conn.close()
+
+
+def test_migration_v5_to_v6_adds_fills_finalized_at(tmp_path: Path) -> None:
+    """
+    V5→V6 in-place migration: fills_finalized_at column and idx_unfinalized_terminal
+    are added; existing data is preserved; user_version becomes 6.
+    """
+    db = tmp_path / "ledger_v5.db"
+    _make_v5_db(db)
+
+    run_migrations(db)
+
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert ver == SCHEMA_VERSION, f"expected V{SCHEMA_VERSION}, got V{ver}"
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+        assert "fills_finalized_at" in cols, "fills_finalized_at column missing after V5→V6"
+
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+            " AND name='idx_unfinalized_terminal'"
+        ).fetchone()
+        assert idx is not None, "idx_unfinalized_terminal not created by V5→V6 migration"
+
+        # Epoch data preserved
+        row = conn.execute("SELECT epoch_id FROM risk_epochs").fetchone()
+        assert row[0] == "EP_V5", "epoch data must survive V5→V6"
+
+        # Terminal order data preserved and new column defaults correctly
+        conn.row_factory = sqlite3.Row
+        order = conn.execute(
+            "SELECT id, status, exchange_order_id, rejection_reason, fills_finalized_at"
+            "  FROM orders WHERE id='ORD-V5-TERMINAL'"
+        ).fetchone()
+        assert order is not None, "terminal order row must survive V5→V6"
+        assert order["status"] == "CANCELLED"
+        assert order["exchange_order_id"] == "CB-V5-EX-1"
+        assert order["rejection_reason"] == "manual test order"
+        assert order["fills_finalized_at"] is None, (
+            "fills_finalized_at must default to NULL for existing rows after migration"
+        )
+
+        # Order satisfies the partial index predicate (CANCELLED, has exchange_order_id, no finalized_at)
+        in_idx = conn.execute(
+            "SELECT id FROM orders"
+            " WHERE status IN ('EXPIRED','CANCELLED')"
+            "   AND exchange_order_id IS NOT NULL"
+            "   AND fills_finalized_at IS NULL"
+            "   AND id='ORD-V5-TERMINAL'"
+        ).fetchone()
+        assert in_idx is not None, "terminal order must satisfy idx_unfinalized_terminal predicate"
+
+    # No backup file created (in-place migration)
+    assert not (tmp_path / "ledger_v5.v5.bak").exists(), "V5→V6 must not create a backup"
+
+
+def test_migration_v5_to_v6_idempotent(tmp_path: Path) -> None:
+    """
+    V5→V6 is idempotent: if fills_finalized_at already exists (e.g. partial
+    migration from a crash), running again must not raise.
+    """
+    db = tmp_path / "ledger_v5_partial.db"
+    _make_v5_db(db)
+
+    # Manually add the column to simulate a partial migration
+    conn = sqlite3.connect(str(db))
+    conn.execute("ALTER TABLE orders ADD COLUMN fills_finalized_at TEXT")
+    conn.commit()
+    conn.close()
+
+    run_migrations(db)  # must not raise
+
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert ver == SCHEMA_VERSION
+
+
+def test_migration_v4_to_v6_chains_both_columns(tmp_path: Path) -> None:
+    """
+    A V4 DB runs through V4→V5→V6 in a single run_migrations() call.
+    Both rejection_reason and fills_finalized_at must be present afterwards.
+    """
+    db = tmp_path / "ledger_v4_chain.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript("""
+        CREATE TABLE risk_epochs (
+            epoch_id TEXT PRIMARY KEY, paper_capital REAL NOT NULL,
+            reason TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT
+        );
+        CREATE TABLE orders (
+            id TEXT PRIMARY KEY,
+            epoch_id TEXT NOT NULL REFERENCES risk_epochs(epoch_id),
+            asset TEXT NOT NULL, side TEXT NOT NULL, order_type TEXT NOT NULL,
+            purpose TEXT NOT NULL, position_id TEXT,
+            qty_base_requested REAL, qty_usd_requested REAL, limit_price REAL,
+            placed_at TEXT NOT NULL, expires_at TEXT,
+            reasoning TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'SUBMITTING',
+            exchange_order_id TEXT UNIQUE,
+            cancelled_at TEXT, expired_at TEXT, rejected_at TEXT
+        );
+        CREATE UNIQUE INDEX idx_one_active_epoch
+            ON risk_epochs(1) WHERE ended_at IS NULL;
+        INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)
+            VALUES ('EP_V4_CHAIN', 500.0, 'chain test', '2025-01-01T00:00:00Z');
+    """)
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+    conn.close()
+
+    run_migrations(db)
+
+    with sqlite3.connect(str(db)) as conn:
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        assert ver == SCHEMA_VERSION, f"expected V{SCHEMA_VERSION}, got V{ver}"
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+        assert "rejection_reason" in cols, "rejection_reason missing after V4→V6 chain"
+        assert "fills_finalized_at" in cols, "fills_finalized_at missing after V4→V6 chain"
+
+        row = conn.execute("SELECT epoch_id FROM risk_epochs").fetchone()
+        assert row[0] == "EP_V4_CHAIN", "pre-migration data must survive V4→V6 chain"
+
+
+def test_fresh_schema_has_fills_finalized_at(tmp_db: Path) -> None:
+    """Fresh V6 schema must include the fills_finalized_at column."""
+    with get_db(tmp_db) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(orders)")}
+    assert "fills_finalized_at" in cols, (
+        "fills_finalized_at missing from fresh schema — "
+        "update _SCHEMA_CURRENT to include it"
+    )
+
+
+def test_fresh_schema_has_unfinalized_terminal_index(tmp_db: Path) -> None:
+    """Fresh V6 schema must include the partial index for unfinalized terminal orders."""
+    with get_db(tmp_db) as conn:
+        idx = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+            " AND name='idx_unfinalized_terminal'"
+        ).fetchone()
+    assert idx is not None, (
+        "idx_unfinalized_terminal missing from fresh schema — "
+        "startup reconciliation will do a full table scan for terminal orders"
+    )
+
+
 def test_idempotent_replay_with_reconciliation_mode_returns_correct_flags(
     db_with_epoch: Path,
 ) -> None:
