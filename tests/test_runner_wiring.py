@@ -399,7 +399,135 @@ def test_cli_target_asset_does_not_restrict_exit_supervisor():
 
 
 # ---------------------------------------------------------------------------
-# 6. PENDING_CANCEL removed from live_statuses (P0-2)
+# 6. Asset-specific orphan blocks only that asset; position read + snapshot alerts
+# ---------------------------------------------------------------------------
+
+def test_known_asset_orphan_blocks_only_that_asset():
+    """A ZEC-USD orphan in the reconciliation report must block ZEC EXIT but allow ETH EXIT."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+
+    report_zec_orphan = ReconciliationReport(
+        run_id=1, discovered=[], resolved=[],
+        unresolved=[UnresolvedItem(
+            order_id="exch-zec-orphan", asset="ZEC-USD",
+            reason="orphan_coinbase_order:client_id=some-id:side=SELL",
+        )],
+        started_at=_now_str(), completed_at=_now_str(),
+    )
+
+    exit_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(False, report_zec_orphan)),
+        patch("pipeline.runner._get_open_position_assets",
+              return_value=["ETH-USD", "ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: exit_calls.append(a)),
+        patch("pipeline.runner.send_telegram_message"),
+        patch("pipeline.runner.get_snapshot", return_value={"close": 2000.0}),
+    ):
+        run_all_assets()
+
+    assert "ETH-USD" in exit_calls, "ETH-USD EXIT must proceed — no ZEC orphan affects it"
+    assert "ZEC-USD" not in exit_calls, "ZEC-USD EXIT must be blocked by its orphan"
+
+
+def test_empty_client_order_id_becomes_exchange_only_orphan(monkeypatch):
+    """An order with empty client_order_id must become an EXCHANGE_ONLY sentinel, not be silently dropped."""
+    import exchange.coinbase_client as _cb
+    import exchange.adapter as _adapter
+
+    monkeypatch.setattr(_cb, "_DRY_RUN", False)
+    monkeypatch.setattr(_cb, "list_reconciliation_orders", lambda: [
+        {"client_order_id": "", "order_id": "EX-MANUAL-001", "status": "OPEN",
+         "product_id": "ZEC-USD", "side": "SELL"},
+    ])
+
+    fn = _adapter.make_list_orders_fn()
+    orders = fn()
+
+    assert len(orders) == 1, "exchange-only order must not be dropped"
+    assert orders[0].client_order_id.startswith("EXCHANGE_ONLY:"), (
+        "empty client_order_id must be replaced with EXCHANGE_ONLY sentinel"
+    )
+    assert orders[0].exchange_order_id == "EX-MANUAL-001"
+    assert orders[0].product_id == "ZEC-USD"
+    assert orders[0].side == "SELL"
+
+
+def test_list_orders_fn_transfers_product_id_and_side(monkeypatch):
+    """make_list_orders_fn() must pass product_id and side through to CoinbaseOrder."""
+    import exchange.coinbase_client as _cb
+    import exchange.adapter as _adapter
+
+    monkeypatch.setattr(_cb, "_DRY_RUN", False)
+    monkeypatch.setattr(_cb, "list_reconciliation_orders", lambda: [
+        {"client_order_id": "test-client-uuid", "order_id": "EX-99", "status": "OPEN",
+         "product_id": "ZEC-USD", "side": "SELL"},
+    ])
+
+    fn = _adapter.make_list_orders_fn()
+    orders = fn()
+
+    assert len(orders) == 1
+    assert orders[0].product_id == "ZEC-USD", "product_id must be propagated"
+    assert orders[0].side == "SELL", "side must be propagated"
+
+
+def test_no_price_snapshot_sends_critical_alert():
+    """When get_snapshot() returns None for an open position, a CRITICAL Telegram alert must fire."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+
+    exit_calls: list[str] = []
+    telegram_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        patch("pipeline.runner._get_open_position_assets", return_value=["ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: exit_calls.append(a)),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: telegram_calls.append(m)),
+        patch("pipeline.runner.get_snapshot", return_value=None),
+        patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+    ):
+        run_all_assets(target_asset="ZEC-USD")
+
+    assert exit_calls == [], "_check_open_positions must not be called when no snapshot"
+    assert any("CRITICAL" in m for m in telegram_calls), (
+        "CRITICAL Telegram alert must fire when price snapshot is unavailable for an open position"
+    )
+
+
+def test_position_read_failure_also_halts_entry_pipeline():
+    """When _get_open_position_assets() returns None, ENTRY pipeline must also be halted."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+
+    pipeline_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        patch("pipeline.runner._get_open_position_assets", return_value=None),
+        patch("pipeline.runner.send_telegram_message"),
+        patch("pipeline.runner.run_pipeline",
+              side_effect=lambda a, **kw: pipeline_calls.append(a)),
+    ):
+        result = run_all_assets(target_asset="ZEC-USD")
+
+    assert pipeline_calls == [], (
+        "run_pipeline must not be called when open-position read failed — DB is unreliable"
+    )
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# 7. PENDING_CANCEL removed from live_statuses (P0-2)
 # ---------------------------------------------------------------------------
 
 def test_list_reconciliation_orders_excludes_pending_cancel(monkeypatch):

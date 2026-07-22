@@ -89,8 +89,13 @@ def make_list_orders_fn() -> Callable[[], list[CoinbaseOrder]]:
             client_id = o.get("client_order_id", "")
             exchange_id = o.get("order_id", "")
             status = o.get("status", "")
-            if not client_id or not exchange_id:
-                continue
+            if not exchange_id:
+                continue  # no usable identifier at all — cannot track or match
+            if not client_id:
+                # Manual order, external system, or Coinbase UI trade — no client_order_id.
+                # Synthesise a sentinel so orphan detection fires: this ID will never
+                # match a local ledger UUID, triggering asset-level or global EXIT block.
+                client_id = f"EXCHANGE_ONLY:{exchange_id}"
             result.append(CoinbaseOrder(
                 client_order_id=client_id,
                 exchange_order_id=exchange_id,
@@ -240,6 +245,8 @@ def make_get_order_fn() -> Callable[[str], Optional[CoinbaseOrder]]:
                 exchange_order_id=actual_exchange_id,  # from API, not input param
                 status=status,
                 fills=fills,
+                product_id=order.get("product_id", ""),
+                side=order.get("side", ""),
             )
 
         except Exception as exc:

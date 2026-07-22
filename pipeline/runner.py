@@ -1273,6 +1273,7 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
         send_telegram_message(msg)
         all_open_assets = []
         global_exit_block = True
+        entry_ok = False  # DB unreliable — ENTRY would also use a bad ledger state
 
     for asset in all_open_assets:
         if global_exit_block:
@@ -1294,6 +1295,14 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
         snap0 = get_snapshot(asset)
         if snap0:
             _check_open_positions(asset, snap0["close"])
+        else:
+            msg = (
+                f"[ExitExecutor] CRITICAL — price snapshot unavailable for {asset}. "
+                "EXIT check skipped this tick; stop-loss may not trigger. "
+                "Manual review required if this persists."
+            )
+            print(msg)
+            send_telegram_message(msg)
 
     # Step 4: ENTRY gate
     if not entry_ok:
