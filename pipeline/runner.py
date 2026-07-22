@@ -343,17 +343,21 @@ def _check_open_positions(asset: str, current_price: float) -> None:
                 )
             elif result.status == "SUBMITTING":
                 evt = "EXIT_ORDER_SUBMITTING_AMBIGUOUS"
-                print(
-                    f"[ExitExecutor] EXIT AMBIGUOUS (network error — staying SUBMITTING)"
-                    f"  {asset}  pos={pos_id[:8]}  reason={reason}"
-                    f"  order={result.order_id[:8]}"
+                alert = (
+                    f"[ALERT] EXIT network error — order SUBMITTING, reconciler will retry\n"
+                    f"asset={asset} pos={pos_id[:8]} reason={reason} order={result.order_id[:8]}"
                 )
+                print(alert)
+                send_telegram_message(alert)
             else:
                 evt = "EXIT_ORDER_REJECTED"
-                print(
-                    f"[ExitExecutor] EXIT REJECTED {asset}  pos={pos_id[:8]}"
-                    f"  reason={reason}  rejection={result.rejection_reason}"
+                alert = (
+                    f"[CRITICAL] EXIT REJECTED — stop-loss NOT executed, manual review required\n"
+                    f"asset={asset} pos={pos_id[:8]} reason={reason}\n"
+                    f"rejection={result.rejection_reason}"
                 )
+                print(alert)
+                send_telegram_message(alert)
             _log_order_event(asset, evt, {
                 "position_id":       pos_id,
                 "exit_reason":       reason,
@@ -363,7 +367,12 @@ def _check_open_positions(asset: str, current_price: float) -> None:
                 "rejection_reason":  result.rejection_reason,
             })
         elif action.get("error"):
-            print(f"[ExitExecutor] ERROR {asset}  pos={pos_id[:8]}: {action['error']}")
+            alert = (
+                f"[CRITICAL] EXIT placement failed — position unprotected\n"
+                f"asset={asset} pos={pos_id[:8]} reason={reason}\nerror={action['error']}"
+            )
+            print(alert)
+            send_telegram_message(alert)
             _log_order_event(asset, "EXIT_PLACEMENT_FAILED", {
                 "position_id": pos_id,
                 "exit_reason": reason,
@@ -1143,15 +1152,15 @@ _DAILY_EMA_PERIOD: dict[str, int] = {
 }
 
 
-def _startup_reconciliation() -> bool:
+def _startup_reconciliation():
     """
-    Run startup reconciliation and return True if trading is allowed.
+    Run startup reconciliation and return (entry_allowed, report).
 
-    Wires make_list_orders_fn() and make_get_order_fn() from exchange/adapter.py
-    into run_startup_reconciliation().  Returns False if UNRESOLVED items exist
-    or if reconciliation itself errors — fail-closed.
+    entry_allowed: False when there are UNRESOLVED items or on exception — fail-closed.
+    report: the full ReconciliationReport (None on exception).
 
-    Always runs run_migrations() first so the SQLite ledger schema is up-to-date.
+    Always runs run_migrations() first.  The caller uses the report to determine
+    per-asset EXIT eligibility before deciding whether ENTRY is allowed.
     """
     from pipeline.ledger import run_migrations
     from pipeline.reconciler import run_startup_reconciliation
@@ -1170,7 +1179,7 @@ def _startup_reconciliation() -> bool:
         msg = f"[Startup] Reconciliation failed with exception: {exc}"
         print(msg)
         send_telegram_message(msg)
-        return False
+        return False, None
 
     mode = "DRY_RUN" if is_dry_run() else "LIVE"
     if report.unresolved:
@@ -1182,7 +1191,7 @@ def _startup_reconciliation() -> bool:
         )
         print(msg)
         send_telegram_message(msg)
-        return False
+        return False, report
 
     if report.resolved:
         print(
@@ -1192,35 +1201,80 @@ def _startup_reconciliation() -> bool:
     else:
         print(f"[Startup {mode}] Reconciliation complete — no pending orders")
 
-    return True
+    return True, report
+
+
+def _get_open_position_assets() -> list[str]:
+    """Return distinct assets with at least one OPEN or CLOSING position."""
+    from pipeline.ledger import get_db
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT asset FROM positions WHERE status IN ('OPEN','CLOSING')"
+            ).fetchall()
+        return [r["asset"] for r in rows]
+    except Exception:
+        return []
 
 
 def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     """
-    Run startup reconciliation then the full pipeline for configured assets.
+    Startup reconciliation then EXIT executor then ENTRY pipeline.
 
-    EXIT executor runs unconditionally BEFORE the reconciliation gate so that
-    stop-loss / take-profit / max-hold orders are placed even when an unrelated
-    ENTRY order is UNRESOLVED.  A reconciliation failure blocks new ENTRY
-    placement only — it must never block risk-reducing exits.
+    Order matters:
+      1. run_migrations() inside _startup_reconciliation() — schema before any DB access.
+      2. Reconciliation — determines qty certainty and orphan SELL state per asset.
+      3. EXIT executor — allowed per-asset when its unresolved items are zero; blocked
+         when reconciliation is uncertain about qty or an unknown SELL exists for
+         that asset. An UNRESOLVED ENTRY for a different asset does not block EXIT.
+      4. ENTRY pipeline — blocked if any UNRESOLVED exists (existing gate unchanged).
 
     target_asset: if given, only run that one asset.  The reconciliation gate
     still runs regardless — the single-asset CLI path must not bypass it.
     """
-    assets = [target_asset] if target_asset else ASSETS
+    # Step 1: Reconciliation (includes migrations)
+    entry_ok, report = _startup_reconciliation()
 
-    # Phase 0: EXIT executor — unconditional, never blocked by ENTRY gate
-    for asset in assets:
+    # Step 2: Build the set of assets whose EXIT is blocked because reconciliation
+    # left their ledger state uncertain (unknown fills, orphan SELLs, qty ambiguity).
+    unresolved_assets: set[str] = set()
+    if report is not None:
+        for u in report.unresolved:
+            if u.asset and u.asset not in ("UNKNOWN", ""):
+                unresolved_assets.add(u.asset)
+    elif not entry_ok:
+        # Reconciliation threw an exception — we don't know the safe state of any
+        # asset, so block EXIT for everything in the configured universe.
+        unresolved_assets = set(ASSETS if not target_asset else [target_asset])
+
+    # Step 3: EXIT executor — for all assets that have open positions, not just ASSETS.
+    # A decommissioned asset removed from ASSETS must still have its exits checked.
+    all_open_assets = _get_open_position_assets()
+    exit_candidates = (
+        [a for a in all_open_assets if a == target_asset]
+        if target_asset else all_open_assets
+    )
+    for asset in exit_candidates:
+        if asset in unresolved_assets:
+            msg = (
+                f"[ExitExecutor] BLOCKED {asset} — reconciliation is uncertain about "
+                f"qty or open SELLs for this asset; EXIT deferred to manual review."
+            )
+            print(msg)
+            send_telegram_message(msg)
+            continue
         snap0 = get_snapshot(asset)
         if snap0:
             _check_open_positions(asset, snap0["close"])
 
-    if not _startup_reconciliation():
+    # Step 4: ENTRY gate
+    if not entry_ok:
         print("[Startup] Halting — reconciliation blocked new ENTRY orders.")
         return {}
 
+    trade_assets = [target_asset] if target_asset else ASSETS
     results = {}
-    for asset in assets:
+    for asset in trade_assets:
         print(f"\n{'='*65}")
         decision = run_pipeline(asset, _skip_exit_check=True)
         results[asset] = decision

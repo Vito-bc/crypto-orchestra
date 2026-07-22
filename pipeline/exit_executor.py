@@ -153,139 +153,149 @@ def run_exit_executor(
 
     for pos in positions:
         pos_id = pos["id"]
-        entry_price = pos["entry_price"] or current_price
-        stop_price = pos["stop_price"] or 0.0
-        hwm = pos["high_water_mark"] or entry_price
-        extensions_used = pos["extensions_used"] or 0
+        try:
+            entry_price = pos["entry_price"] or current_price
+            stop_price = pos["stop_price"] or 0.0
+            hwm = pos["high_water_mark"] or entry_price
+            extensions_used = pos["extensions_used"] or 0
 
-        # ── Update HWM + trailing stop ────────────────────────────────────────
-        new_hwm = max(hwm, current_price)
-        new_stop = _compute_trailing_stop(current_price, entry_price, stop_price, new_hwm)
-        if new_hwm != hwm or new_stop != stop_price:
-            try:
-                with get_db(db_path) as conn:
-                    update_position_stop(pos_id, new_stop, new_hwm, conn=conn)
-            except Exception as exc:
-                # Log but do NOT skip — a hard stop may already be crossed.
-                # Proceed with exit check using the last known stop_price.
-                _log.warning("update_stop_failed pos=%s exc=%s — continuing with exit check",
-                             pos_id, exc)
-                new_stop = stop_price
-        else:
-            new_stop = stop_price
-
-        # ── Check immediate exit condition ────────────────────────────────────
-        reason = _check_exit_condition(
-            stop_price=new_stop,
-            target_price=pos["target_price"],
-            extension_trailing_stop=pos["extension_trailing_stop"],
-            extensions_used=extensions_used,
-            asset=asset,
-            opened_at=pos["opened_at"],
-            current_price=current_price,
-        )
-
-        # ── Extension review when max-hold not yet exhausted ──────────────────
-        if reason is None and _needs_extension_review(extensions_used, asset, pos["opened_at"]):
-            if on_extension_review is not None:
-                # Wrap Row in SimpleNamespace for attribute access (.entry_price etc.)
+            # ── Update HWM + trailing stop ────────────────────────────────────────
+            new_hwm = max(hwm, current_price)
+            new_stop = _compute_trailing_stop(current_price, entry_price, stop_price, new_hwm)
+            if new_hwm != hwm or new_stop != stop_price:
                 try:
-                    pos_proxy = types.SimpleNamespace(**dict(pos))
-                    pos_proxy.stop_price = new_stop
-                    pos_proxy.high_water_mark = new_hwm
-                    extend = on_extension_review(pos_proxy)
+                    with get_db(db_path) as conn:
+                        update_position_stop(pos_id, new_stop, new_hwm, conn=conn)
                 except Exception as exc:
-                    _log.warning("extension_review_callback_failed pos=%s exc=%s — treating as MAX_HOLD",
-                                 pos_id, exc)
-                    extend = False
-                    pos_proxy = None
-                if extend:
-                    ext_stop = getattr(pos_proxy, "extension_trailing_stop", None)
+                    # Log but do NOT skip — a hard stop may already be crossed.
+                    # Proceed with exit check using the last known stop_price.
+                    _log.warning(
+                        "update_stop_failed pos=%s exc=%s — continuing with exit check",
+                        pos_id, exc)
+                    new_stop = stop_price
+            else:
+                new_stop = stop_price
+
+            # ── Check immediate exit condition ────────────────────────────────────
+            reason = _check_exit_condition(
+                stop_price=new_stop,
+                target_price=pos["target_price"],
+                extension_trailing_stop=pos["extension_trailing_stop"],
+                extensions_used=extensions_used,
+                asset=asset,
+                opened_at=pos["opened_at"],
+                current_price=current_price,
+            )
+
+            # ── Extension review when max-hold not yet exhausted ──────────────────
+            if reason is None and _needs_extension_review(extensions_used, asset, pos["opened_at"]):
+                if on_extension_review is not None:
+                    # Wrap Row in SimpleNamespace for attribute access (.entry_price etc.)
                     try:
-                        with get_db(db_path) as conn:
-                            update_position_extensions(
-                                pos_id,
-                                extensions_used=extensions_used + 1,
-                                extension_trailing_stop=ext_stop,
-                                conn=conn,
-                            )
+                        pos_proxy = types.SimpleNamespace(**dict(pos))
+                        pos_proxy.stop_price = new_stop
+                        pos_proxy.high_water_mark = new_hwm
+                        extend = on_extension_review(pos_proxy)
                     except Exception as exc:
-                        actions.append({
-                            "position_id": pos_id, "asset": asset,
-                            "exit_reason": None, "result": None,
-                            "error": f"update_extensions_failed:{exc}",
-                        })
+                        _log.warning(
+                            "extension_review_callback_failed pos=%s exc=%s — treating as MAX_HOLD",
+                            pos_id, exc)
+                        extend = False
+                        pos_proxy = None
+                    if extend:
+                        ext_stop = getattr(pos_proxy, "extension_trailing_stop", None)
+                        try:
+                            with get_db(db_path) as conn:
+                                update_position_extensions(
+                                    pos_id,
+                                    extensions_used=extensions_used + 1,
+                                    extension_trailing_stop=ext_stop,
+                                    conn=conn,
+                                )
+                        except Exception as exc:
+                            actions.append({
+                                "position_id": pos_id, "asset": asset,
+                                "exit_reason": None, "result": None,
+                                "error": f"update_extensions_failed:{exc}",
+                            })
+                        else:
+                            actions.append({
+                                "position_id": pos_id, "asset": asset,
+                                "exit_reason": None, "result": None,
+                                "note": "extension_granted",
+                            })
+                        continue
                     else:
-                        actions.append({
-                            "position_id": pos_id, "asset": asset,
-                            "exit_reason": None, "result": None,
-                            "note": "extension_granted",
-                        })
-                    continue
+                        reason = "MAX_HOLD"
                 else:
                     reason = "MAX_HOLD"
-            else:
-                reason = "MAX_HOLD"
 
-        if reason is None:
-            continue
+            if reason is None:
+                continue
 
-        # ── Skip if active EXIT already exists (idempotent) ───────────────────
-        try:
-            with get_db(db_path) as conn:
-                already_active = _has_active_exit(pos_id, conn)
+            # ── Skip if active EXIT already exists (idempotent) ───────────────────
+            try:
+                with get_db(db_path) as conn:
+                    already_active = _has_active_exit(pos_id, conn)
+            except Exception as exc:
+                actions.append({
+                    "position_id": pos_id, "asset": asset,
+                    "exit_reason": reason, "result": None,
+                    "error": f"active_exit_check_failed:{exc}",
+                })
+                continue
+            if already_active:
+                actions.append({
+                    "position_id": pos_id, "asset": asset,
+                    "exit_reason": reason, "result": None,
+                    "note": "active_exit_already_exists",
+                })
+                continue
+
+            qty_base = pos["qty_base_remaining"] or 0.0
+            if qty_base <= 0:
+                actions.append({
+                    "position_id": pos_id, "asset": asset,
+                    "exit_reason": reason, "result": None,
+                    "error": "zero_qty_base_remaining",
+                })
+                continue
+
+            # ── Place exit via two-transaction outbox ─────────────────────────────
+            try:
+                result = place_exit_outbox(
+                    position_id=pos_id,
+                    exit_reason=reason,
+                    coinbase_sell_fn=coinbase_sell_fn,
+                    db_path=db_path,
+                )
+            except PlacementBlocked as exc:
+                actions.append({
+                    "position_id": pos_id, "asset": asset,
+                    "exit_reason": reason, "result": None,
+                    "note": f"placement_blocked:{exc}",
+                })
+                continue
+            except Exception as exc:
+                actions.append({
+                    "position_id": pos_id, "asset": asset,
+                    "exit_reason": reason, "result": None,
+                    "error": f"place_exit_failed:{exc}",
+                })
+                continue
+
+            actions.append({
+                "position_id": pos_id,
+                "asset": asset,
+                "exit_reason": reason,
+                "result": result,
+            })
+
         except Exception as exc:
             actions.append({
                 "position_id": pos_id, "asset": asset,
-                "exit_reason": reason, "result": None,
-                "error": f"active_exit_check_failed:{exc}",
+                "exit_reason": None, "result": None,
+                "error": f"unexpected_per_position_error:{exc}",
             })
-            continue
-        if already_active:
-            actions.append({
-                "position_id": pos_id, "asset": asset,
-                "exit_reason": reason, "result": None,
-                "note": "active_exit_already_exists",
-            })
-            continue
-
-        qty_base = pos["qty_base_remaining"] or 0.0
-        if qty_base <= 0:
-            actions.append({
-                "position_id": pos_id, "asset": asset,
-                "exit_reason": reason, "result": None,
-                "error": "zero_qty_base_remaining",
-            })
-            continue
-
-        # ── Place exit via two-transaction outbox ─────────────────────────────
-        try:
-            result = place_exit_outbox(
-                position_id=pos_id,
-                exit_reason=reason,
-                coinbase_sell_fn=coinbase_sell_fn,
-                db_path=db_path,
-            )
-        except PlacementBlocked as exc:
-            actions.append({
-                "position_id": pos_id, "asset": asset,
-                "exit_reason": reason, "result": None,
-                "note": f"placement_blocked:{exc}",
-            })
-            continue
-        except Exception as exc:
-            actions.append({
-                "position_id": pos_id, "asset": asset,
-                "exit_reason": reason, "result": None,
-                "error": f"place_exit_failed:{exc}",
-            })
-            continue
-
-        actions.append({
-            "position_id": pos_id,
-            "asset": asset,
-            "exit_reason": reason,
-            "result": result,
-        })
 
     return actions

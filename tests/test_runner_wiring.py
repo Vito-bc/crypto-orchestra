@@ -164,7 +164,8 @@ def test_startup_reconciliation_returns_false_on_exception():
     ):
         result = _startup_reconciliation()
 
-    assert result is False
+    entry_ok, _report = result
+    assert entry_ok is False
     assert any("exchange is down" in m for m in telegram_calls), (
         "Telegram alert must include the exception message"
     )
@@ -191,7 +192,8 @@ def test_startup_reconciliation_returns_false_on_unresolved():
     ):
         result = _startup_reconciliation()
 
-    assert result is False
+    entry_ok, _report = result
+    assert entry_ok is False
     u = report.unresolved[0]
     assert any(u.order_id in m for m in telegram_calls), (
         "Telegram alert must include the unresolved order_id"
@@ -216,7 +218,8 @@ def test_startup_reconciliation_returns_true_on_clean():
     ):
         result = _startup_reconciliation()
 
-    assert result is True
+    entry_ok, _report = result
+    assert entry_ok is True
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +235,9 @@ def test_run_all_assets_single_asset_calls_startup_reconciliation():
 
     startup_called = []
 
-    # _startup_reconciliation returns False → run_all_assets returns {} without running pipeline
+    # _startup_reconciliation returns (False, None) → run_all_assets returns {} without running pipeline
     with patch("pipeline.runner._startup_reconciliation", side_effect=lambda: (
-        startup_called.append(True) or False
+        startup_called.append(True) or (False, None)
     )):
         result = run_all_assets(target_asset="ZEC-USD")
 
@@ -249,7 +252,7 @@ def test_run_all_assets_no_asset_calls_startup_reconciliation():
     startup_called = []
 
     with patch("pipeline.runner._startup_reconciliation", side_effect=lambda: (
-        startup_called.append(True) or False
+        startup_called.append(True) or (False, None)
     )):
         result = run_all_assets()
 
@@ -264,7 +267,7 @@ def test_run_all_assets_halts_when_startup_blocked():
     pipeline_calls: list[str] = []
 
     with (
-        patch("pipeline.runner._startup_reconciliation", return_value=False),
+        patch("pipeline.runner._startup_reconciliation", return_value=(False, None)),
         patch(
             "pipeline.runner.run_pipeline",
             side_effect=lambda asset: pipeline_calls.append(asset),
