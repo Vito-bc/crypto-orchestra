@@ -44,7 +44,7 @@ from typing import Iterator, Optional
 ROOT    = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "logs" / "ledger.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _TRANSITIONS: dict[str, set[str]] = {
     "SUBMITTING": {"OPEN", "CANCELLED", "REJECTED"},
@@ -238,6 +238,10 @@ CREATE INDEX IF NOT EXISTS idx_unfinalized_terminal
     WHERE status IN ('EXPIRED','CANCELLED')
     AND exchange_order_id IS NOT NULL
     AND fills_finalized_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_exit_per_position
+    ON orders(position_id)
+    WHERE purpose='EXIT'
+    AND status IN ('SUBMITTING','OPEN','PARTIAL');
 CREATE INDEX IF NOT EXISTS idx_position_events_pos    ON position_events(position_id);
 
 CREATE TRIGGER IF NOT EXISTS trg_fills_no_update
@@ -265,7 +269,8 @@ BEGIN
 END;
 """
 
-# Backward-compat alias — tests and tools that imported _SCHEMA_V5 by name.
+# Backward-compat aliases — kept so existing tests can still import by version name.
+_SCHEMA_V6 = _SCHEMA_CURRENT
 _SCHEMA_V5 = _SCHEMA_CURRENT
 
 
@@ -277,12 +282,14 @@ def run_migrations(path: Optional[Path] = None) -> None:
     """
     Apply schema migrations. Called on every startup before any DB access.
 
-    v0 (no DB or fresh file):       fresh install of V6 schema.
-    v0 (file with user tables):     unversioned prototype — backup to .v0.bak, fresh V6.
-    v1/v2/v3 (pre-outbox proto):    backup to .vN.bak, fresh V6.
-    v4 (outbox, pre-stacking-guard): in-place — ALTER TABLE ADD COLUMN + new index → V5.
+    v0 (no DB or fresh file):       fresh install of V7 schema.
+    v0 (file with user tables):     unversioned prototype — backup to .v0.bak, fresh V7.
+    v1/v2/v3 (pre-outbox proto):    backup to .vN.bak, fresh V7.
+    v4 (outbox, pre-stacking-guard): in-place — ADD COLUMN rejection_reason + index → V5.
     v5 (pre-terminal-finalization):  in-place — ADD COLUMN fills_finalized_at → V6.
-    v6: already current — no-op.
+    v6 (pre-exit-outbox):            in-place — ADD INDEX idx_one_active_exit_per_position → V7.
+    v7: already current — no-op.
+    Migrations chain: V4→V5→V6→V7 in a single run_migrations() call.
 
     Backup+reset is safe for v0–v3 (no live orders were ever in those DBs).
     In-place migrations v4→v5 and v5→v6 use ALTER TABLE ADD COLUMN (non-destructive).
@@ -402,6 +409,35 @@ def run_migrations(path: Optional[Path] = None) -> None:
                         WHERE status IN ('EXPIRED','CANCELLED')
                           AND exchange_order_id IS NOT NULL
                           AND fills_finalized_at IS NULL
+                    """)
+                conn.execute("PRAGMA user_version = 6")
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+        version = 6  # fall through to V6→V7 migration
+
+    # V6 → V7: adds idx_one_active_exit_per_position partial unique index.
+    # Enforces at most one active (SUBMITTING/OPEN/PARTIAL) EXIT order per position,
+    # preventing double-sells after crashes or repeated scheduler ticks.
+    if version == 6:
+        conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                idx_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master"
+                    " WHERE type='index'"
+                    "   AND name='idx_one_active_exit_per_position'"
+                ).fetchone()
+                if not idx_exists:
+                    conn.execute("""
+                        CREATE UNIQUE INDEX idx_one_active_exit_per_position
+                            ON orders(position_id)
+                            WHERE purpose='EXIT'
+                              AND status IN ('SUBMITTING','OPEN','PARTIAL')
                     """)
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 conn.execute("COMMIT")
@@ -1045,14 +1081,18 @@ def update_position_stop(
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """
-    Update trailing stop and HWM. Raises RuntimeError if position not found or not OPEN.
+    Update trailing stop and HWM for an OPEN or CLOSING position.
+    CLOSING positions may still have qty_base_remaining > 0 (partial exit),
+    so trailing stop updates remain relevant.
+    Raises RuntimeError if position not found or already CLOSED.
     STOP_UPDATED event only written after a successful rowcount check.
     """
     ts = datetime.now(timezone.utc).isoformat()
 
     def _run(c: sqlite3.Connection) -> None:
         c.execute(
-            "UPDATE positions SET stop_price=?, high_water_mark=? WHERE id=? AND status='OPEN'",
+            "UPDATE positions SET stop_price=?, high_water_mark=?"
+            " WHERE id=? AND status IN ('OPEN','CLOSING')",
             (new_stop, new_hwm, position_id),
         )
         if c.execute("SELECT changes()").fetchone()[0] == 0:
@@ -1060,12 +1100,54 @@ def update_position_stop(
             if row is None:
                 raise RuntimeError(f"Position '{position_id}' not found.")
             raise RuntimeError(
-                f"Position '{position_id}' is {row['status']!r} — stop update only on OPEN."
+                f"Position '{position_id}' is {row['status']!r} — "
+                "stop update only on OPEN or CLOSING."
             )
         c.execute(
             "INSERT INTO position_events(position_id, event_type, payload, occurred_at) VALUES (?,?,?,?)",
             (position_id, "STOP_UPDATED",
              json.dumps({"new_stop": new_stop, "new_hwm": new_hwm}), ts),
+        )
+
+    if conn:
+        _run(conn)
+    else:
+        with get_db() as c:
+            _run(c)
+
+
+def update_position_extensions(
+    position_id: str,
+    extensions_used: int,
+    extension_trailing_stop: Optional[float] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """
+    Persist hold-extension count and optional ATR trailing stop after an extension review.
+    Called when the extension callback grants another hold window.
+    Raises RuntimeError if position not found or not OPEN/CLOSING.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+
+    def _run(c: sqlite3.Connection) -> None:
+        c.execute(
+            "UPDATE positions SET extensions_used=?, extension_trailing_stop=?"
+            " WHERE id=? AND status IN ('OPEN','CLOSING')",
+            (extensions_used, extension_trailing_stop, position_id),
+        )
+        if c.execute("SELECT changes()").fetchone()[0] == 0:
+            row = c.execute("SELECT status FROM positions WHERE id=?", (position_id,)).fetchone()
+            if row is None:
+                raise RuntimeError(f"Position '{position_id}' not found.")
+            raise RuntimeError(
+                f"Position '{position_id}' is {row['status']!r} — "
+                "extension update only on OPEN or CLOSING."
+            )
+        c.execute(
+            "INSERT INTO position_events(position_id, event_type, payload, occurred_at) VALUES (?,?,?,?)",
+            (position_id, "HOLD_EXTENDED",
+             json.dumps({"extensions_used": extensions_used,
+                         "extension_trailing_stop": extension_trailing_stop}), ts),
         )
 
     if conn:

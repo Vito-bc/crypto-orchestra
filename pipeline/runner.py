@@ -52,9 +52,9 @@ from pipeline.limit_orders   import (
     get_open_orders,
     place_limit_order,
 )
+from pipeline.exit_executor import run_exit_executor
 from pipeline.position_tracker import (
     TRADE_HISTORY,
-    check_positions,
     count_recent_stops,
     get_open_positions,
     open_position_from_order,
@@ -285,19 +285,26 @@ def _quick_hold_eval(asset: str, pos: "Position") -> tuple[int, float]:  # type:
 
 def _check_open_positions(asset: str, current_price: float) -> None:
     """
-    Check every open position for this asset against current price.
+    Check every open ledger position for this asset against current price.
     At MAX_HOLD expiry: re-evaluates conditions (score + ADX) before closing.
     If 3+ conditions met and ADX >= 20 → extend 8h with ATR trailing stop.
-    Closes positions that hit stop, target, or exhausted max-hold.
-    Sends a Telegram alert for each close.
+    Places SELL orders via the two-transaction exit outbox for triggered exits.
     """
-    from notifications.telegram import format_position_closed
+    from exchange.coinbase_client import place_market_sell
 
-    def _on_extension_review(pos: "Position") -> bool:  # type: ignore[name-defined]
+    def _coinbase_sell_fn(order_id: str, sell_asset: str, qty_base: float) -> str:
+        return place_market_sell(
+            product_id=sell_asset,
+            base_size_coins=qty_base,
+            client_order_id=order_id,
+        )
+
+    def _on_extension_review(pos) -> bool:
+        # pos is a SimpleNamespace wrapping a ledger Row — attribute access works.
         score, adx = _quick_hold_eval(asset, pos)
         if score >= _HOLD_EXT_MIN_SCORE and adx >= _HOLD_EXT_MIN_ADX:
             snap = get_snapshot(asset)
-            if snap and snap.get("atr_1h") and pos.high_water_mark:
+            if snap and snap.get("atr_1h") and (pos.high_water_mark or 0) > 0:
                 atr = snap["atr_1h"]
                 ext_stop = round(pos.high_water_mark - _HOLD_EXT_ATR_MULT * atr, 2)
                 pos.extension_trailing_stop = max(ext_stop, pos.stop_price)
@@ -315,10 +322,38 @@ def _check_open_positions(asset: str, current_price: float) -> None:
         )
         return False
 
-    closed = check_positions(asset, current_price, on_extension_review=_on_extension_review)
-    for record in closed:
-        _log_order_event(asset, "POSITION_CLOSED", record)
-        send_telegram_message(format_position_closed(record))
+    actions = run_exit_executor(
+        asset=asset,
+        current_price=current_price,
+        coinbase_sell_fn=_coinbase_sell_fn,
+        on_extension_review=_on_extension_review,
+    )
+
+    for action in actions:
+        result = action.get("result")
+        reason = action.get("exit_reason")
+        pos_id = action["position_id"]
+        if result is not None:
+            print(
+                f"[ExitExecutor] EXIT placed {asset}  pos={pos_id[:8]}"
+                f"  reason={reason}  order={result.order_id[:8]}  status={result.status}"
+            )
+            _log_order_event(asset, "EXIT_ORDER_PLACED", {
+                "position_id":    pos_id,
+                "exit_reason":    reason,
+                "order_id":       result.order_id,
+                "exchange_order_id": result.exchange_order_id,
+                "status":         result.status,
+            })
+        elif action.get("error"):
+            print(f"[ExitExecutor] ERROR {asset}  pos={pos_id[:8]}: {action['error']}")
+            _log_order_event(asset, "EXIT_PLACEMENT_FAILED", {
+                "position_id": pos_id,
+                "exit_reason": reason,
+                "error":       action["error"],
+            })
+        elif action.get("note") and action["note"] != "active_exit_already_exists":
+            print(f"[ExitExecutor] {action['note'].upper()} {asset}  pos={pos_id[:8]}")
 
 
 def _check_pending_fills(asset: str, current_price: float) -> None:

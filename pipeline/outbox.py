@@ -79,6 +79,16 @@ class PlaceResult:
     rejection_reason: Optional[str] = None
 
 
+@dataclass
+class ExitPlaceResult:
+    """Return value of place_exit_outbox()."""
+    status: str                          # "OPEN" | "REJECTED" | "SUBMITTING"
+    order_id: str                        # local UUID == client_order_id on Coinbase
+    position_id: str
+    exchange_order_id: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
+
 def place_order_outbox(
     *,
     asset: str,
@@ -268,6 +278,159 @@ def place_order_outbox(
     return PlaceResult(
         status=final_status,
         order_id=order_id,
+        exchange_order_id=exchange_order_id,
+        rejection_reason=rejection_reason,
+    )
+
+
+def place_exit_outbox(
+    *,
+    position_id: str,
+    exit_reason: str,
+    coinbase_sell_fn: Callable[[str, str, float], str],
+    order_id: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> ExitPlaceResult:
+    """
+    Place a SELL order to exit an open ledger position via the two-transaction outbox.
+
+    coinbase_sell_fn(order_id, asset, qty_base) → exchange_order_id
+      Raise CoinbaseRejected / CoinbaseOrderRejected for definitive refusals.
+      Any other exception = ambiguous → leave order SUBMITTING.
+      Returning a falsy value = also treated as ambiguous.
+
+    TX-A (BEGIN IMMEDIATE):
+      Reads qty_base_remaining + asset from the position (authoritative values).
+      Verifies position is OPEN or CLOSING (not yet CLOSED).
+      Verifies no active EXIT order exists for this position.
+      INSERTs SUBMITTING EXIT order with exact qty_base_remaining.
+      COMMIT.
+    ─── no SQLite connection held open during the network call ───────────────────
+    TX-B:
+      accepted (truthy exchange_order_id) → OPEN  + exchange_order_id set
+      CoinbaseRejected / CoinbaseOrderRejected    → REJECTED + rejection_reason
+      ambiguous / falsy id                        → stays SUBMITTING (TX-B skipped)
+
+    Raises PlacementBlocked if:
+      - position not found
+      - position is already CLOSED
+      - an active EXIT order (SUBMITTING/OPEN/PARTIAL) already exists for this position
+    """
+    from exchange.coinbase_client import CoinbaseOrderRejected
+
+    if order_id is None:
+        order_id = str(uuid.uuid4())
+
+    # ── TX-A ─────────────────────────────────────────────────────────────────
+    with get_db(db_path, begin_immediate=True) as conn:
+        # Idempotency: if this order_id already exists, return current state.
+        existing = conn.execute(
+            "SELECT status, exchange_order_id, rejection_reason"
+            " FROM orders WHERE id=?",
+            (order_id,),
+        ).fetchone()
+        if existing is not None:
+            return ExitPlaceResult(
+                status=existing["status"],
+                order_id=order_id,
+                position_id=position_id,
+                exchange_order_id=existing["exchange_order_id"],
+                rejection_reason=existing["rejection_reason"],
+            )
+
+        # Read authoritative position data inside the write lock so qty_base and
+        # asset cannot change between the read and the INSERT.
+        pos = conn.execute(
+            "SELECT asset, qty_base_remaining, status, epoch_id FROM positions WHERE id=?",
+            (position_id,),
+        ).fetchone()
+        if pos is None:
+            raise PlacementBlocked(
+                f"Cannot exit position '{position_id}': not found in ledger."
+            )
+        if pos["status"] not in ("OPEN", "CLOSING"):
+            raise PlacementBlocked(
+                f"Cannot exit position '{position_id}': "
+                f"status is {pos['status']!r}, expected OPEN or CLOSING."
+            )
+        qty_base = pos["qty_base_remaining"] or 0.0
+        if qty_base <= 0:
+            raise PlacementBlocked(
+                f"Cannot exit position '{position_id}': "
+                f"qty_base_remaining={qty_base} <= 0 — nothing to sell."
+            )
+
+        # Gate: enforced by idx_one_active_exit_per_position, but explicit check
+        # gives a clear error message before the UNIQUE constraint fires.
+        active_exit = conn.execute(
+            "SELECT id FROM orders"
+            " WHERE position_id=? AND purpose='EXIT'"
+            "   AND status IN ('SUBMITTING','OPEN','PARTIAL')",
+            (position_id,),
+        ).fetchone()
+        if active_exit:
+            raise PlacementBlocked(
+                f"Cannot exit position '{position_id}': "
+                f"active EXIT order '{active_exit['id']}' already exists. "
+                "Wait for it to resolve before placing another."
+            )
+
+        asset = pos["asset"]
+        epoch_id = pos["epoch_id"]
+        placed_at = datetime.now(timezone.utc).isoformat()
+
+        insert_order(
+            order_id=order_id,
+            epoch_id=epoch_id,
+            asset=asset,
+            side="SELL",
+            order_type="MARKET",
+            purpose="EXIT",
+            position_id=position_id,
+            placed_at=placed_at,
+            qty_base_requested=qty_base,
+            reasoning=exit_reason,
+            conn=conn,
+        )
+    # TX-A committed. qty_base and asset are captured from the authoritative locked read.
+    # ── No SQLite connection held open during the network call ─────────────────
+
+    exchange_order_id: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    final_status = "SUBMITTING"
+
+    try:
+        result = coinbase_sell_fn(order_id, asset, qty_base)
+        if result:
+            exchange_order_id = result
+            final_status = "OPEN"
+    except (CoinbaseRejected, CoinbaseOrderRejected) as exc:
+        rejection_reason = str(exc)
+        final_status = "REJECTED"
+    except Exception:
+        # Timeout, 5xx, dropped connection — ambiguous.
+        # Leave the order SUBMITTING; startup reconciler resolves via client_order_id.
+        pass
+
+    # ── TX-B ─────────────────────────────────────────────────────────────────
+    if final_status != "SUBMITTING":
+        with get_db(db_path) as conn:
+            transition_order(
+                order_id,
+                final_status,
+                exchange_order_id=exchange_order_id,
+                conn=conn,
+            )
+            if rejection_reason:
+                conn.execute(
+                    "UPDATE orders SET rejection_reason=? WHERE id=?",
+                    (rejection_reason, order_id),
+                )
+
+    return ExitPlaceResult(
+        status=final_status,
+        order_id=order_id,
+        position_id=position_id,
         exchange_order_id=exchange_order_id,
         rejection_reason=rejection_reason,
     )
