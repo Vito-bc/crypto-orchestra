@@ -795,6 +795,73 @@ def test_migration_v4_chains_through_to_v7(tmp_path: Path) -> None:
 # 23. SELL rejection classification (coinbase_client)
 # ---------------------------------------------------------------------------
 
+def test_place_market_sell_raises_rejected_for_known_error_code() -> None:
+    """
+    place_market_sell() must parse Coinbase success=False response and raise
+    CoinbaseOrderRejected (not RuntimeError) when the code is in _DEFINITE_REJECTION_CODES.
+    Tests the actual response-parsing path in place_market_sell(), not just outbox wiring.
+    """
+    from unittest.mock import MagicMock, patch
+    from exchange.coinbase_client import place_market_sell, CoinbaseOrderRejected
+
+    fake_resp = {
+        "success": False,
+        "error_response": {"error": "INSUFFICIENT_FUND", "message": "not enough balance"},
+    }
+    mock_client = MagicMock()
+    mock_client.create_order.return_value = fake_resp
+
+    with (
+        patch("exchange.coinbase_client._get_client", return_value=mock_client),
+        patch("exchange.coinbase_client._DRY_RUN", False),
+    ):
+        with pytest.raises(CoinbaseOrderRejected, match="INSUFFICIENT_FUND"):
+            place_market_sell(
+                product_id=_ASSET,
+                base_size_coins=0.1,
+                client_order_id="test-oid-001",
+            )
+
+
+def test_place_market_sell_raises_runtime_for_ambiguous_code() -> None:
+    """
+    place_market_sell() must raise RuntimeError (not CoinbaseOrderRejected) for
+    unrecognised error codes — this leaves the EXIT order SUBMITTING for the
+    reconciler to resolve on next boot.
+    """
+    from unittest.mock import MagicMock, patch
+    from exchange.coinbase_client import place_market_sell, CoinbaseOrderRejected
+
+    fake_resp = {
+        "success": False,
+        "error_response": {"error": "UNKNOWN_FAILURE_REASON", "message": "unknown"},
+    }
+    mock_client = MagicMock()
+    mock_client.create_order.return_value = fake_resp
+
+    with (
+        patch("exchange.coinbase_client._get_client", return_value=mock_client),
+        patch("exchange.coinbase_client._DRY_RUN", False),
+    ):
+        with pytest.raises(RuntimeError, match="ambiguous"):
+            place_market_sell(
+                product_id=_ASSET,
+                base_size_coins=0.1,
+                client_order_id="test-oid-002",
+            )
+        # Must NOT raise CoinbaseOrderRejected — that would write REJECTED instead of SUBMITTING
+        try:
+            place_market_sell(
+                product_id=_ASSET,
+                base_size_coins=0.1,
+                client_order_id="test-oid-003",
+            )
+        except CoinbaseOrderRejected:
+            pytest.fail("ambiguous code must not raise CoinbaseOrderRejected")
+        except RuntimeError:
+            pass  # expected
+
+
 def test_place_exit_outbox_definite_rejection_classified(tmp_db: Path) -> None:
     """
     place_market_sell returning success=False with a known error code must
@@ -863,20 +930,17 @@ def test_place_exit_outbox_ambiguous_error_stays_submitting(tmp_db: Path) -> Non
 # 24. Never raises — global per-position guard
 # ---------------------------------------------------------------------------
 
-def test_run_exit_executor_never_raises_on_corrupt_position_data(tmp_db: Path) -> None:
+def test_run_exit_executor_never_raises_on_null_fields(tmp_db: Path) -> None:
     """
-    If position row access raises unexpectedly (e.g., missing column), the error
-    must be caught per-position and returned in the actions list, not propagated.
+    NULL-valued numeric fields must be handled by fallback coercion, not crash.
+    entry_price=NULL → falls back to current_price; stop_price=NULL → 0.0.
+    No exception must propagate.
     """
     _, pos_id = _open_position(tmp_db, entry_price=100.0, stop_price=90.0, target_price=120.0)
 
-    # Corrupt the position by nuking a column the executor reads
     with get_db(tmp_db) as conn:
         conn.execute("UPDATE positions SET entry_price=NULL WHERE id=?", (pos_id,))
 
-    # entry_price=NULL → falls back to current_price (handled), but stop_price=None
-    # is also replaced with 0.0.  With price=85.0 < 0.0 is False, so no exit.
-    # The important thing: it must NOT raise.
     try:
         actions = run_exit_executor(
             asset=_ASSET,
@@ -887,8 +951,37 @@ def test_run_exit_executor_never_raises_on_corrupt_position_data(tmp_db: Path) -
     except Exception as exc:
         pytest.fail(f"run_exit_executor raised unexpectedly: {exc}")
 
-    # Either it placed a STOP_LOSS or noted no exit — either way, no exception.
     assert isinstance(actions, list)
+
+
+def test_run_exit_executor_outer_guard_catches_unexpected_exception(tmp_db: Path) -> None:
+    """
+    An unexpected exception inside the position loop (not a NULL field, but e.g.
+    an arithmetic error on corrupt data) must be caught by the per-position guard
+    and returned as an error dict — never propagated.
+    """
+    from unittest.mock import patch
+
+    _, pos_id = _open_position(tmp_db, entry_price=100.0, stop_price=200.0, target_price=300.0)
+
+    # Inject an unexpected failure deep inside the per-position try block
+    with patch("pipeline.exit_executor._compute_trailing_stop",
+               side_effect=RuntimeError("unexpected corrupt data")):
+        try:
+            actions = run_exit_executor(
+                asset=_ASSET,
+                current_price=150.0,
+                coinbase_sell_fn=_no_sell,
+                db_path=tmp_db,
+            )
+        except Exception as exc:
+            pytest.fail(f"run_exit_executor propagated inner exception: {exc}")
+
+    assert len(actions) == 1
+    err = actions[0].get("error", "")
+    assert "unexpected_per_position_error" in err
+    assert "unexpected corrupt data" in err
+    assert actions[0]["result"] is None
 
 
 def test_run_exit_executor_never_raises_on_db_read_failure(tmp_db: Path) -> None:
@@ -916,17 +1009,13 @@ def test_run_exit_executor_never_raises_on_db_read_failure(tmp_db: Path) -> None
 # 25. _skip_exit_check flag prevents double call
 # ---------------------------------------------------------------------------
 
-def test_run_pipeline_skip_exit_check_prevents_double_sell(tmp_db: Path) -> None:
+def test_exit_executor_idempotent_when_active_exit_exists(tmp_db: Path) -> None:
     """
-    When run_pipeline() is called with _skip_exit_check=True (as done by
-    run_all_assets after the pre-gate EXIT executor pass), the coinbase_sell_fn
-    must not be called a second time for positions that already have an OPEN EXIT.
+    run_exit_executor() must not place a second SELL when an active EXIT
+    (SUBMITTING/OPEN/PARTIAL) already exists for the position.
     """
-    from pipeline.runner import run_pipeline as _run_pipeline
-
     _, pos_id = _open_position(tmp_db, entry_price=100.0, stop_price=90.0, target_price=120.0)
 
-    # Simulate: EXIT was already placed by Phase 0 of run_all_assets
     sell_calls: list[str] = []
 
     def _sell(order_id: str, asset: str, qty: float) -> str:
@@ -940,20 +1029,42 @@ def test_run_pipeline_skip_exit_check_prevents_double_sell(tmp_db: Path) -> None
         coinbase_sell_fn=_sell,
         db_path=tmp_db,
     )
-    first_sell_count = len(sell_calls)
-    assert first_sell_count == 1
+    assert len(sell_calls) == 1
 
-    # run_pipeline with _skip_exit_check=True should not call sell_fn again
-    # We can't easily run the full pipeline here, so just verify the executor
-    # is idempotent when there's already an active EXIT.
+    # Second call to run_exit_executor must detect active EXIT and skip
     actions = run_exit_executor(
         asset=_ASSET,
         current_price=85.0,
         coinbase_sell_fn=_sell,
         db_path=tmp_db,
     )
-    assert len(sell_calls) == first_sell_count, (
-        "sell_fn must not be called again when active EXIT exists"
-    )
+    assert len(sell_calls) == 1, "sell_fn must not be called again when active EXIT exists"
     skipped = [a for a in actions if a.get("note") == "active_exit_already_exists"]
     assert len(skipped) == 1
+
+
+def test_run_pipeline_skip_exit_check_does_not_call_check_open_positions() -> None:
+    """
+    run_pipeline(..., _skip_exit_check=True) must not call _check_open_positions.
+    This is the flag run_all_assets() sets after the pre-gate EXIT pass so that
+    positions with exit conditions aren't evaluated twice per tick.
+    """
+    from pipeline.runner import run_pipeline
+    from unittest.mock import patch
+
+    check_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner.get_snapshot", return_value={"close": 2000.0}),
+        patch("pipeline.runner._check_pending_fills"),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: check_calls.append(a)),
+        patch("pipeline.runner.scan_latest", return_value=None),
+        patch("pipeline.runner._log_decision"),
+        patch("pipeline.runner._print_decision"),
+    ):
+        run_pipeline(_ASSET, _skip_exit_check=True)
+
+    assert check_calls == [], (
+        "_check_open_positions must not be called when _skip_exit_check=True"
+    )

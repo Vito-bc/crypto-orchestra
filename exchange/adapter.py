@@ -96,6 +96,8 @@ def make_list_orders_fn() -> Callable[[], list[CoinbaseOrder]]:
                 exchange_order_id=exchange_id,
                 status=status,
                 fills=[],  # fills fetched per-order only when needed
+                product_id=o.get("product_id", ""),
+                side=o.get("side", ""),
             ))
         return result
 

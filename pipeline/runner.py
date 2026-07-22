@@ -1204,8 +1204,12 @@ def _startup_reconciliation():
     return True, report
 
 
-def _get_open_position_assets() -> list[str]:
-    """Return distinct assets with at least one OPEN or CLOSING position."""
+def _get_open_position_assets() -> list[str] | None:
+    """Return distinct assets with at least one OPEN or CLOSING position.
+
+    Returns None on DB failure — caller must treat this as a global EXIT block,
+    not as "no open positions".
+    """
     from pipeline.ledger import get_db
     try:
         with get_db() as conn:
@@ -1213,8 +1217,9 @@ def _get_open_position_assets() -> list[str]:
                 "SELECT DISTINCT asset FROM positions WHERE status IN ('OPEN','CLOSING')"
             ).fetchall()
         return [r["asset"] for r in rows]
-    except Exception:
-        return []
+    except Exception as exc:
+        print(f"[ExitExecutor] ERROR reading open positions from ledger: {exc}")
+        return None
 
 
 def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
@@ -1235,34 +1240,57 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     # Step 1: Reconciliation (includes migrations)
     entry_ok, report = _startup_reconciliation()
 
-    # Step 2: Build the set of assets whose EXIT is blocked because reconciliation
-    # left their ledger state uncertain (unknown fills, orphan SELLs, qty ambiguity).
+    # Step 2: Build asset-level and global EXIT blocks.
+    # global_exit_block=True means no asset's EXIT is safe — e.g. an orphan SELL
+    # with an unresolvable asset could be a double-sell against any position.
     unresolved_assets: set[str] = set()
+    global_exit_block = False
+
     if report is not None:
         for u in report.unresolved:
-            if u.asset and u.asset not in ("UNKNOWN", ""):
+            if not u.asset or u.asset in ("UNKNOWN", ""):
+                # Orphan SELL whose product_id was not readable — cannot map it
+                # to a specific position, so any EXIT might be a double-sell.
+                global_exit_block = True
+            else:
                 unresolved_assets.add(u.asset)
     elif not entry_ok:
-        # Reconciliation threw an exception — we don't know the safe state of any
-        # asset, so block EXIT for everything in the configured universe.
-        unresolved_assets = set(ASSETS if not target_asset else [target_asset])
+        # Reconciliation raised an exception — no report available.
+        # We cannot reason about any asset's qty safety.
+        global_exit_block = True
 
-    # Step 3: EXIT executor — for all assets that have open positions, not just ASSETS.
-    # A decommissioned asset removed from ASSETS must still have its exits checked.
+    # Step 3: EXIT executor — always for ALL open positions, never filtered by
+    # target_asset.  target_asset limits only the ENTRY pipeline (Step 5).
+    # A decommissioned or CLI-excluded asset with an open position still needs
+    # protective EXIT checks.
     all_open_assets = _get_open_position_assets()
-    exit_candidates = (
-        [a for a in all_open_assets if a == target_asset]
-        if target_asset else all_open_assets
-    )
-    for asset in exit_candidates:
-        if asset in unresolved_assets:
+    if all_open_assets is None:
+        msg = (
+            "[ExitExecutor] CRITICAL — could not read open positions from ledger. "
+            "All EXIT orders deferred to manual review."
+        )
+        print(msg)
+        send_telegram_message(msg)
+        all_open_assets = []
+        global_exit_block = True
+
+    for asset in all_open_assets:
+        if global_exit_block:
+            blocked_reason = "unknown orphan SELL or reconciliation failure — ledger state uncertain"
+        elif asset in unresolved_assets:
+            blocked_reason = f"reconciliation uncertain for {asset}"
+        else:
+            blocked_reason = None
+
+        if blocked_reason:
             msg = (
-                f"[ExitExecutor] BLOCKED {asset} — reconciliation is uncertain about "
-                f"qty or open SELLs for this asset; EXIT deferred to manual review."
+                f"[ExitExecutor] BLOCKED {asset} — {blocked_reason}; "
+                "EXIT deferred to manual review."
             )
             print(msg)
             send_telegram_message(msg)
             continue
+
         snap0 = get_snapshot(asset)
         if snap0:
             _check_open_positions(asset, snap0["close"])

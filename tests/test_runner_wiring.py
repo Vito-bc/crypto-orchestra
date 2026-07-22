@@ -280,7 +280,126 @@ def test_run_all_assets_halts_when_startup_blocked():
 
 
 # ---------------------------------------------------------------------------
-# 5. PENDING_CANCEL removed from live_statuses (P0-2)
+# 5. Global EXIT block — unknown orphan and reconciliation exception
+# ---------------------------------------------------------------------------
+
+def test_unknown_orphan_sets_global_exit_block():
+    """An UNKNOWN-asset orphan in the reconciliation report must block EXIT for all positions."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+
+    report_with_unknown = ReconciliationReport(
+        run_id=1, discovered=[], resolved=[],
+        unresolved=[UnresolvedItem(
+            order_id="exch-orphan-abc", asset="UNKNOWN",
+            reason="orphan_coinbase_order:client_id=unknown-client:side=SELL",
+        )],
+        started_at=_now_str(), completed_at=_now_str(),
+    )
+
+    exit_calls: list[str] = []
+    telegram_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation", return_value=(False, report_with_unknown)),
+        patch("pipeline.runner._get_open_position_assets", return_value=["ETH-USD", "ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: exit_calls.append(a)),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: telegram_calls.append(m)),
+        patch("pipeline.runner.get_snapshot", return_value={"close": 2000.0}),
+    ):
+        result = run_all_assets()
+
+    assert exit_calls == [], (
+        "EXIT must be blocked for all positions when there is an UNKNOWN-asset orphan"
+    )
+    assert any("BLOCKED" in m for m in telegram_calls), (
+        "Telegram alert must fire for each blocked asset"
+    )
+
+
+def test_reconciliation_exception_blocks_decommissioned_asset_exit():
+    """When reconciliation raises (report=None), EXIT must be blocked for ALL open positions,
+    including decommissioned assets not in ASSETS."""
+    from pipeline.runner import run_all_assets
+
+    exit_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation", return_value=(False, None)),
+        # BTC-USD is not in ASSETS but has an open position
+        patch("pipeline.runner._get_open_position_assets", return_value=["BTC-USD"]),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: exit_calls.append(a)),
+        patch("pipeline.runner.send_telegram_message"),
+        patch("pipeline.runner.get_snapshot", return_value={"close": 50000.0}),
+    ):
+        result = run_all_assets()
+
+    assert "BTC-USD" not in exit_calls, (
+        "BTC-USD EXIT must be blocked when reconciliation failed, even though not in ASSETS"
+    )
+    assert result == {}
+
+
+def test_get_open_position_assets_failure_blocks_all_exit():
+    """When _get_open_position_assets() returns None (DB failure), all EXIT is blocked
+    and a Telegram alert is sent."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+
+    exit_calls: list[str] = []
+    telegram_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        patch("pipeline.runner._get_open_position_assets", return_value=None),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: exit_calls.append(a)),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: telegram_calls.append(m)),
+        patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+    ):
+        result = run_all_assets(target_asset="ZEC-USD")
+
+    assert exit_calls == [], "No EXIT must run when open position read failed"
+    assert any("CRITICAL" in m or "BLOCKED" in m for m in telegram_calls), (
+        "Telegram alert must fire when position read fails"
+    )
+
+
+def test_cli_target_asset_does_not_restrict_exit_supervisor():
+    """EXIT supervisor must check ALL open positions even when target_asset is given.
+    target_asset restricts only the ENTRY pipeline, not risk management."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+
+    exit_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        # Two assets open: target_asset=ZEC-USD but ETH-USD also has a position
+        patch("pipeline.runner._get_open_position_assets",
+              return_value=["ETH-USD", "ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: exit_calls.append(a)),
+        patch("pipeline.runner.send_telegram_message"),
+        patch("pipeline.runner.get_snapshot", return_value={"close": 2000.0}),
+        patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+    ):
+        run_all_assets(target_asset="ZEC-USD")
+
+    assert "ETH-USD" in exit_calls, (
+        "ETH-USD EXIT must run even when CLI target_asset=ZEC-USD"
+    )
+    assert "ZEC-USD" in exit_calls, "ZEC-USD EXIT must also run"
+
+
+# ---------------------------------------------------------------------------
+# 6. PENDING_CANCEL removed from live_statuses (P0-2)
 # ---------------------------------------------------------------------------
 
 def test_list_reconciliation_orders_excludes_pending_cancel(monkeypatch):

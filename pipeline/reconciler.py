@@ -95,6 +95,8 @@ class CoinbaseOrder:
     exchange_order_id: str
     status: str               # OPEN | FILLED | CANCELLED | EXPIRED | …
     fills: list[CoinbaseFill] = field(default_factory=list)
+    product_id: str = ""      # e.g. "ZEC-USD" — used for orphan asset mapping
+    side: str = ""            # "BUY" or "SELL"
 
 
 @dataclass
@@ -679,10 +681,13 @@ def run_startup_reconciliation(
                     }
                 for _cid, _cb in cb_by_client_id.items():
                     if _cid and _cid not in _local_ids:
+                        # Use product_id as asset when available; UNKNOWN only when
+                        # the adapter couldn't read it (triggers global EXIT block).
+                        orphan_asset = _cb.product_id or "UNKNOWN"
                         unresolved.append(UnresolvedItem(
                             _cb.exchange_order_id or _cid,
-                            "UNKNOWN",
-                            f"orphan_coinbase_order:client_id={_cid}",
+                            orphan_asset,
+                            f"orphan_coinbase_order:client_id={_cid}:side={_cb.side}",
                         ))
 
             # ── Phase A: apply fills/transitions, detect stacking (no network) ──
