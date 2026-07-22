@@ -476,6 +476,52 @@ def test_list_orders_fn_transfers_product_id_and_side(monkeypatch):
     assert orders[0].side == "SELL", "side must be propagated"
 
 
+def test_list_orders_fn_raises_on_missing_exchange_id(monkeypatch):
+    """An order with no exchange_order_id must raise RuntimeError — not be silently dropped."""
+    import exchange.coinbase_client as _cb
+    import exchange.adapter as _adapter
+
+    monkeypatch.setattr(_cb, "_DRY_RUN", False)
+    monkeypatch.setattr(_cb, "list_reconciliation_orders", lambda: [
+        {"client_order_id": "some-uuid", "order_id": "", "status": "OPEN",
+         "product_id": "ZEC-USD", "side": "SELL"},
+    ])
+
+    fn = _adapter.make_list_orders_fn()
+    with pytest.raises(RuntimeError, match="exchange order_id"):
+        fn()
+
+
+def test_get_order_fn_transfers_product_id_and_side(monkeypatch):
+    """make_get_order_fn() must populate product_id and side from the Get Order API response."""
+    import exchange.coinbase_client as _cb
+    import exchange.adapter as _adapter
+    from unittest.mock import MagicMock
+
+    mock_client = MagicMock()
+    mock_client.get_order.return_value = {
+        "order": {
+            "order_id": "EX-456",
+            "client_order_id": "local-uuid-def",
+            "status": "OPEN",
+            "product_id": "ZEC-USD",
+            "side": "SELL",
+        }
+    }
+
+    monkeypatch.setattr(_cb, "_DRY_RUN", False)
+    monkeypatch.setattr(_cb, "_get_client", lambda: mock_client)
+    monkeypatch.setattr(_cb, "_resp_to_dict", lambda r: r)
+    monkeypatch.setattr(_cb, "fetch_fills_for_order", lambda eid: [])
+
+    fn = _adapter.make_get_order_fn()
+    order = fn("EX-456")
+
+    assert order is not None
+    assert order.product_id == "ZEC-USD", "product_id must be populated from Get Order response"
+    assert order.side == "SELL", "side must be populated from Get Order response"
+
+
 def test_no_price_snapshot_sends_critical_alert():
     """When get_snapshot() returns None for an open position, a CRITICAL Telegram alert must fire."""
     from pipeline.runner import run_all_assets
@@ -494,12 +540,70 @@ def test_no_price_snapshot_sends_critical_alert():
               side_effect=lambda m: telegram_calls.append(m)),
         patch("pipeline.runner.get_snapshot", return_value=None),
         patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+        patch("pipeline.runner._snapshot_alert_cooldown", {}),  # reset cooldown so alert always fires
     ):
         run_all_assets(target_asset="ZEC-USD")
 
     assert exit_calls == [], "_check_open_positions must not be called when no snapshot"
     assert any("CRITICAL" in m for m in telegram_calls), (
         "CRITICAL Telegram alert must fire when price snapshot is unavailable for an open position"
+    )
+
+
+def test_snapshot_exception_sends_critical_alert():
+    """When get_snapshot() raises, a CRITICAL Telegram alert must fire and EXIT must not run."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+
+    exit_calls: list[str] = []
+    telegram_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        patch("pipeline.runner._get_open_position_assets", return_value=["ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions",
+              side_effect=lambda a, p: exit_calls.append(a)),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: telegram_calls.append(m)),
+        patch("pipeline.runner.get_snapshot",
+              side_effect=RuntimeError("yfinance connection timeout")),
+        patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+        patch("pipeline.runner._snapshot_alert_cooldown", {}),
+    ):
+        run_all_assets(target_asset="ZEC-USD")
+
+    assert exit_calls == [], "EXIT must not run when snapshot raises"
+    assert any("CRITICAL" in m for m in telegram_calls), (
+        "CRITICAL Telegram alert must fire when get_snapshot() raises"
+    )
+
+
+def test_snapshot_alert_suppressed_within_cooldown():
+    """The CRITICAL no-snapshot alert must not fire again within the cooldown window."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import MagicMock
+    import time as _time
+
+    telegram_calls: list[str] = []
+    # Pre-fill cooldown as if an alert was sent 5 minutes ago
+    cooldown_dict = {"ZEC-USD": _time.monotonic() - 300}
+
+    with (
+        patch("pipeline.runner._startup_reconciliation",
+              return_value=(True, _clean_report())),
+        patch("pipeline.runner._get_open_position_assets", return_value=["ZEC-USD"]),
+        patch("pipeline.runner._check_open_positions"),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: telegram_calls.append(m)),
+        patch("pipeline.runner.get_snapshot", return_value=None),
+        patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
+        patch("pipeline.runner._snapshot_alert_cooldown", cooldown_dict),
+    ):
+        run_all_assets(target_asset="ZEC-USD")
+
+    assert not any("CRITICAL" in m for m in telegram_calls), (
+        "CRITICAL alert must be suppressed within the cooldown window"
     )
 
 

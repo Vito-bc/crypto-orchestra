@@ -71,8 +71,14 @@ def make_list_orders_fn() -> Callable[[], list[CoinbaseOrder]]:
     with no fills (fills are fetched per-order by make_get_order_fn()
     only when needed for stacking resolution).
 
-    Returns [] in DRY_RUN mode.  Drops orders with empty client_order_id
-    or exchange_order_id — they cannot be matched against local orders.
+    Returns [] in DRY_RUN mode.
+
+    Empty exchange_order_id raises RuntimeError — a corrupted Coinbase
+    response must block reconciliation rather than silently disappear.
+
+    Empty client_order_id becomes an EXCHANGE_ONLY:{exchange_id} sentinel
+    so orphan detection fires; the reconciler then adds an UnresolvedItem
+    for the asset or sets a global EXIT block.
 
     Exceptions propagate: an exchange outage must produce a failed
     reconciliation, not an empty order list that appears clean.
@@ -90,7 +96,11 @@ def make_list_orders_fn() -> Callable[[], list[CoinbaseOrder]]:
             exchange_id = o.get("order_id", "")
             status = o.get("status", "")
             if not exchange_id:
-                continue  # no usable identifier at all — cannot track or match
+                raise RuntimeError(
+                    f"Coinbase returned order with no exchange order_id "
+                    f"(client_id={client_id!r}, status={status!r}, product_id={o.get('product_id')!r}) "
+                    "— reconciliation aborted to fail-closed"
+                )
             if not client_id:
                 # Manual order, external system, or Coinbase UI trade — no client_order_id.
                 # Synthesise a sentinel so orphan detection fires: this ID will never

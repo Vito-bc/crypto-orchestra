@@ -1143,6 +1143,11 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
 # Re-enable after developing asset-specific entry logic for BTC/SOL.
 ASSETS = ["ETH-USD", "ZEC-USD"]
 
+# Cooldown for repeated "no price snapshot" Telegram alerts — avoids storm when
+# a data source is down for multiple consecutive ticks (one alert per hour per asset).
+_snapshot_alert_cooldown: dict[str, float] = {}
+_SNAPSHOT_ALERT_COOLDOWN_S = 3600.0
+
 # Per-asset daily EMA period for the trend gate in _check_entry_filters
 _DAILY_EMA_PERIOD: dict[str, int] = {
     "ETH-USD": 50,   # 50EMA is faster — catches ETH tops/bottoms weeks earlier
@@ -1292,17 +1297,37 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
             send_telegram_message(msg)
             continue
 
-        snap0 = get_snapshot(asset)
+        try:
+            snap0 = get_snapshot(asset)
+        except Exception as _snap_exc:
+            _snap_now = time.monotonic()
+            if _snap_now - _snapshot_alert_cooldown.get(asset, 0.0) >= _SNAPSHOT_ALERT_COOLDOWN_S:
+                _snapshot_alert_cooldown[asset] = _snap_now
+                msg = (
+                    f"[ExitExecutor] CRITICAL — price snapshot raised exception for {asset}: "
+                    f"{_snap_exc}. EXIT check skipped; manual review required."
+                )
+                print(msg)
+                send_telegram_message(msg)
+            else:
+                print(f"[ExitExecutor] snapshot exception for {asset} (alert suppressed — cooldown active)")
+            continue
+
         if snap0:
             _check_open_positions(asset, snap0["close"])
         else:
-            msg = (
-                f"[ExitExecutor] CRITICAL — price snapshot unavailable for {asset}. "
-                "EXIT check skipped this tick; stop-loss may not trigger. "
-                "Manual review required if this persists."
-            )
-            print(msg)
-            send_telegram_message(msg)
+            _snap_now = time.monotonic()
+            if _snap_now - _snapshot_alert_cooldown.get(asset, 0.0) >= _SNAPSHOT_ALERT_COOLDOWN_S:
+                _snapshot_alert_cooldown[asset] = _snap_now
+                msg = (
+                    f"[ExitExecutor] CRITICAL — price snapshot unavailable for {asset}. "
+                    "EXIT check skipped this tick; stop-loss may not trigger. "
+                    "Manual review required if this persists."
+                )
+                print(msg)
+                send_telegram_message(msg)
+            else:
+                print(f"[ExitExecutor] snapshot still unavailable for {asset} (alert suppressed — cooldown active)")
 
     # Step 4: ENTRY gate
     if not entry_ok:
