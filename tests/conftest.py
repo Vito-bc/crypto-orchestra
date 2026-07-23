@@ -28,5 +28,9 @@ def _block_telegram_sends():
     patch; it will shadow this one while active, then yield back to the
     no-op on exit.
     """
-    with patch("notifications.telegram.request.urlopen"):
+    with patch("notifications.telegram.request.urlopen") as mocked_urlopen:
         yield
+        assert not mocked_urlopen.called, (
+            f"A test sent a real Telegram message ({mocked_urlopen.call_count} call(s)). "
+            "If this was intentional, apply an inner patch inside the test body."
+        )
