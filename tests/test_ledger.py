@@ -2179,3 +2179,141 @@ def test_late_entry_fill_on_dust_position_revives_to_closing(db_with_epoch: Path
         f"got {pos['status']!r}"
     )
     assert evt is not None, "DUST_REVIVED event must be recorded in position_events"
+
+
+# ---------------------------------------------------------------------------
+# Strategic exit reason tests — CONTINUE_EXIT must inherit from filled orders
+# ---------------------------------------------------------------------------
+
+def test_strategic_exit_reason_preserved_via_partial_stop_loss(tmp_db: Path) -> None:
+    """
+    Scenario: STOP_LOSS EXIT gets a partial fill → position goes CLOSING.
+    Exchange cancels the remainder of the STOP_LOSS order (CANCELLED).
+    A CONTINUE_EXIT order then closes the remaining qty.
+    exit_reason must be STOP_LOSS (the strategic decision), not CONTINUE_EXIT.
+
+    The UNIQUE index allows at most one active EXIT per position, so the STOP_LOSS
+    order must reach a terminal state (CANCELLED) before CONTINUE_EXIT is inserted.
+    """
+    _, pos_id = _setup_open_position(tmp_db)
+
+    # STOP_LOSS EXIT — partial fill of 0.5 out of 1.0; order stays PARTIAL
+    sl_oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=sl_oid, epoch_id="EP1", asset="ZEC-USD",
+            side="SELL", order_type="MARKET", purpose="EXIT",
+            position_id=pos_id, placed_at=_now(),
+            qty_base_requested=1.0, reasoning="STOP_LOSS", conn=conn,
+        )
+        transition_order(sl_oid, "OPEN", conn=conn)
+
+    with get_db(tmp_db) as conn:
+        apply_fill(
+            order_id=sl_oid, fill_price=90.0, fill_qty_base=0.5,
+            exchange_fill_id="FILL-SL-001", conn=conn,
+        )
+
+    # Exchange cancels the rest of the STOP_LOSS order → terminal, frees the UNIQUE slot
+    with get_db(tmp_db) as conn:
+        transition_order(sl_oid, "CANCELLED", conn=conn)
+
+    # CONTINUE_EXIT order — closes the remaining 0.5
+    ce_oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=ce_oid, epoch_id="EP1", asset="ZEC-USD",
+            side="SELL", order_type="MARKET", purpose="EXIT",
+            position_id=pos_id, placed_at=_now(),
+            qty_base_requested=0.5, reasoning="CONTINUE_EXIT", conn=conn,
+        )
+        transition_order(ce_oid, "OPEN", conn=conn)
+
+    with get_db(tmp_db) as conn:
+        apply_fill(
+            order_id=ce_oid, fill_price=89.0, fill_qty_base=0.5,
+            exchange_fill_id="FILL-CE-001", conn=conn,
+        )
+
+    with get_db(tmp_db) as conn:
+        pos = conn.execute(
+            "SELECT status, exit_reason FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+
+    assert pos["status"] == "CLOSED"
+    assert pos["exit_reason"] == "STOP_LOSS", (
+        f"exit_reason should be STOP_LOSS (first filled EXIT), got {pos['exit_reason']!r}"
+    )
+
+
+def test_strategic_exit_reason_skips_rejected_stop_loss_uses_take_profit(tmp_db: Path) -> None:
+    """
+    Scenario: STOP_LOSS EXIT is placed but immediately REJECTED (no fills).
+    A TAKE_PROFIT EXIT then partially fills. CONTINUE_EXIT closes the remainder.
+    exit_reason must be TAKE_PROFIT (first EXIT order with actual fills),
+    not STOP_LOSS (rejected, no fills) and not CONTINUE_EXIT.
+
+    REJECTED is terminal and not in the UNIQUE index, so TAKE_PROFIT can be inserted
+    immediately after the STOP_LOSS rejection without violating the constraint.
+    """
+    _, pos_id = _setup_open_position(tmp_db)
+
+    # STOP_LOSS EXIT — REJECTED immediately, no fills
+    sl_oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=sl_oid, epoch_id="EP1", asset="ZEC-USD",
+            side="SELL", order_type="MARKET", purpose="EXIT",
+            position_id=pos_id, placed_at=_now(),
+            qty_base_requested=1.0, reasoning="STOP_LOSS", conn=conn,
+        )
+        transition_order(sl_oid, "REJECTED", conn=conn)
+
+    # TAKE_PROFIT EXIT — partial fill of 0.5 out of 1.0
+    tp_oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=tp_oid, epoch_id="EP1", asset="ZEC-USD",
+            side="SELL", order_type="MARKET", purpose="EXIT",
+            position_id=pos_id, placed_at=_now(),
+            qty_base_requested=1.0, reasoning="TAKE_PROFIT", conn=conn,
+        )
+        transition_order(tp_oid, "OPEN", conn=conn)
+
+    with get_db(tmp_db) as conn:
+        apply_fill(
+            order_id=tp_oid, fill_price=150.0, fill_qty_base=0.5,
+            exchange_fill_id="FILL-TP-001", conn=conn,
+        )
+
+    # Exchange cancels the rest of the TAKE_PROFIT order → terminal, frees the UNIQUE slot
+    with get_db(tmp_db) as conn:
+        transition_order(tp_oid, "CANCELLED", conn=conn)
+
+    # CONTINUE_EXIT — closes the remaining 0.5
+    ce_oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=ce_oid, epoch_id="EP1", asset="ZEC-USD",
+            side="SELL", order_type="MARKET", purpose="EXIT",
+            position_id=pos_id, placed_at=_now(),
+            qty_base_requested=0.5, reasoning="CONTINUE_EXIT", conn=conn,
+        )
+        transition_order(ce_oid, "OPEN", conn=conn)
+
+    with get_db(tmp_db) as conn:
+        apply_fill(
+            order_id=ce_oid, fill_price=149.0, fill_qty_base=0.5,
+            exchange_fill_id="FILL-CE-002", conn=conn,
+        )
+
+    with get_db(tmp_db) as conn:
+        pos = conn.execute(
+            "SELECT status, exit_reason FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+
+    assert pos["status"] == "CLOSED"
+    assert pos["exit_reason"] == "TAKE_PROFIT", (
+        "Rejected STOP_LOSS (no fills) must not be selected as strategic reason; "
+        f"expected TAKE_PROFIT, got {pos['exit_reason']!r}"
+    )

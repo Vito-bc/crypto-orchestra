@@ -496,14 +496,41 @@ def test_place_market_sell_wire_qty_uses_round_down() -> None:
         f"Wire qty {wire_qty!r} must not exceed input {qty_float} — "
         "ROUND_DOWN means we can only send less than we own, never more"
     )
-    assert "E" not in wire_qty.upper() or "e" not in wire_qty, (
-        "base_size must be a plain decimal string, not scientific notation"
+    assert "e" not in wire_qty.lower(), (
+        f"base_size must be a plain decimal string, not scientific notation: got {wire_qty!r}"
     )
 
 
 # ---------------------------------------------------------------------------
 # 29. get_product_info — fails hard on missing or non-numeric required fields
 # ---------------------------------------------------------------------------
+
+def test_place_market_sell_live_success_with_string_qty() -> None:
+    """
+    place_market_sell must complete the full LIVE success path when given a
+    pre-formatted Decimal string.  Regression guard for the f'{:.6f}' crash
+    (ValueError on str input) discovered after coinbase_sell_fn signature changed.
+    """
+    from exchange.coinbase_client import place_market_sell
+
+    captured: list[dict] = []
+
+    def _fake_create_order(**kwargs):
+        captured.append(kwargs)
+        return {"success": True, "success_response": {"order_id": "EX-STR-001"}}
+
+    mock_client = MagicMock()
+    mock_client.create_order.side_effect = _fake_create_order
+
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=mock_client):
+        result = place_market_sell("ZEC-USD", "0.99999999", client_order_id="live-str-001")
+
+    assert result == "EX-STR-001"
+    assert len(captured) == 1
+    sent_qty = captured[0]["order_configuration"]["market_market_ioc"]["base_size"]
+    assert sent_qty == "0.99999999", f"wire qty must be unchanged: got {sent_qty!r}"
+
 
 def test_get_product_info_fails_on_missing_base_increment() -> None:
     """Response missing base_increment must raise RuntimeError, not silently use defaults."""

@@ -577,5 +577,5 @@ def place_market_sell(
             f"Coinbase returned no order_id for {product_id} SELL — "
             f"exit may not have been placed. Raw response keys: {list(resp.keys())}"
         )
-    print(f"[Coinbase LIVE] market SELL placed  {product_id}  {base_size_coins:.6f} coins  order_id={order_id}")
+    print(f"[Coinbase LIVE] market SELL placed  {product_id}  {wire_qty} coins  order_id={order_id}")
     return order_id

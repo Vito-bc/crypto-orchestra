@@ -1063,20 +1063,38 @@ def apply_fill(
                     - pos["entry_fee_usd"]
                 )
                 pnl_pct = (pnl_usd / entry_cost * 100) if entry_cost else 0.0
+                # Preserve strategic exit reason (STOP_LOSS / TAKE_PROFIT / MAX_HOLD)
+                # even when the closing fill belongs to a CONTINUE_EXIT order.
+                # Must join fills so REJECTED orders (no fills) are excluded.
+                _reasoning = order["reasoning"]
+                if _reasoning == "CONTINUE_EXIT":
+                    _first = c.execute(
+                        "SELECT o.reasoning FROM orders o"
+                        " JOIN fills f ON f.order_id = o.id"
+                        " WHERE o.position_id=? AND o.purpose='EXIT'"
+                        "   AND o.reasoning != 'CONTINUE_EXIT'"
+                        " ORDER BY f.filled_at LIMIT 1",
+                        (pos_id,),
+                    ).fetchone()
+                    if _first:
+                        _reasoning = _first["reasoning"]
+                    else:
+                        # No prior strategic EXIT fills — close originated from DUST revival
+                        _reasoning = "DUST_RECOVERY"
                 c.execute("""
                     UPDATE positions SET
                         status='CLOSED', qty_base_remaining=0,
                         exit_price=?, exit_time=?, exit_reason=?,
                         exit_fee_usd=?, pnl_usd=?, pnl_pct=?, closed_at=?
                     WHERE id=?
-                """, (exit_vwap, ts, order["reasoning"] or "EXIT_FILL",
+                """, (exit_vwap, ts, _reasoning or "EXIT_FILL",
                       exit_agg["total_exit_fee"], pnl_usd, pnl_pct, ts, pos_id))
                 c.execute(
                     "INSERT INTO position_events(position_id, event_type, payload, occurred_at)"
                     " VALUES (?,?,?,?)",
                     (pos_id, "CLOSED",
                      json.dumps({"exit_price": exit_vwap, "pnl_usd": pnl_usd,
-                                 "exit_reason": order["reasoning"]}), ts),
+                                 "exit_reason": _reasoning}), ts),
                 )
             else:
                 c.execute(

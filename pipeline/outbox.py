@@ -291,7 +291,7 @@ def place_exit_outbox(
     *,
     position_id: str,
     exit_reason: str,
-    coinbase_sell_fn: Callable[[str, str, float], str],
+    coinbase_sell_fn: Callable[[str, str, str], str],
     order_id: Optional[str] = None,
     db_path: Optional[Path] = None,
     base_increment: Optional[str] = None,
@@ -300,7 +300,7 @@ def place_exit_outbox(
     """
     Place a SELL order to exit an open ledger position via the two-transaction outbox.
 
-    coinbase_sell_fn(order_id, asset, qty_base) → exchange_order_id
+    coinbase_sell_fn(order_id, asset, qty_base_wire: str) → exchange_order_id
       Raise CoinbaseRejected / CoinbaseOrderRejected for definitive refusals.
       Any other exception = ambiguous → leave order SUBMITTING.
       Returning a falsy value = also treated as ambiguous.

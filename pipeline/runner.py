@@ -292,7 +292,7 @@ def _check_open_positions(asset: str, current_price: float) -> None:
     """
     from exchange.coinbase_client import place_market_sell
 
-    def _coinbase_sell_fn(order_id: str, sell_asset: str, qty_base: float) -> str:
+    def _coinbase_sell_fn(order_id: str, sell_asset: str, qty_base: str) -> str:
         return place_market_sell(
             product_id=sell_asset,
             base_size_coins=qty_base,
