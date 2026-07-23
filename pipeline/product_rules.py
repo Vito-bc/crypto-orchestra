@@ -30,7 +30,11 @@ def round_base_qty(qty: float, base_increment: str) -> Decimal:
     Returns:
         Rounded Decimal, e.g. Decimal("0.99999900")
     """
-    return Decimal(str(qty)).quantize(Decimal(base_increment), rounding=ROUND_DOWN)
+    # Division-then-floor ensures correct multiples for non-power-of-10 increments.
+    # quantize() only sets the decimal scale, not the multiple: 1.24 quantized to
+    # scale 0.05 stays 1.24, not 1.20.  The division formula always gives exact multiples.
+    inc = Decimal(base_increment)
+    return (Decimal(str(qty)) / inc).to_integral_value(ROUND_DOWN) * inc
 
 
 def is_dust(rounded_qty: Decimal, base_min_size: str) -> bool:

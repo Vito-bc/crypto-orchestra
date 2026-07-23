@@ -459,3 +459,86 @@ def test_fetch_fills_max_pages_exhausted_raises() -> None:
          patch.object(_mod, "_MAX_FILL_PAGES", 2):
         with pytest.raises(IncompleteFillHistory, match="exhausted"):
             fetch_fills_for_order(_ORDER_ID)
+
+
+# ---------------------------------------------------------------------------
+# 28. place_market_sell — wire qty uses ROUND_DOWN, never rounds up
+# ---------------------------------------------------------------------------
+
+def test_place_market_sell_wire_qty_uses_round_down() -> None:
+    """
+    The base_size string sent to Coinbase must be Decimal-ROUND_DOWN, not
+    Python round() (ROUND_HALF_EVEN).  For quantities already pre-rounded by
+    place_exit_outbox, the re-format must not increase the value.
+    """
+    from exchange.coinbase_client import place_market_sell
+
+    captured: list[str] = []
+
+    def _fake_create_order(**kwargs):
+        cfg = kwargs.get("order_configuration", {})
+        captured.append(cfg.get("market_market_ioc", {}).get("base_size", ""))
+        return {"success": True, "success_response": {"order_id": "EX-WIRE-001"}}
+
+    mock_client = MagicMock()
+    mock_client.create_order.side_effect = _fake_create_order
+
+    # Quantity at 8-dp boundary: 0.99999999 ZEC (already ROUND_DOWN'd by outbox)
+    qty_float = 0.99999999
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_get_client", return_value=mock_client):
+        place_market_sell("ZEC-USD", qty_float, client_order_id="wire-test-001")
+
+    assert len(captured) == 1
+    wire_qty = captured[0]
+    from decimal import Decimal
+    assert Decimal(wire_qty) <= Decimal(str(qty_float)), (
+        f"Wire qty {wire_qty!r} must not exceed input {qty_float} — "
+        "ROUND_DOWN means we can only send less than we own, never more"
+    )
+    assert "E" not in wire_qty.upper() or "e" not in wire_qty, (
+        "base_size must be a plain decimal string, not scientific notation"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 29. get_product_info — fails hard on missing or non-numeric required fields
+# ---------------------------------------------------------------------------
+
+def test_get_product_info_fails_on_missing_base_increment() -> None:
+    """Response missing base_increment must raise RuntimeError, not silently use defaults."""
+    from exchange.coinbase_client import get_product_info
+    import exchange.coinbase_client as client_mod
+
+    resp = MagicMock()
+    resp.to_dict.return_value = {"base_min_size": "0.001"}  # base_increment absent
+
+    mock_client = MagicMock()
+    mock_client.get_product.return_value = resp
+
+    with patch.object(client_mod, "_DRY_RUN", False), \
+         patch.object(client_mod, "_get_client", return_value=mock_client), \
+         patch.dict(client_mod._product_cache, {}, clear=True):
+        with pytest.raises(RuntimeError, match="missing required fields"):
+            get_product_info("ZEC-USD")
+
+
+def test_get_product_info_fails_on_non_numeric_base_increment() -> None:
+    """Non-numeric base_increment (e.g. empty string) must raise RuntimeError."""
+    from exchange.coinbase_client import get_product_info
+    import exchange.coinbase_client as client_mod
+
+    resp = MagicMock()
+    resp.to_dict.return_value = {
+        "base_increment": "not-a-number",
+        "base_min_size": "0.001",
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_product.return_value = resp
+
+    with patch.object(client_mod, "_DRY_RUN", False), \
+         patch.object(client_mod, "_get_client", return_value=mock_client), \
+         patch.dict(client_mod._product_cache, {}, clear=True):
+        with pytest.raises(RuntimeError, match="non-numeric"):
+            get_product_info("ZEC-USD")

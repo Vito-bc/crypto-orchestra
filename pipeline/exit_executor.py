@@ -288,6 +288,19 @@ def run_exit_executor(
                     base_min_size=_base_min_size,
                 )
             except PlacementBlocked as exc:
+                exc_str = str(exc)
+                if exc_str.startswith("DUST:"):
+                    try:
+                        from notifications.telegram import send_telegram_message
+                        send_telegram_message(
+                            f"CRITICAL: DUST position — manual action required\n"
+                            f"asset={asset}  pos={pos_id}\n"
+                            f"{exc_str}\n"
+                            "Position transitioned to DUST. No sell placed.\n"
+                            "Action: write off manually or wait for a fill that restores qty."
+                        )
+                    except Exception:
+                        pass
                 actions.append({
                     "position_id": pos_id, "asset": asset,
                     "exit_reason": reason, "result": None,

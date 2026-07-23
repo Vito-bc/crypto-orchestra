@@ -37,6 +37,7 @@ from pipeline.ledger import (
     start_epoch,
     start_reconciliation,
     transition_order,
+    transition_position_to_dust,
     update_position_stop,
 )
 
@@ -2111,3 +2112,70 @@ def test_idempotent_replay_with_reconciliation_mode_returns_correct_flags(
         "Before fix: hardcoded False on idempotency path."
     )
     assert replayed.get("replayed") is True
+
+
+# ---------------------------------------------------------------------------
+# DUST revival: late ENTRY fill on a DUST position revives it to CLOSING
+# ---------------------------------------------------------------------------
+
+def test_late_entry_fill_on_dust_position_revives_to_closing(db_with_epoch: Path) -> None:
+    """
+    Sequence:
+      1. ENTRY order partially fills (0.4 of 0.5 ZEC) → OPEN position.
+      2. EXIT executor detects remaining qty is sub-minimum → DUST.
+      3. A late second partial fill (+0.1 ZEC) arrives for the original ENTRY order.
+      4. apply_fill must transition position DUST → CLOSING and record DUST_REVIVED.
+
+    CLOSING makes the exit executor re-evaluate the position on the next tick.
+    Without this fix the position stays DUST and is invisible to the executor.
+    """
+    oid = _oid()
+    with get_db(db_with_epoch) as conn:
+        insert_order(
+            order_id=oid, epoch_id="EP1", asset="ZEC-USD",
+            side="BUY", order_type="LIMIT", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=0.5, conn=conn,
+        )
+        insert_trade_intent(oid, stop_price=80.0, target_price=130.0, conn=conn)
+        transition_order(oid, "OPEN", conn=conn)
+
+    # First partial fill → order PARTIAL, position OPEN with 0.4 ZEC
+    with get_db(db_with_epoch) as conn:
+        r = apply_fill(
+            order_id=oid, fill_price=100.0, fill_qty_base=0.4,
+            exchange_fill_id="FILL-DUST-001", conn=conn,
+        )
+    pos_id = r["position_id"]
+
+    # Simulate EXIT executor detecting sub-minimum qty → DUST transition
+    with get_db(db_with_epoch) as conn:
+        transition_position_to_dust(pos_id, conn)
+
+    with get_db(db_with_epoch) as conn:
+        status_before = conn.execute(
+            "SELECT status FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()["status"]
+    assert status_before == "DUST"
+
+    # Late second partial fill arrives (order is still PARTIAL — non-terminal)
+    with get_db(db_with_epoch) as conn:
+        apply_fill(
+            order_id=oid, fill_price=100.0, fill_qty_base=0.1,
+            exchange_fill_id="FILL-DUST-002", conn=conn,
+        )
+
+    with get_db(db_with_epoch) as conn:
+        pos = conn.execute(
+            "SELECT status, qty_base_remaining FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+        evt = conn.execute(
+            "SELECT event_type, payload FROM position_events"
+            " WHERE position_id=? AND event_type='DUST_REVIVED'",
+            (pos_id,),
+        ).fetchone()
+
+    assert pos["status"] == "CLOSING", (
+        "DUST position must be revived to CLOSING when a late ENTRY fill arrives; "
+        f"got {pos['status']!r}"
+    )
+    assert evt is not None, "DUST_REVIVED event must be recorded in position_events"

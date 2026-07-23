@@ -999,6 +999,23 @@ def apply_fill(
                     WHERE id=?
                 """, (agg["vwap"], agg["total_base"], remaining,
                       agg["total_usd"], agg["total_fee"], position_id))
+                if pos_status == "DUST":
+                    # Late ENTRY fill increased qty — position is no longer
+                    # effectively unsellable; transition to CLOSING so the exit
+                    # executor re-evaluates it on the next tick.
+                    c.execute(
+                        "UPDATE positions SET status='CLOSING'"
+                        " WHERE id=? AND status='DUST'",
+                        (position_id,),
+                    )
+                    c.execute(
+                        "INSERT INTO position_events"
+                        "(position_id, event_type, payload, occurred_at)"
+                        " VALUES (?,?,?,?)",
+                        (position_id, "DUST_REVIVED",
+                         json.dumps({"reason": "late_entry_fill_increased_qty",
+                                     "new_qty_base": remaining}), ts),
+                    )
 
         # ----- EXIT fill -----
         elif order["purpose"] == "EXIT":
@@ -1034,7 +1051,7 @@ def apply_fill(
                 )
 
             remaining = max(0.0, entry_qty - exit_qty)
-            is_closed = remaining <= entry_qty * 0.001  # within 0.1%
+            is_closed = remaining < 1e-9  # below 0.1 satoshi — float epsilon only
             new_pos_status = "CLOSED" if is_closed else "CLOSING"
 
             if is_closed:

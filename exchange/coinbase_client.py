@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -137,9 +138,26 @@ def get_product_info(product_id: str) -> dict:
     try:
         resp = client.get_product(product_id=product_id)
         resp_dict = resp.to_dict() if hasattr(resp, "to_dict") else resp
+        base_increment = resp_dict.get("base_increment")
+        base_min_size  = resp_dict.get("base_min_size")
+        if not base_increment or not base_min_size:
+            raise RuntimeError(
+                f"Coinbase Get Product for {product_id} is missing required fields "
+                f"(base_increment={base_increment!r}, base_min_size={base_min_size!r}). "
+                "Cannot determine rounding rules — order placement blocked."
+            )
+        try:
+            Decimal(base_increment)
+            Decimal(base_min_size)
+        except Exception as val_exc:
+            raise RuntimeError(
+                f"Coinbase Get Product for {product_id} returned non-numeric "
+                f"base_increment={base_increment!r} or base_min_size={base_min_size!r}: "
+                f"{val_exc}. Order placement blocked."
+            ) from val_exc
         info = {
-            "base_increment":  resp_dict.get("base_increment",  "0.00000001"),
-            "base_min_size":   resp_dict.get("base_min_size",   "0.00000001"),
+            "base_increment":  base_increment,
+            "base_min_size":   base_min_size,
             "quote_increment": resp_dict.get("quote_increment", "0.01"),
         }
         _product_cache[product_id] = info
@@ -513,7 +531,13 @@ def place_market_sell(
         side="SELL",
         order_configuration={
             "market_market_ioc": {
-                "base_size": str(round(base_size_coins, 8)),
+                # ROUND_DOWN here mirrors place_exit_outbox: never send more than owned.
+                # Python's round() uses ROUND_HALF_EVEN and can round up on the wire.
+                "base_size": str(
+                    Decimal(str(base_size_coins)).quantize(
+                        Decimal("0.00000001"), rounding=ROUND_DOWN
+                    )
+                ),
             }
         },
     )

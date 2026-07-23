@@ -1043,6 +1043,100 @@ def test_exit_executor_idempotent_when_active_exit_exists(tmp_db: Path) -> None:
     assert len(skipped) == 1
 
 
+# ---------------------------------------------------------------------------
+# 26. DUST: TX-A commits position→DUST, no EXIT order is created
+# ---------------------------------------------------------------------------
+
+def test_dust_transition_committed_no_sell_order(tmp_db: Path) -> None:
+    """
+    place_exit_outbox with base_min_size > qty_base_remaining must:
+      1. Commit DUST transition inside TX-A (position status → DUST).
+      2. Raise PlacementBlocked with message starting 'DUST:'.
+      3. Leave zero EXIT orders in the DB (coinbase_sell_fn is never called).
+    """
+    _, pos_id = _open_position(tmp_db, qty_base=0.0001)  # 0.0001 < base_min_size=0.001
+
+    with pytest.raises(PlacementBlocked, match="^DUST:"):
+        place_exit_outbox(
+            position_id=pos_id,
+            exit_reason="STOP_LOSS",
+            coinbase_sell_fn=_no_sell,
+            db_path=tmp_db,
+            base_increment="0.00000001",
+            base_min_size="0.001",
+        )
+
+    with get_db(tmp_db) as conn:
+        pos_status = conn.execute(
+            "SELECT status FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()["status"]
+        exit_order_count = conn.execute(
+            "SELECT COUNT(*) FROM orders WHERE position_id=? AND purpose='EXIT'", (pos_id,)
+        ).fetchone()[0]
+
+    assert pos_status == "DUST", "Position must be DUST after sub-minimum qty detected"
+    assert exit_order_count == 0, "No EXIT order must exist when DUST transition fires"
+
+
+# ---------------------------------------------------------------------------
+# 27. DUST position blocks new ENTRY (outbox gate)
+# ---------------------------------------------------------------------------
+
+def test_entry_blocked_when_dust_position_exists(tmp_db: Path) -> None:
+    """place_order_outbox raises PlacementBlocked when a DUST position exists for the asset."""
+    from pipeline.outbox import place_order_outbox
+
+    _, pos_id = _open_position(tmp_db, qty_base=0.0001)
+    with get_db(tmp_db) as conn:
+        conn.execute("UPDATE positions SET status='DUST' WHERE id=?", (pos_id,))
+
+    with pytest.raises(PlacementBlocked, match="active/dust"):
+        place_order_outbox(
+            asset=_ASSET,
+            limit_price=100.0,
+            qty_usd=10.0,
+            stop_price=90.0,
+            target_price=115.0,
+            coinbase_fn=lambda cid: f"CB-{cid[:8]}",
+            db_path=tmp_db,
+            gate_freshness_minutes=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 28. DUST condition sends Telegram CRITICAL alert from run_exit_executor
+# ---------------------------------------------------------------------------
+
+def test_dust_sends_telegram_critical_alert(tmp_db: Path) -> None:
+    """
+    run_exit_executor must call send_telegram_message with a CRITICAL alert when
+    place_exit_outbox raises a 'DUST:' PlacementBlocked.
+    The inner patch on send_telegram_message prevents the autouse urlopen guard from
+    seeing any call (conftest assertion stays green).
+    """
+    from unittest.mock import patch
+
+    _, pos_id = _open_position(tmp_db, qty_base=0.0001)
+
+    with patch("notifications.telegram.send_telegram_message") as mock_alert, \
+         patch("exchange.coinbase_client.get_product_info",
+               return_value={"base_increment": "0.00000001", "base_min_size": "0.001"}):
+        actions = run_exit_executor(
+            asset=_ASSET,
+            current_price=85.0,   # below stop_price=90.0 → STOP_LOSS trigger
+            coinbase_sell_fn=_no_sell,
+            db_path=tmp_db,
+        )
+
+    assert mock_alert.called, "send_telegram_message must be called on DUST detection"
+    alert_text: str = mock_alert.call_args[0][0]
+    assert "CRITICAL" in alert_text
+    assert "DUST" in alert_text
+
+    assert len(actions) == 1
+    assert "placement_blocked" in (actions[0].get("note") or "")
+
+
 def test_run_pipeline_skip_exit_check_does_not_call_check_open_positions() -> None:
     """
     run_pipeline(..., _skip_exit_check=True) must not call _check_open_positions.
