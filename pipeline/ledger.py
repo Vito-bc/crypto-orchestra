@@ -1073,7 +1073,7 @@ def apply_fill(
                         " JOIN fills f ON f.order_id = o.id"
                         " WHERE o.position_id=? AND o.purpose='EXIT'"
                         "   AND o.reasoning != 'CONTINUE_EXIT'"
-                        " ORDER BY f.filled_at LIMIT 1",
+                        " ORDER BY f.filled_at, o.placed_at, o.id LIMIT 1",
                         (pos_id,),
                     ).fetchone()
                     if _first:

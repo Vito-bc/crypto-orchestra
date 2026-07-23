@@ -2317,3 +2317,87 @@ def test_strategic_exit_reason_skips_rejected_stop_loss_uses_take_profit(tmp_db:
         "Rejected STOP_LOSS (no fills) must not be selected as strategic reason; "
         f"expected TAKE_PROFIT, got {pos['exit_reason']!r}"
     )
+
+
+def test_dust_recovery_exit_reason(tmp_db: Path) -> None:
+    """
+    Scenario: tiny ENTRY fill creates a sub-minimum position → DUST transition.
+    A later ENTRY fill (on the still-PARTIAL ENTRY order) revives to CLOSING.
+    CONTINUE_EXIT closes with no prior EXIT fills → exit_reason == DUST_RECOVERY.
+
+    This guards the else-branch added to the strategic reason lookup that returns
+    DUST_RECOVERY when the JOIN with fills yields zero rows.
+    """
+    epoch_id = "EP1"
+    with get_db(tmp_db) as conn:
+        insert_epoch(epoch_id, 100.0, "test", conn=conn)
+
+    # ENTRY order for 1.0; first tiny fill creates position with qty=0.0001
+    entry_oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=entry_oid, epoch_id=epoch_id, asset="ZEC-USD",
+            side="BUY", order_type="MARKET", purpose="ENTRY",
+            placed_at=_now(), qty_base_requested=1.0, conn=conn,
+        )
+        insert_trade_intent(entry_oid, stop_price=50.0, target_price=150.0, conn=conn)
+        transition_order(entry_oid, "OPEN", conn=conn)
+
+    with get_db(tmp_db) as conn:
+        result = apply_fill(
+            order_id=entry_oid, fill_price=100.0, fill_qty_base=0.0001,
+            exchange_fill_id="FILL-DUST-REC-001", conn=conn,
+        )
+    pos_id = result["position_id"]
+
+    # Exit executor detects qty < base_min_size → DUST transition (no EXIT order placed)
+    with get_db(tmp_db) as conn:
+        transition_position_to_dust(pos_id, conn)
+
+    with get_db(tmp_db) as conn:
+        assert conn.execute(
+            "SELECT status FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()["status"] == "DUST"
+
+    # Late ENTRY fill arrives (ENTRY order still PARTIAL) → CLOSING + DUST_REVIVED event
+    with get_db(tmp_db) as conn:
+        apply_fill(
+            order_id=entry_oid, fill_price=100.0, fill_qty_base=0.9999,
+            exchange_fill_id="FILL-DUST-REC-002", conn=conn,
+        )
+
+    with get_db(tmp_db) as conn:
+        pos = conn.execute(
+            "SELECT status FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+    assert pos["status"] == "CLOSING", (
+        f"DUST position must revive to CLOSING after late ENTRY fill; got {pos['status']!r}"
+    )
+
+    # CONTINUE_EXIT closes the position — zero prior EXIT fills, so DUST_RECOVERY
+    ce_oid = _oid()
+    with get_db(tmp_db) as conn:
+        insert_order(
+            order_id=ce_oid, epoch_id=epoch_id, asset="ZEC-USD",
+            side="SELL", order_type="MARKET", purpose="EXIT",
+            position_id=pos_id, placed_at=_now(),
+            qty_base_requested=1.0, reasoning="CONTINUE_EXIT", conn=conn,
+        )
+        transition_order(ce_oid, "OPEN", conn=conn)
+
+    with get_db(tmp_db) as conn:
+        apply_fill(
+            order_id=ce_oid, fill_price=98.0, fill_qty_base=1.0,
+            exchange_fill_id="FILL-DUST-REC-CE-001", conn=conn,
+        )
+
+    with get_db(tmp_db) as conn:
+        pos = conn.execute(
+            "SELECT status, exit_reason FROM positions WHERE id=?", (pos_id,)
+        ).fetchone()
+
+    assert pos["status"] == "CLOSED"
+    assert pos["exit_reason"] == "DUST_RECOVERY", (
+        "CONTINUE_EXIT with no prior EXIT fills must yield DUST_RECOVERY; "
+        f"got {pos['exit_reason']!r}"
+    )
