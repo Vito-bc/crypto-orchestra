@@ -147,14 +147,26 @@ def get_product_info(product_id: str) -> dict:
                 "Cannot determine rounding rules — order placement blocked."
             )
         try:
-            Decimal(base_increment)
-            Decimal(base_min_size)
+            b_inc = Decimal(base_increment)
+            b_min = Decimal(base_min_size)
         except Exception as val_exc:
             raise RuntimeError(
                 f"Coinbase Get Product for {product_id} returned non-numeric "
                 f"base_increment={base_increment!r} or base_min_size={base_min_size!r}: "
                 f"{val_exc}. Order placement blocked."
             ) from val_exc
+        if not b_inc.is_finite() or b_inc <= 0:
+            raise RuntimeError(
+                f"Coinbase Get Product for {product_id}: "
+                f"base_increment={base_increment!r} must be finite and positive. "
+                "Order placement blocked."
+            )
+        if not b_min.is_finite() or b_min <= 0:
+            raise RuntimeError(
+                f"Coinbase Get Product for {product_id}: "
+                f"base_min_size={base_min_size!r} must be finite and positive. "
+                "Order placement blocked."
+            )
         info = {
             "base_increment":  base_increment,
             "base_min_size":   base_min_size,
@@ -506,7 +518,7 @@ def list_reconciliation_orders(
 
 def place_market_sell(
     product_id: str,
-    base_size_coins: float,
+    base_size_coins: float | str,
     client_order_id: str | None = None,
 ) -> str:
     """
@@ -515,13 +527,25 @@ def place_market_sell(
 
     Args:
         product_id:      e.g. "ETH-USD"
-        base_size_coins: amount in base currency (e.g. 0.05 ETH)
+        base_size_coins: amount in base currency.  When called from place_exit_outbox
+                         this is a pre-formatted Decimal string (exact ROUND_DOWN result);
+                         when called directly it may be a float (ROUND_DOWN applied here).
         client_order_id: idempotency key
     """
     oid = _make_order_id(client_order_id)
 
+    if isinstance(base_size_coins, str):
+        wire_qty = base_size_coins          # already exact — do not re-round
+    else:
+        # Direct float call: apply ROUND_DOWN so we never send more than owned.
+        wire_qty = str(
+            Decimal(str(base_size_coins)).quantize(
+                Decimal("0.00000001"), rounding=ROUND_DOWN
+            )
+        )
+
     if _DRY_RUN:
-        print(f"[Coinbase DRY] market SELL {product_id}  {base_size_coins:.6f} coins  id={oid}")
+        print(f"[Coinbase DRY] market SELL {product_id}  {wire_qty} coins  id={oid}")
         return f"DRY-{oid}"
 
     client = _get_client()
@@ -531,13 +555,7 @@ def place_market_sell(
         side="SELL",
         order_configuration={
             "market_market_ioc": {
-                # ROUND_DOWN here mirrors place_exit_outbox: never send more than owned.
-                # Python's round() uses ROUND_HALF_EVEN and can round up on the wire.
-                "base_size": str(
-                    Decimal(str(base_size_coins)).quantize(
-                        Decimal("0.00000001"), rounding=ROUND_DOWN
-                    )
-                ),
+                "base_size": wire_qty,
             }
         },
     )

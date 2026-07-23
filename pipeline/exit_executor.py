@@ -121,7 +121,7 @@ def _has_active_exit(position_id: str, conn) -> bool:
 def run_exit_executor(
     asset: str,
     current_price: float,
-    coinbase_sell_fn: Callable[[str, str, float], str],
+    coinbase_sell_fn: Callable[[str, str, str], str],
     db_path: Optional[Path] = None,
     on_extension_review: Optional[Callable] = None,
 ) -> list[dict]:
@@ -186,6 +186,14 @@ def run_exit_executor(
                 opened_at=pos["opened_at"],
                 current_price=current_price,
             )
+
+            # ── CLOSING positions always continue their exit ──────────────────────
+            # CLOSING means an exit was already placed (partial fill) or DUST was
+            # revived by a late ENTRY fill.  The remainder must be sold even if the
+            # current price has recovered above the stop — do not defer via extension
+            # review; skip straight to placing the sell.
+            if reason is None and pos["status"] == "CLOSING":
+                reason = "CONTINUE_EXIT"
 
             # ── Extension review when max-hold not yet exhausted ──────────────────
             if reason is None and _needs_extension_review(extensions_used, asset, pos["opened_at"]):

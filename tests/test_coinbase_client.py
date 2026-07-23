@@ -542,3 +542,40 @@ def test_get_product_info_fails_on_non_numeric_base_increment() -> None:
          patch.dict(client_mod._product_cache, {}, clear=True):
         with pytest.raises(RuntimeError, match="non-numeric"):
             get_product_info("ZEC-USD")
+
+
+# ---------------------------------------------------------------------------
+# 30. get_product_info — rejects NaN, Infinity, zero, and negative values
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad_increment,bad_min", [
+    ("NaN",      "0.001"),    # NaN parses as Decimal but is not finite
+    ("Infinity", "0.001"),    # Infinity parses as Decimal but is not finite
+    ("0",        "0.001"),    # zero increment is invalid (division by zero in rounding)
+    ("-0.001",   "0.001"),    # negative increment is invalid
+    ("0.001",    "NaN"),      # NaN min_size
+    ("0.001",    "0"),        # zero min_size
+    ("0.001",    "-1"),       # negative min_size
+])
+def test_get_product_info_rejects_invalid_numeric_values(
+    bad_increment: str, bad_min: str
+) -> None:
+    """NaN, Infinity, zero, and negative values must raise RuntimeError even though
+    Decimal() accepts them without raising."""
+    from exchange.coinbase_client import get_product_info
+    import exchange.coinbase_client as client_mod
+
+    resp = MagicMock()
+    resp.to_dict.return_value = {
+        "base_increment": bad_increment,
+        "base_min_size":  bad_min,
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_product.return_value = resp
+
+    with patch.object(client_mod, "_DRY_RUN", False), \
+         patch.object(client_mod, "_get_client", return_value=mock_client), \
+         patch.dict(client_mod._product_cache, {}, clear=True):
+        with pytest.raises(RuntimeError, match="finite and positive|non-numeric"):
+            get_product_info("ZEC-USD")

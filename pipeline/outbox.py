@@ -40,6 +40,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -411,10 +412,17 @@ def place_exit_outbox(
                 dust_qty = float(rounded)
             else:
                 dust_qty = None
-            qty_base = float(rounded)
+            qty_base      = float(rounded)   # stored in DB (REAL column)
+            qty_base_wire = str(rounded)     # exact Decimal string for Coinbase API
         else:
             qty_base = qty_base_raw
             dust_qty = None
+            # No product rules: format float with ROUND_DOWN as safety net.
+            qty_base_wire = str(
+                Decimal(str(qty_base_raw)).quantize(
+                    Decimal("0.00000001"), rounding=ROUND_DOWN
+                )
+            )
 
         if dust_qty is None:
             insert_order(
@@ -448,7 +456,7 @@ def place_exit_outbox(
     final_status = "SUBMITTING"
 
     try:
-        result = coinbase_sell_fn(order_id, asset, qty_base)
+        result = coinbase_sell_fn(order_id, asset, qty_base_wire)
         if result:
             exchange_order_id = result
             final_status = "OPEN"

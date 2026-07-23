@@ -109,11 +109,11 @@ def _open_position(
     return oid, pos_id
 
 
-def _no_sell(order_id: str, asset: str, qty: float) -> str:
+def _no_sell(order_id: str, asset: str, qty: str) -> str:
     raise AssertionError("coinbase_sell_fn must not be called in this test")
 
 
-def _ok_sell(order_id: str, asset: str, qty: float) -> str:
+def _ok_sell(order_id: str, asset: str, qty: str) -> str:
     return f"EX-{order_id[:8]}"
 
 
@@ -130,7 +130,7 @@ def test_place_exit_outbox_tx_a_committed_before_sell(tmp_db: Path) -> None:
 
     captured_order_id: list[str] = []
 
-    def _crash_after_check(order_id: str, asset: str, qty: float) -> str:
+    def _crash_after_check(order_id: str, asset: str, qty: str) -> str:
         # Check the order was already committed to the DB.
         with get_db(tmp_db) as conn:
             row = conn.execute(
@@ -195,7 +195,7 @@ def test_place_exit_outbox_accepted_goes_open(tmp_db: Path) -> None:
 def test_place_exit_outbox_rejected_coinbase_error(tmp_db: Path) -> None:
     _, pos_id = _open_position(tmp_db)
 
-    def _reject(order_id: str, asset: str, qty: float) -> str:
+    def _reject(order_id: str, asset: str, qty: str) -> str:
         raise CoinbaseRejected("INSUFFICIENT_FUND")
 
     result = place_exit_outbox(
@@ -223,7 +223,7 @@ def test_place_exit_outbox_rejected_coinbase_error(tmp_db: Path) -> None:
 def test_place_exit_outbox_ambiguous_stays_submitting(tmp_db: Path) -> None:
     _, pos_id = _open_position(tmp_db)
 
-    def _timeout(order_id: str, asset: str, qty: float) -> str:
+    def _timeout(order_id: str, asset: str, qty: str) -> str:
         raise ConnectionError("timeout")
 
     result = place_exit_outbox(
@@ -252,7 +252,7 @@ def test_place_exit_outbox_idempotent_same_order_id(tmp_db: Path) -> None:
 
     sell_calls: list[str] = []
 
-    def _counting_sell(order_id: str, asset: str, qty: float) -> str:
+    def _counting_sell(order_id: str, asset: str, qty: str) -> str:
         sell_calls.append(order_id)
         return f"EX-{order_id[:8]}"
 
@@ -349,9 +349,9 @@ def test_place_exit_outbox_reads_qty_from_ledger(tmp_db: Path) -> None:
     """
     _, pos_id = _open_position(tmp_db, qty_base=0.1)
 
-    received_qty: list[float] = []
+    received_qty: list[str] = []
 
-    def _capture_qty(order_id: str, asset: str, qty: float) -> str:
+    def _capture_qty(order_id: str, asset: str, qty: str) -> str:
         received_qty.append(qty)
         return f"EX-{order_id[:8]}"
 
@@ -363,7 +363,7 @@ def test_place_exit_outbox_reads_qty_from_ledger(tmp_db: Path) -> None:
     )
 
     assert len(received_qty) == 1
-    assert abs(received_qty[0] - 0.1) < 1e-9, (
+    assert abs(float(received_qty[0]) - 0.1) < 1e-9, (
         f"qty passed to sell_fn must equal position.qty_base_remaining; got {received_qty[0]}"
     )
 
@@ -377,7 +377,7 @@ def test_run_exit_executor_stop_loss_places_exit(tmp_db: Path) -> None:
 
     sell_calls: list[str] = []
 
-    def _sell(order_id: str, asset: str, qty: float) -> str:
+    def _sell(order_id: str, asset: str, qty: str) -> str:
         sell_calls.append(order_id)
         return f"EX-{order_id[:8]}"
 
@@ -484,7 +484,7 @@ def test_run_exit_executor_idempotent_on_active_exit(tmp_db: Path) -> None:
 
     sell_calls: list[str] = []
 
-    def _sell(order_id: str, asset: str, qty: float) -> str:
+    def _sell(order_id: str, asset: str, qty: str) -> str:
         sell_calls.append(order_id)
         return f"EX-{order_id[:8]}"
 
@@ -878,7 +878,7 @@ def test_place_exit_outbox_definite_rejection_classified(tmp_db: Path) -> None:
         "error_response": {"error": "INSUFFICIENT_FUND", "message": "not enough balance"},
     }
 
-    def _mock_sell(order_id: str, asset: str, qty: float) -> str:
+    def _mock_sell(order_id: str, asset: str, qty: str) -> str:
         # Call the real place_market_sell logic by stubbing out create_order
         from exchange.coinbase_client import CoinbaseOrderRejected as _COR
         raise _COR("INSUFFICIENT_FUND: not enough balance")
@@ -910,7 +910,7 @@ def test_place_exit_outbox_ambiguous_error_stays_submitting(tmp_db: Path) -> Non
     """
     _, pos_id = _open_position(tmp_db)
 
-    def _ambiguous_sell(order_id: str, asset: str, qty: float) -> str:
+    def _ambiguous_sell(order_id: str, asset: str, qty: str) -> str:
         raise RuntimeError("Coinbase rejected ZEC-USD SELL with ambiguous code 'UNKNOWN_FAILURE'")
 
     result = place_exit_outbox(
@@ -1018,7 +1018,7 @@ def test_exit_executor_idempotent_when_active_exit_exists(tmp_db: Path) -> None:
 
     sell_calls: list[str] = []
 
-    def _sell(order_id: str, asset: str, qty: float) -> str:
+    def _sell(order_id: str, asset: str, qty: str) -> str:
         sell_calls.append(order_id)
         return f"EX-{order_id[:8]}"
 
@@ -1135,6 +1135,88 @@ def test_dust_sends_telegram_critical_alert(tmp_db: Path) -> None:
 
     assert len(actions) == 1
     assert "placement_blocked" in (actions[0].get("note") or "")
+
+
+# ---------------------------------------------------------------------------
+# 29. CLOSING position forces CONTINUE_EXIT regardless of price
+# ---------------------------------------------------------------------------
+
+def test_closing_position_exits_even_when_price_is_safe(tmp_db: Path) -> None:
+    """
+    A CLOSING position must always get an EXIT placed, even when the current price
+    is safely above the stop-loss and below the take-profit.  CLOSING signals that
+    the position is mid-exit (partial fill or DUST_REVIVED), so the remainder must
+    be sold unconditionally rather than waiting for another stop/target trigger.
+    """
+    from unittest.mock import patch
+
+    _, pos_id = _open_position(
+        tmp_db, entry_price=100.0, stop_price=90.0, target_price=130.0, qty_base=1.0
+    )
+    # Mark position CLOSING (simulates a partial fill having occurred)
+    with get_db(tmp_db) as conn:
+        conn.execute("UPDATE positions SET status='CLOSING' WHERE id=?", (pos_id,))
+
+    sell_calls: list[str] = []
+
+    def _sell(order_id: str, asset: str, qty: str) -> str:
+        sell_calls.append(order_id)
+        return f"EX-{order_id[:8]}"
+
+    # Price is safe (above stop, below target) — an OPEN position would not exit
+    with patch("exchange.coinbase_client.get_product_info",
+               return_value={"base_increment": "0.00000001", "base_min_size": "0.001"}):
+        actions = run_exit_executor(
+            asset=_ASSET,
+            current_price=105.0,   # between stop=90 and target=130 → OPEN would skip
+            coinbase_sell_fn=_sell,
+            db_path=tmp_db,
+        )
+
+    assert len(sell_calls) == 1, (
+        "CLOSING position must place EXIT even when price is in the safe zone"
+    )
+    assert len(actions) == 1
+    assert actions[0]["exit_reason"] == "CONTINUE_EXIT"
+    assert actions[0]["result"] is not None
+    assert actions[0]["result"].status == "OPEN"
+
+
+# ---------------------------------------------------------------------------
+# 30. Wire qty: coinbase_sell_fn receives pre-formatted Decimal string
+# ---------------------------------------------------------------------------
+
+def test_sell_fn_receives_decimal_string_not_float(tmp_db: Path) -> None:
+    """
+    place_exit_outbox must pass a pre-formatted Decimal string to coinbase_sell_fn,
+    not a float.  The string must be the exact ROUND_DOWN result so Coinbase sees
+    a valid quantity that was never rounded up.
+    """
+    from decimal import Decimal
+
+    _, pos_id = _open_position(tmp_db, qty_base=0.99999999)
+
+    wire_args: list[str] = []
+
+    def _capture(order_id: str, asset: str, qty: str) -> str:
+        wire_args.append(qty)
+        return f"EX-{order_id[:8]}"
+
+    place_exit_outbox(
+        position_id=pos_id,
+        exit_reason="STOP_LOSS",
+        coinbase_sell_fn=_capture,
+        db_path=tmp_db,
+        base_increment="0.00000001",
+        base_min_size="0.001",
+    )
+
+    assert len(wire_args) == 1
+    wire_qty = wire_args[0]
+    assert isinstance(wire_qty, str), "wire qty must be a string, not float"
+    qty_d = Decimal(wire_qty)
+    assert qty_d <= Decimal("0.99999999"), "wire qty must not exceed input"
+    assert qty_d == Decimal("0.99999999"), "exact ROUND_DOWN value must be preserved"
 
 
 def test_run_pipeline_skip_exit_check_does_not_call_check_open_positions() -> None:

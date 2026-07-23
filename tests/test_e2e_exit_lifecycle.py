@@ -186,9 +186,9 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert pos["stop_price"] == pytest.approx(STOP_PRICE)
 
     # ── Step 2: EXIT executor → first SELL (STOP_LOSS, full qty) ─────────────
-    def sell_fn_1(order_id: str, asset: str, qty_base: float) -> str:
+    def sell_fn_1(order_id: str, asset: str, qty_base: str) -> str:
         assert asset == ASSET
-        assert qty_base == pytest.approx(ENTRY_QTY)
+        assert float(qty_base) == pytest.approx(ENTRY_QTY)
         return EX_ID_1
 
     actions1 = run_exit_executor(ASSET, TRIGGER_PRICE, sell_fn_1, db_path=db)
@@ -215,7 +215,7 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     # ── Step 3: active EXIT blocks duplicate SELL ─────────────────────────────
     sell_called: list[str] = []
 
-    def sell_fn_noop(order_id: str, asset: str, qty_base: float) -> str:
+    def sell_fn_noop(order_id: str, asset: str, qty_base: str) -> str:
         sell_called.append(order_id)
         return "NOOP"
 
@@ -263,9 +263,9 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert pos_row["qty_base_remaining"] == pytest.approx(SECOND_FILL_QTY)
 
     # ── Step 5: EXIT executor → second SELL for exactly remaining 60% ─────────
-    def sell_fn_2(order_id: str, asset: str, qty_base: float) -> str:
+    def sell_fn_2(order_id: str, asset: str, qty_base: str) -> str:
         assert asset == ASSET
-        assert qty_base == pytest.approx(SECOND_FILL_QTY, rel=1e-6)
+        assert float(qty_base) == pytest.approx(SECOND_FILL_QTY, rel=1e-6)
         return EX_ID_2
 
     actions3 = run_exit_executor(ASSET, TRIGGER_PRICE, sell_fn_2, db_path=db)
@@ -387,7 +387,7 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     # ── Step 9: EXIT executor on CLOSED position → no sells ───────────────────
     final_sell_calls: list[str] = []
 
-    def sell_fn_final(order_id: str, asset: str, qty_base: float) -> str:
+    def sell_fn_final(order_id: str, asset: str, qty_base: str) -> str:
         final_sell_calls.append(order_id)
         return "UNREACHABLE"
 
@@ -429,7 +429,7 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
     crash_exit_oid = _oid()
     CB_EX_ID = "EX-CRASH-001"
 
-    def crash_sell_fn(order_id: str, asset: str, qty_base: float) -> str:
+    def crash_sell_fn(order_id: str, asset: str, qty_base: str) -> str:
         # Simulates: API call was sent, response never received (dropped connection)
         raise TimeoutError("simulated network timeout — no response from Coinbase")
 
@@ -507,7 +507,7 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
     # Subsequent EXIT executor tick: active EXIT (OPEN) blocks a second SELL
     guard_calls: list[str] = []
 
-    def sell_fn_guard(order_id: str, asset: str, qty_base: float) -> str:
+    def sell_fn_guard(order_id: str, asset: str, qty_base: str) -> str:
         guard_calls.append(order_id)
         return "UNREACHABLE"
 
@@ -555,9 +555,9 @@ def test_e2e_stop_loss_adverse_slippage_negative_pnl(tmp_db: Path) -> None:
 
     exit_oid_box: list[str] = []
 
-    def sell_fn_slip(order_id: str, asset: str, qty_base: float) -> str:
+    def sell_fn_slip(order_id: str, asset: str, qty_base: str) -> str:
         assert asset == ASSET
-        assert qty_base == pytest.approx(ENTRY_QTY)
+        assert float(qty_base) == pytest.approx(ENTRY_QTY)
         exit_oid_box.append(order_id)
         return SLIP_EX_ID
 
