@@ -261,6 +261,22 @@ def run_exit_executor(
                 })
                 continue
 
+            # Fetch exchange product rules before acquiring the write lock.
+            # get_product_info is cached per-session and never called under the
+            # BEGIN IMMEDIATE lock, consistent with the outbox TX-A principle.
+            try:
+                from exchange.coinbase_client import get_product_info
+                _pinfo = get_product_info(asset)
+                _base_increment = _pinfo["base_increment"]
+                _base_min_size  = _pinfo["base_min_size"]
+            except Exception as exc:
+                actions.append({
+                    "position_id": pos_id, "asset": asset,
+                    "exit_reason": reason, "result": None,
+                    "error": f"product_info_fetch_failed:{exc}",
+                })
+                continue
+
             # ── Place exit via two-transaction outbox ─────────────────────────────
             try:
                 result = place_exit_outbox(
@@ -268,6 +284,8 @@ def run_exit_executor(
                     exit_reason=reason,
                     coinbase_sell_fn=coinbase_sell_fn,
                     db_path=db_path,
+                    base_increment=_base_increment,
+                    base_min_size=_base_min_size,
                 )
             except PlacementBlocked as exc:
                 actions.append({

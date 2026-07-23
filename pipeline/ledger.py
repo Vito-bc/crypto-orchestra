@@ -44,7 +44,7 @@ from typing import Iterator, Optional
 ROOT    = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "logs" / "ledger.db"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _TRANSITIONS: dict[str, set[str]] = {
     "SUBMITTING": {"OPEN", "CANCELLED", "REJECTED"},
@@ -120,27 +120,28 @@ CREATE TABLE IF NOT EXISTS risk_epochs (
 );
 
 CREATE TABLE IF NOT EXISTS orders (
-    id                 TEXT  PRIMARY KEY,
-    epoch_id           TEXT  NOT NULL REFERENCES risk_epochs(epoch_id),
-    asset              TEXT  NOT NULL,
-    side               TEXT  NOT NULL CHECK(side IN ('BUY','SELL')),
-    order_type         TEXT  NOT NULL CHECK(order_type IN ('LIMIT','MARKET','STOP_LIMIT')),
-    purpose            TEXT  NOT NULL CHECK(purpose IN ('ENTRY','EXIT')),
-    position_id        TEXT  REFERENCES positions(id),
-    qty_base_requested REAL  CHECK(qty_base_requested IS NULL OR qty_base_requested > 0),
-    qty_usd_requested  REAL  CHECK(qty_usd_requested IS NULL OR qty_usd_requested > 0),
-    limit_price        REAL,
-    placed_at          TEXT  NOT NULL,
-    expires_at         TEXT,
-    reasoning          TEXT  NOT NULL DEFAULT '',
-    status             TEXT  NOT NULL DEFAULT 'SUBMITTING'
-                             CHECK(status IN ('SUBMITTING','OPEN','PARTIAL','FILLED','CANCELLED','EXPIRED','REJECTED')),
-    exchange_order_id  TEXT  UNIQUE,
-    cancelled_at       TEXT,
-    expired_at         TEXT,
-    rejected_at        TEXT,
-    rejection_reason   TEXT,
-    fills_finalized_at TEXT,
+    id                      TEXT  PRIMARY KEY,
+    epoch_id                TEXT  NOT NULL REFERENCES risk_epochs(epoch_id),
+    asset                   TEXT  NOT NULL,
+    side                    TEXT  NOT NULL CHECK(side IN ('BUY','SELL')),
+    order_type              TEXT  NOT NULL CHECK(order_type IN ('LIMIT','MARKET','STOP_LIMIT')),
+    purpose                 TEXT  NOT NULL CHECK(purpose IN ('ENTRY','EXIT')),
+    position_id             TEXT  REFERENCES positions(id),
+    qty_base_requested      REAL  CHECK(qty_base_requested IS NULL OR qty_base_requested > 0),
+    qty_usd_requested       REAL  CHECK(qty_usd_requested IS NULL OR qty_usd_requested > 0),
+    limit_price             REAL,
+    placed_at               TEXT  NOT NULL,
+    expires_at              TEXT,
+    reasoning               TEXT  NOT NULL DEFAULT '',
+    status                  TEXT  NOT NULL DEFAULT 'SUBMITTING'
+                                   CHECK(status IN ('SUBMITTING','OPEN','PARTIAL','FILLED','CANCELLED','EXPIRED','REJECTED')),
+    exchange_order_id       TEXT  UNIQUE,
+    cancelled_at            TEXT,
+    expired_at              TEXT,
+    rejected_at             TEXT,
+    rejection_reason        TEXT,
+    fills_finalized_at      TEXT,
+    base_increment_applied  TEXT,
     CHECK((purpose = 'ENTRY') OR (purpose = 'EXIT' AND position_id IS NOT NULL))
 );
 
@@ -173,7 +174,7 @@ CREATE TABLE IF NOT EXISTS positions (
     extensions_used         INTEGER NOT NULL DEFAULT 0,
     extension_trailing_stop REAL,
     status                  TEXT  NOT NULL DEFAULT 'OPEN'
-                                  CHECK(status IN ('OPEN','CLOSING','CLOSED')),
+                                  CHECK(status IN ('OPEN','CLOSING','CLOSED','DUST')),
     exit_price              REAL,
     exit_time               TEXT,
     exit_reason             TEXT,
@@ -282,19 +283,21 @@ def run_migrations(path: Optional[Path] = None) -> None:
     """
     Apply schema migrations. Called on every startup before any DB access.
 
-    v0 (no DB or fresh file):       fresh install of V7 schema.
-    v0 (file with user tables):     unversioned prototype — backup to .v0.bak, fresh V7.
-    v1/v2/v3 (pre-outbox proto):    backup to .vN.bak, fresh V7.
+    v0 (no DB or fresh file):       fresh install of V8 schema.
+    v0 (file with user tables):     unversioned prototype — backup to .v0.bak, fresh V8.
+    v1/v2/v3 (pre-outbox proto):    backup to .vN.bak, fresh V8.
     v4 (outbox, pre-stacking-guard): in-place — ADD COLUMN rejection_reason + index → V5.
     v5 (pre-terminal-finalization):  in-place — ADD COLUMN fills_finalized_at → V6.
     v6 (pre-exit-outbox):            in-place — ADD INDEX idx_one_active_exit_per_position → V7.
-    v7: already current — no-op.
-    Migrations chain: V4→V5→V6→V7 in a single run_migrations() call.
+    v7 (pre-product-rules):          12-step positions table recreate (adds DUST status) +
+                                     ADD COLUMN base_increment_applied on orders → V8.
+    v8: already current — no-op.
+    Migrations chain: V4→V5→V6→V7→V8 in a single run_migrations() call.
 
     Backup+reset is safe for v0–v3 (no live orders were ever in those DBs).
     In-place migrations v4→v5 and v5→v6 use ALTER TABLE ADD COLUMN (non-destructive).
-    Future constraint changes (CHECK, UNIQUE on existing data) require the 12-step
-    SQLite rename workaround; column additions always use ALTER TABLE ADD COLUMN.
+    V7→V8: positions table recreated via 12-step rename (CHECK constraint change requires
+    this), plus ALTER TABLE ADD COLUMN for orders.base_increment_applied.
     """
     db_path = path or DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -439,12 +442,127 @@ def run_migrations(path: Optional[Path] = None) -> None:
                             WHERE purpose='EXIT'
                               AND status IN ('SUBMITTING','OPEN','PARTIAL')
                     """)
-                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                conn.execute("PRAGMA user_version = 7")
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
         finally:
+            conn.close()
+        version = 7  # fall through to V7→V8 migration
+
+    # V7 → V8: product rules — two changes in one transaction:
+    #   a) orders.base_increment_applied TEXT column (ALTER TABLE ADD COLUMN).
+    #   b) positions.status CHECK constraint gains 'DUST' — requires 12-step rename
+    #      because SQLite cannot ALTER TABLE to change a CHECK constraint in place.
+    #      foreign_keys=OFF required during DROP TABLE to suppress FK referential
+    #      checks from orders and position_events.
+    if version == 7:
+        conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                # a) ADD COLUMN to orders (idempotent).
+                existing_cols = {
+                    row[1] for row in conn.execute("PRAGMA table_info(orders)")
+                }
+                if "base_increment_applied" not in existing_cols:
+                    conn.execute(
+                        "ALTER TABLE orders ADD COLUMN base_increment_applied TEXT"
+                    )
+
+                # b) Recreate positions with DUST in CHECK constraint — only if the
+                # table exists.  Older migration test fixtures (V4 chain) may reach
+                # V7 without a positions table; skip recreation in that case.
+                _positions_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'"
+                ).fetchone() is not None
+
+                if _positions_exists:
+                    conn.execute("""
+                        CREATE TABLE positions_new (
+                            id                      TEXT  PRIMARY KEY,
+                            entry_order_id          TEXT  NOT NULL UNIQUE REFERENCES orders(id),
+                            epoch_id                TEXT  NOT NULL REFERENCES risk_epochs(epoch_id),
+                            asset                   TEXT  NOT NULL,
+                            entry_price             REAL,
+                            qty_base                REAL,
+                            qty_base_remaining      REAL,
+                            qty_usd                 REAL,
+                            entry_fee_usd           REAL  NOT NULL DEFAULT 0.0,
+                            opened_at               TEXT,
+                            stop_price              REAL,
+                            target_price            REAL,
+                            high_water_mark         REAL,
+                            extensions_used         INTEGER NOT NULL DEFAULT 0,
+                            extension_trailing_stop REAL,
+                            status                  TEXT  NOT NULL DEFAULT 'OPEN'
+                                                          CHECK(status IN ('OPEN','CLOSING','CLOSED','DUST')),
+                            exit_price              REAL,
+                            exit_time               TEXT,
+                            exit_reason             TEXT,
+                            exit_fee_usd            REAL,
+                            pnl_usd                 REAL,
+                            pnl_pct                 REAL,
+                            closed_at               TEXT
+                        )
+                    """)
+                    # Copy column-by-column: older schemas may have fewer columns.
+                    # NOT NULL columns absent from the old table get their defaults.
+                    _old_pos_cols = {
+                        row[1] for row in conn.execute("PRAGMA table_info(positions)")
+                    }
+                    _not_null_defaults = {
+                        "entry_fee_usd": "0.0",
+                        "extensions_used": "0",
+                    }
+                    _new_pos_cols = [
+                        "id", "entry_order_id", "epoch_id", "asset", "entry_price",
+                        "qty_base", "qty_base_remaining", "qty_usd", "entry_fee_usd",
+                        "opened_at", "stop_price", "target_price", "high_water_mark",
+                        "extensions_used", "extension_trailing_stop", "status",
+                        "exit_price", "exit_time", "exit_reason", "exit_fee_usd",
+                        "pnl_usd", "pnl_pct", "closed_at",
+                    ]
+                    _select_parts = [
+                        c if c in _old_pos_cols
+                        else _not_null_defaults.get(c, "NULL")
+                        for c in _new_pos_cols
+                    ]
+                    conn.execute(
+                        f"INSERT INTO positions_new ({', '.join(_new_pos_cols)}) "
+                        f"SELECT {', '.join(_select_parts)} FROM positions"
+                    )
+                    conn.execute("DROP TABLE positions")
+                    conn.execute("ALTER TABLE positions_new RENAME TO positions")
+
+                    # Re-create the index that was on the old positions table.
+                    _idx_exists = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='index'"
+                        " AND name='idx_positions_epoch_status'"
+                    ).fetchone()
+                    if not _idx_exists:
+                        conn.execute(
+                            "CREATE INDEX idx_positions_epoch_status"
+                            " ON positions(epoch_id, status)"
+                        )
+
+                    # Verify no FK violations were introduced.
+                    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+                    if violations:
+                        raise RuntimeError(
+                            f"V7→V8 migration: FK violations after positions recreate: {violations}"
+                        )
+
+                conn.execute("PRAGMA user_version = 8")
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
             conn.close()
         return
 
@@ -514,12 +632,12 @@ def start_epoch(
     """
     def _run(c: sqlite3.Connection) -> None:
         open_positions = c.execute(
-            "SELECT COUNT(*) FROM positions WHERE status IN ('OPEN','CLOSING')"
+            "SELECT COUNT(*) FROM positions WHERE status IN ('OPEN','CLOSING','DUST')"
         ).fetchone()[0]
         if open_positions:
             raise ValueError(
-                f"Cannot start new epoch: {open_positions} open/closing position(s). "
-                "Close all positions first."
+                f"Cannot start new epoch: {open_positions} open/closing/dust position(s). "
+                "Close all positions first (DUST positions require manual write-off)."
             )
         open_orders = c.execute(
             "SELECT COUNT(*) FROM orders WHERE status IN ('SUBMITTING','OPEN','PARTIAL')"
@@ -577,12 +695,15 @@ def insert_order(
     expires_at: Optional[str] = None,
     position_id: Optional[str] = None,
     reasoning: str = "",
+    base_increment_applied: Optional[str] = None,
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """
     Insert a new order in SUBMITTING state.
     At least one of qty_base_requested / qty_usd_requested must be provided.
     EXIT orders must have a position_id (enforced here and by CHECK constraint).
+    base_increment_applied: the exchange step string used to ROUND_DOWN qty_base_requested
+    (e.g. "0.00000001"). Stored for audit; None for ENTRY orders or legacy paths.
     """
     if qty_base_requested is None and qty_usd_requested is None:
         raise ValueError(f"Order '{order_id}': must set qty_base_requested or qty_usd_requested.")
@@ -592,13 +713,13 @@ def insert_order(
         INSERT INTO orders(
             id, epoch_id, asset, side, order_type, purpose, position_id,
             qty_base_requested, qty_usd_requested, limit_price,
-            placed_at, expires_at, reasoning, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'SUBMITTING')
+            placed_at, expires_at, reasoning, status, base_increment_applied
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'SUBMITTING',?)
     """
     args = (
         order_id, epoch_id, asset, side, order_type, purpose, position_id,
         qty_base_requested, qty_usd_requested, limit_price,
-        placed_at, expires_at, reasoning,
+        placed_at, expires_at, reasoning, base_increment_applied,
     )
     if conn:
         conn.execute(sql, args)
@@ -1155,6 +1276,44 @@ def update_position_extensions(
     else:
         with get_db() as c:
             _run(c)
+
+
+def transition_position_to_dust(
+    position_id: str,
+    conn: sqlite3.Connection,
+) -> None:
+    """
+    Mark an OPEN or CLOSING position as DUST.
+
+    Called when qty_base_remaining rounds DOWN to zero (or below base_min_size)
+    under the exchange's base_increment rules — the position can no longer be
+    exited because no valid SELL qty exists.  DUST is real open exposure:
+    it blocks new ENTRY orders for the asset and prevents epoch transitions.
+
+    Records a DUST_SETTLED position_event for audit.
+    Raises RuntimeError if position not found or not OPEN/CLOSING.
+    """
+    ts = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE positions SET status='DUST' WHERE id=? AND status IN ('OPEN','CLOSING')",
+        (position_id,),
+    )
+    if conn.execute("SELECT changes()").fetchone()[0] == 0:
+        row = conn.execute(
+            "SELECT status FROM positions WHERE id=?", (position_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Position '{position_id}' not found.")
+        raise RuntimeError(
+            f"Position '{position_id}' is {row['status']!r} — "
+            "DUST transition only allowed from OPEN or CLOSING."
+        )
+    conn.execute(
+        "INSERT INTO position_events(position_id, event_type, payload, occurred_at)"
+        " VALUES (?,?,?,?)",
+        (position_id, "DUST_SETTLED",
+         json.dumps({"reason": "qty_base_remaining below base_min_size"}), ts),
+    )
 
 
 def get_open_positions_for_asset(

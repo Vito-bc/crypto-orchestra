@@ -207,16 +207,19 @@ def place_order_outbox(
                 "Wait for them to fill, expire, or be cancelled."
             )
 
-        # Gate: no open position for this asset.
+        # Gate: no open or dust position for this asset.
+        # DUST positions are real open exposure — the user still owns the coins;
+        # they just cannot be sold below base_min_size.  Block ENTRY until dust
+        # is manually written off or the position is closed by other means.
         active_pos = conn.execute(
             "SELECT COUNT(*) FROM positions"
-            " WHERE asset=? AND status IN ('OPEN','CLOSING')",
+            " WHERE asset=? AND status IN ('OPEN','CLOSING','DUST')",
             (asset,),
         ).fetchone()[0]
         if active_pos:
             raise PlacementBlocked(
                 f"Cannot place ENTRY for {asset}: "
-                f"{active_pos} active position(s) already open. "
+                f"{active_pos} active/dust position(s) already exist. "
                 "Close existing positions before entering again."
             )
 
@@ -290,6 +293,8 @@ def place_exit_outbox(
     coinbase_sell_fn: Callable[[str, str, float], str],
     order_id: Optional[str] = None,
     db_path: Optional[Path] = None,
+    base_increment: Optional[str] = None,
+    base_min_size: Optional[str] = None,
 ) -> ExitPlaceResult:
     """
     Place a SELL order to exit an open ledger position via the two-transaction outbox.
@@ -299,11 +304,22 @@ def place_exit_outbox(
       Any other exception = ambiguous → leave order SUBMITTING.
       Returning a falsy value = also treated as ambiguous.
 
+    base_increment: exchange base-qty step as a string (e.g. "0.00000001").
+      When provided, qty_base_remaining is rounded DOWN to this increment inside
+      TX-A and the rounded value is stored as qty_base_requested and passed to
+      coinbase_sell_fn.  Also stored in orders.base_increment_applied for audit.
+    base_min_size: exchange minimum order size as a string (e.g. "0.001").
+      When both base_increment and base_min_size are provided, the rounded qty
+      is checked; if rounded_qty < base_min_size the position is transitioned to
+      DUST status inside TX-A (committed), then PlacementBlocked is raised.
+
     TX-A (BEGIN IMMEDIATE):
       Reads qty_base_remaining + asset from the position (authoritative values).
       Verifies position is OPEN or CLOSING (not yet CLOSED).
       Verifies no active EXIT order exists for this position.
-      INSERTs SUBMITTING EXIT order with exact qty_base_remaining.
+      Applies base_increment rounding (ROUND_DOWN) if provided.
+      If rounded qty is DUST: transitions position to DUST, commits, raises PlacementBlocked.
+      Otherwise: INSERTs SUBMITTING EXIT order with rounded qty_base_remaining.
       COMMIT.
     ─── no SQLite connection held open during the network call ───────────────────
     TX-B:
@@ -313,8 +329,9 @@ def place_exit_outbox(
 
     Raises PlacementBlocked if:
       - position not found
-      - position is already CLOSED
+      - position is already CLOSED or DUST
       - an active EXIT order (SUBMITTING/OPEN/PARTIAL) already exists for this position
+      - rounded qty is below base_min_size (DUST transition committed first)
     """
     from exchange.coinbase_client import CoinbaseOrderRejected
 
@@ -353,11 +370,11 @@ def place_exit_outbox(
                 f"Cannot exit position '{position_id}': "
                 f"status is {pos['status']!r}, expected OPEN or CLOSING."
             )
-        qty_base = pos["qty_base_remaining"] or 0.0
-        if qty_base <= 0:
+        qty_base_raw = pos["qty_base_remaining"] or 0.0
+        if qty_base_raw <= 0:
             raise PlacementBlocked(
                 f"Cannot exit position '{position_id}': "
-                f"qty_base_remaining={qty_base} <= 0 — nothing to sell."
+                f"qty_base_remaining={qty_base_raw} <= 0 — nothing to sell."
             )
 
         # Gate: enforced by idx_one_active_exit_per_position, but explicit check
@@ -379,21 +396,52 @@ def place_exit_outbox(
         epoch_id = pos["epoch_id"]
         placed_at = datetime.now(timezone.utc).isoformat()
 
-        insert_order(
-            order_id=order_id,
-            epoch_id=epoch_id,
-            asset=asset,
-            side="SELL",
-            order_type="MARKET",
-            purpose="EXIT",
-            position_id=position_id,
-            placed_at=placed_at,
-            qty_base_requested=qty_base,
-            reasoning=exit_reason,
-            conn=conn,
-        )
+        # Apply product rules: ROUND_DOWN to base_increment, then DUST check.
+        # This runs inside the write lock so the rounded qty is always consistent
+        # with the authoritative qty_base_remaining read above.
+        if base_increment is not None:
+            from pipeline.product_rules import round_base_qty, is_dust as _is_dust
+            rounded = round_base_qty(qty_base_raw, base_increment)
+            if base_min_size is not None and _is_dust(rounded, base_min_size):
+                # Remaining qty is below exchange minimum — cannot be sold.
+                # Transition to DUST (commits with this TX-A) so the exit executor
+                # won't attempt another SELL on the next tick.
+                from pipeline.ledger import transition_position_to_dust
+                transition_position_to_dust(position_id, conn)
+                dust_qty = float(rounded)
+            else:
+                dust_qty = None
+            qty_base = float(rounded)
+        else:
+            qty_base = qty_base_raw
+            dust_qty = None
+
+        if dust_qty is None:
+            insert_order(
+                order_id=order_id,
+                epoch_id=epoch_id,
+                asset=asset,
+                side="SELL",
+                order_type="MARKET",
+                purpose="EXIT",
+                position_id=position_id,
+                placed_at=placed_at,
+                qty_base_requested=qty_base,
+                reasoning=exit_reason,
+                base_increment_applied=base_increment,
+                conn=conn,
+            )
     # TX-A committed. qty_base and asset are captured from the authoritative locked read.
+    # Dust transition (if any) is also committed here, before the check below.
     # ── No SQLite connection held open during the network call ─────────────────
+
+    if dust_qty is not None:
+        raise PlacementBlocked(
+            f"DUST: position '{position_id}' qty_base_remaining={qty_base_raw} "
+            f"rounds to {dust_qty} under base_increment={base_increment!r}, "
+            f"below base_min_size={base_min_size!r}. "
+            "Position transitioned to DUST — no SELL placed."
+        )
 
     exchange_order_id: Optional[str] = None
     rejection_reason: Optional[str] = None

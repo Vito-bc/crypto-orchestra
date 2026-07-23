@@ -95,6 +95,63 @@ def is_dry_run() -> bool:
     return _DRY_RUN
 
 
+# ── Product info cache — populated lazily, lives for the process lifetime ─────
+# Keys: product_id (str).  Values: dict with base_increment, base_min_size, quote_increment.
+_product_cache: dict[str, dict] = {}
+
+# Dry-run defaults: 8-decimal precision, vanishingly small min-size so no test
+# quantity ever triggers DUST in simulated mode.
+_DRY_RUN_PRODUCT_DEFAULTS: dict = {
+    "base_increment": "0.00000001",
+    "base_min_size":  "0.00000001",
+    "quote_increment": "0.01",
+}
+
+
+def get_product_info(product_id: str) -> dict:
+    """
+    Return exchange product rules for product_id.
+
+    Returned keys:
+        base_increment   — minimum base-qty step, e.g. "0.00000001"
+        base_min_size    — minimum order size in base currency, e.g. "0.001"
+        quote_increment  — minimum price tick, e.g. "0.01"
+
+    In DRY_RUN mode returns safe defaults (8 dp, tiny min size) so that
+    simulated orders are never accidentally classified as DUST.
+
+    Live results are cached per product_id for the lifetime of the process.
+    Coinbase product rules change only on product listings/delistings, never
+    during an active trading session.
+
+    Raises RuntimeError on API failure (caller should treat this as a hard
+    block on order placement — do not fall back to un-rounded quantities).
+    """
+    if _DRY_RUN:
+        return _DRY_RUN_PRODUCT_DEFAULTS.copy()
+
+    if product_id in _product_cache:
+        return _product_cache[product_id]
+
+    client = _get_client()
+    try:
+        resp = client.get_product(product_id=product_id)
+        resp_dict = resp.to_dict() if hasattr(resp, "to_dict") else resp
+        info = {
+            "base_increment":  resp_dict.get("base_increment",  "0.00000001"),
+            "base_min_size":   resp_dict.get("base_min_size",   "0.00000001"),
+            "quote_increment": resp_dict.get("quote_increment", "0.01"),
+        }
+        _product_cache[product_id] = info
+        return info
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to fetch product info for {product_id}: {exc}. "
+            "Cannot determine base_increment or base_min_size — "
+            "order placement blocked to prevent INVALID_QUANTITY rejection."
+        ) from exc
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def _make_order_id(client_order_id: str | None = None) -> str:

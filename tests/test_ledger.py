@@ -307,7 +307,7 @@ def test_start_epoch_raises_on_duplicate(tmp_db: Path) -> None:
 
 def test_start_epoch_blocked_by_open_position(db_with_position: tuple) -> None:
     db, _, _ = db_with_position
-    with pytest.raises(ValueError, match="open/closing position"):
+    with pytest.raises(ValueError, match="open/closing/dust position"):
         with get_db(db) as conn:
             start_epoch("EP2", 100.0, "blocked", conn=conn)
 
