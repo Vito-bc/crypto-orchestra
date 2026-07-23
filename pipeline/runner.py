@@ -1378,9 +1378,34 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
                 ),
             )
 
-    # Step 5: ENTRY gate
+    # Step 5: System-level preflight — key permissions, portfolio identity,
+    # USD account health, product rules for all assets.
+    # DRY_RUN: synthetic result (no API calls).
+    # LIVE: real GET calls via read-only facade; Create/Cancel/Transfer blocked.
+    from pipeline.preflight import run_preflight
+    _preflight = run_preflight(ASSETS, live_reads=not _is_dry_run())
+    if _preflight.overall_status == "CRITICAL":
+        msg = (
+            f"[Startup] Preflight CRITICAL — ENTRY halted.\n"
+            + "\n".join(f"  • {e}" for e in _preflight.errors[:10])
+        )
+        print(msg)
+        send_telegram_message(msg)
+        entry_ok = False
+    elif _preflight.overall_status == "ENTRY_BLOCKED":
+        msg = (
+            f"[Startup] Preflight ENTRY_BLOCKED — ENTRY halted.\n"
+            + "\n".join(f"  • {e}" for e in _preflight.errors[:10])
+        )
+        print(msg)
+        send_telegram_message(msg)
+        entry_ok = False
+    else:
+        print(f"[Startup] Preflight OK — latency {_preflight.latency_ms:.0f} ms")
+
+    # Step 6: ENTRY gate
     if not entry_ok:
-        print("[Startup] Halting — reconciliation blocked new ENTRY orders.")
+        print("[Startup] Halting — reconciliation or preflight blocked new ENTRY orders.")
         return {}
 
     trade_assets = [target_asset] if target_asset else ASSETS
