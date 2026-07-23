@@ -302,15 +302,22 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
                 side="SELL",
             )
         if exchange_order_id == EX_ID_1:
-            # exit1 was CANCELLED in round 1 with fills_finalized_at IS NULL
-            # (within the 10-min settlement window). Round 2 re-checks it via
-            # terminal_rows; return CANCELLED with no new fills so
-            # _check_late_fills_for_terminal_order short-circuits cleanly.
+            # exit1 was CANCELLED in round 1 with fills_finalized_at IS NULL (within
+            # the 10-min settlement window). Round 2 re-checks it via terminal_rows.
+            # Return the same partial fill: _check_late_fills_for_terminal_order will
+            # find PARTIAL_FILL_ID already in already_applied → new_fills=[] → no-op.
+            # This proves idempotency through the reconciler: the fill is not doubled.
             return CoinbaseOrder(
                 client_order_id=exit1_id,
                 exchange_order_id=EX_ID_1,
                 status="CANCELLED",
-                fills=[],
+                fills=[CoinbaseFill(
+                    exchange_fill_id=PARTIAL_FILL_ID,
+                    fill_price=PARTIAL_FILL_PRICE,
+                    fill_qty_base=PARTIAL_FILL_QTY,
+                    fee_usd=PARTIAL_FILL_FEE,
+                    filled_at=_now(),
+                )],
                 product_id=ASSET,
                 side="SELL",
             )
@@ -514,24 +521,25 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
 
 def test_e2e_stop_loss_adverse_slippage_negative_pnl(tmp_db: Path) -> None:
     """
-    Realistic stop-loss with adverse slippage: the market SELL fills below
-    the trigger price due to a gap-down / thin-book scenario.
+    Realistic stop-loss: gap-through-stop followed by fill below trigger.
 
-    Entry: $100, stop: $90.  Price gaps to $78 (below stop AND trigger).
-    Market SELL executes at $78 (2.5% below trigger) with a $0.80 fee.
-    Expected outcome: negative P&L, correctly stored through the reconciler.
+    Entry: $100, stop: $90.  Price gaps to $80 — below stop, triggering STOP_LOSS.
+    Market SELL routes to exchange; by fill time price has slipped further to $78
+    ($2 below trigger, thin book / partial gap-fill).
 
-    This complements the main lifecycle test's P&L arithmetic check with
-    a semantically realistic scenario where the stop actually incurs a loss.
+    Two distinct effects:
+      gap-through-stop : trigger ($80) is already $10 below the configured stop ($90)
+      adverse slippage : fill ($78) is $2 below the trigger ($80) due to routing latency
+
+    Expected outcome: negative P&L, both effects captured in the ledger formula.
     """
     db = tmp_db
     _, pos_id = _setup_open_position(db)
 
-    # EXIT executor: price gap triggers STOP_LOSS at $78 (below stop $90)
-    SLIPPAGE_TRIGGER = 78.0
+    SLIPPAGE_TRIGGER = 80.0   # price seen by EXIT executor: gap-down past stop $90
     SLIP_EX_ID = "EX-SLIP-001"
     SLIP_FILL_ID = "F-SLIP-001"
-    SLIP_FILL_PRICE = 78.0    # fills at the gapped price — adverse slippage
+    SLIP_FILL_PRICE = 78.0    # actual fill: $2 below trigger (adverse slippage)
     SLIP_FILL_QTY = ENTRY_QTY
     SLIP_FILL_FEE = 0.80
 

@@ -236,9 +236,12 @@ def test_run_all_assets_single_asset_calls_startup_reconciliation():
     startup_called = []
 
     # _startup_reconciliation returns (False, None) → run_all_assets returns {} without running pipeline
-    with patch("pipeline.runner._startup_reconciliation", side_effect=lambda: (
-        startup_called.append(True) or (False, None)
-    )):
+    with (
+        patch("pipeline.runner._startup_reconciliation", side_effect=lambda: (
+            startup_called.append(True) or (False, None)
+        )),
+        patch("pipeline.runner._get_open_position_assets", return_value=[]),
+    ):
         result = run_all_assets(target_asset="ZEC-USD")
 
     assert startup_called, "_startup_reconciliation() was not called"
@@ -251,9 +254,12 @@ def test_run_all_assets_no_asset_calls_startup_reconciliation():
 
     startup_called = []
 
-    with patch("pipeline.runner._startup_reconciliation", side_effect=lambda: (
-        startup_called.append(True) or (False, None)
-    )):
+    with (
+        patch("pipeline.runner._startup_reconciliation", side_effect=lambda: (
+            startup_called.append(True) or (False, None)
+        )),
+        patch("pipeline.runner._get_open_position_assets", return_value=[]),
+    ):
         result = run_all_assets()
 
     assert startup_called
@@ -268,6 +274,7 @@ def test_run_all_assets_halts_when_startup_blocked():
 
     with (
         patch("pipeline.runner._startup_reconciliation", return_value=(False, None)),
+        patch("pipeline.runner._get_open_position_assets", return_value=[]),
         patch(
             "pipeline.runner.run_pipeline",
             side_effect=lambda asset: pipeline_calls.append(asset),
