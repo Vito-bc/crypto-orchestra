@@ -1,23 +1,28 @@
 """
 End-to-end EXIT lifecycle integration tests.
 
-Covers the full chain without any mocks of the state machine:
-    ENTRY fill → OPEN position
-    EXIT executor → first SELL (full qty), stop-loss triggered
-    Active EXIT blocks duplicate SELL (idempotent tick)
-    Reconciliation → partial fill (40%) + CANCELLED → CLOSING (60% remaining)
-    EXIT executor → second SELL for exactly 60% (qty_base_remaining)
-    Second fill → position CLOSED
-    P&L / fees verified against ledger formula
-    Idempotent fill replay: same exchange_fill_id → replayed=True, state unchanged
-    EXIT executor on CLOSED position: no sells placed
-    Epoch closed-P&L matches position P&L
+All tests exercise the real state machine (ledger, reconciler, executor, outbox)
+— no mocks of internal transitions.
 
-Crash variant:
-    TX-A SUBMITTING EXIT committed → crash before TX-B.
-    On restart, reconciliation finds the EXIT on Coinbase via list_orders_fn
+test_e2e_exit_lifecycle:
+    ENTRY fill → OPEN position → EXIT executor (STOP_LOSS, full qty)
+    → idempotent tick → reconciliation round 1 (partial 40% fill + CANCELLED)
+    → CLOSING (60% remaining) → EXIT executor (second SELL for exactly 60%)
+    → reconciliation round 2 (FILLED) → CLOSED
+    → P&L / fees / VWAP verified → idempotent fill replay → no sell after CLOSE
+    → epoch closed-P&L
+
+test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell:
+    place_exit_outbox() with a sell_fn that raises TimeoutError.
+    TX-A commits (SUBMITTING); TX-B is skipped (ambiguous network failure).
+    Reconciliation finds the order on Coinbase via list_orders_fn
     (matched by client_order_id) and resolves SUBMITTING → OPEN without
-    placing a duplicate SELL.
+    creating a duplicate SELL.
+
+test_e2e_stop_loss_adverse_slippage_negative_pnl:
+    Realistic stop-loss with adverse slippage: fill executes below the trigger
+    price (gap-down market). Verifies negative P&L is computed and stored
+    correctly through the full reconciliation path.
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from pipeline.ledger import (
     run_migrations,
     transition_order,
 )
+from pipeline.outbox import place_exit_outbox
 from pipeline.reconciler import (
     CoinbaseFill,
     CoinbaseOrder,
@@ -46,7 +52,7 @@ from pipeline.reconciler import (
 )
 
 # ---------------------------------------------------------------------------
-# Test constants
+# Test constants — main lifecycle
 # ---------------------------------------------------------------------------
 
 ASSET = "ZEC-USD"
@@ -59,31 +65,35 @@ STOP_PRICE = 90.0     # fires when current_price <= STOP_PRICE
 TARGET_PRICE = 150.0
 TRIGGER_PRICE = 80.0  # below STOP_PRICE → STOP_LOSS condition
 
-# First EXIT: partial fill then CANCELLED
+# First EXIT: partially filled then CANCELLED
 PARTIAL_FILL_ID = "F-PARTIAL-001"
-PARTIAL_FILL_PRICE = 110.0
-PARTIAL_FILL_QTY = 0.4       # 40% of 1.0 ZEC
+PARTIAL_FILL_PRICE = 110.0   # fee-math scenario; slippage tested separately
+PARTIAL_FILL_QTY = 0.4
 PARTIAL_FILL_FEE = 0.20
 
 # Second EXIT: fills remaining qty exactly
 SECOND_FILL_ID = "F-SECOND-001"
 SECOND_FILL_PRICE = 120.0
-SECOND_FILL_QTY = ENTRY_QTY - PARTIAL_FILL_QTY  # 0.6 ZEC
+SECOND_FILL_QTY = ENTRY_QTY - PARTIAL_FILL_QTY   # 0.6 ZEC
 SECOND_FILL_FEE = 0.30
 
-EX_ID_1 = "EX-LIFECYCLE-001"  # exchange_order_id for first EXIT
-EX_ID_2 = "EX-LIFECYCLE-002"  # exchange_order_id for second EXIT
+EX_ID_1 = "EX-LIFECYCLE-001"
+EX_ID_2 = "EX-LIFECYCLE-002"
 
-# Expected P&L (hand-computed):
+# Expected P&L (hand-computed to double-check against ledger formula):
 #   exit_vwap = (110*0.4 + 120*0.6) / 1.0 = 116.0
 #   total_exit_fee = 0.20 + 0.30 = 0.50
 #   pnl_usd = (116 - 100) * 1.0 - 0.50 - 0.50 = 15.0
-#   pnl_pct = 15.0 / 100.0 * 100 = 15.0 %
+#   pnl_pct = 15.0 / (100.0 * 1.0) * 100 = 15.0 %
 EXPECTED_EXIT_VWAP = (
     PARTIAL_FILL_PRICE * PARTIAL_FILL_QTY + SECOND_FILL_PRICE * SECOND_FILL_QTY
 ) / ENTRY_QTY
 EXPECTED_EXIT_FEE = PARTIAL_FILL_FEE + SECOND_FILL_FEE
-EXPECTED_PNL_USD = (EXPECTED_EXIT_VWAP - ENTRY_PRICE) * ENTRY_QTY - EXPECTED_EXIT_FEE - ENTRY_FEE
+EXPECTED_PNL_USD = (
+    (EXPECTED_EXIT_VWAP - ENTRY_PRICE) * ENTRY_QTY
+    - EXPECTED_EXIT_FEE
+    - ENTRY_FEE
+)
 EXPECTED_PNL_PCT = EXPECTED_PNL_USD / (ENTRY_PRICE * ENTRY_QTY) * 100
 
 
@@ -100,10 +110,7 @@ def _oid() -> str:
 
 
 def _setup_open_position(db: Path) -> tuple[str, str]:
-    """
-    Insert epoch (if absent), ENTRY order, trade intent, fill.
-    Returns (entry_order_id, position_id).
-    """
+    """Insert epoch (once), ENTRY order + trade intent + fill. Returns (entry_oid, pos_id)."""
     with get_db(db) as conn:
         if not conn.execute(
             "SELECT 1 FROM risk_epochs WHERE epoch_id=?", (EPOCH_ID,)
@@ -146,20 +153,23 @@ def tmp_db(tmp_path: Path) -> Path:
 
 def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     """
-    Full EXIT lifecycle: partial fill → restart → remaining qty SELL → CLOSED → P&L.
+    Full EXIT lifecycle: partial fill → restart → remaining-qty SELL → CLOSED → P&L.
+
+    Both exit fills are routed through run_startup_reconciliation so the test
+    exercises the full CoinbaseOrder → reconciler → apply_fill → ledger chain.
 
     Steps:
-      1. ENTRY fill → OPEN position.
-      2. EXIT executor (stop-loss) → first SELL for full qty (OPEN).
-      3. Active EXIT blocks duplicate SELL.
-      4. Reconciliation: first EXIT partially filled (40%) then CANCELLED
-         → position CLOSING, remaining = 60%.
-      5. EXIT executor → second SELL for exactly 60%.
-      6. Second fill → position CLOSED.
-      7. P&L = (exit_vwap - entry_price) * qty - all fees.
-      8. Idempotent fill replay → replayed=True, state unchanged.
-      9. EXIT executor on CLOSED position → no sells.
-     10. Epoch closed-P&L matches position P&L.
+      1.  ENTRY fill → OPEN position.
+      2.  EXIT executor (STOP_LOSS) → first SELL for full qty (TX-A + TX-B via real executor).
+      3.  Active EXIT blocks duplicate SELL (idempotent tick).
+      4.  Reconciliation round 1: first EXIT CANCELLED with 40% partial fill
+          → order CANCELLED, position CLOSING, qty_base_remaining = 60%.
+      5.  EXIT executor → second SELL for exactly 60% (read from qty_base_remaining).
+      6.  Reconciliation round 2: second EXIT FILLED with full fill → position CLOSED.
+      7.  P&L = (exit_vwap - entry_price) * qty - all fees; VWAP, fee, pct verified.
+      8.  Idempotent fill replay → replayed=True, no state change.
+      9.  EXIT executor on CLOSED position → no sells, empty action list.
+     10.  Epoch closed-P&L matches position record.
     """
     db = tmp_db
 
@@ -175,13 +185,10 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert pos["entry_price"] == pytest.approx(ENTRY_PRICE)
     assert pos["stop_price"] == pytest.approx(STOP_PRICE)
 
-    # ── Step 2: EXIT executor → first SELL for full qty ───────────────────────
-    exit1_id_box: list[str] = []
-
+    # ── Step 2: EXIT executor → first SELL (STOP_LOSS, full qty) ─────────────
     def sell_fn_1(order_id: str, asset: str, qty_base: float) -> str:
         assert asset == ASSET
         assert qty_base == pytest.approx(ENTRY_QTY)
-        exit1_id_box.append(order_id)
         return EX_ID_1
 
     actions1 = run_exit_executor(ASSET, TRIGGER_PRICE, sell_fn_1, db_path=db)
@@ -206,18 +213,18 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert e1["position_id"] == pos_id
 
     # ── Step 3: active EXIT blocks duplicate SELL ─────────────────────────────
-    second_sell_calls: list[str] = []
+    sell_called: list[str] = []
 
     def sell_fn_noop(order_id: str, asset: str, qty_base: float) -> str:
-        second_sell_calls.append(order_id)
+        sell_called.append(order_id)
         return "NOOP"
 
     actions_idem = run_exit_executor(ASSET, TRIGGER_PRICE, sell_fn_noop, db_path=db)
-    assert second_sell_calls == [], "sell_fn must not be called when active EXIT exists"
+    assert sell_called == [], "sell_fn must not be called when active EXIT exists"
     assert any(a.get("note") == "active_exit_already_exists" for a in actions_idem)
 
-    # ── Step 4: reconciliation — partial fill (40%) then CANCELLED ────────────
-    def get_order_fn_step4(exchange_order_id: str):
+    # ── Step 4: reconciliation round 1 — partial fill (40%) + CANCELLED ──────
+    def get_order_fn_r1(exchange_order_id: str):
         if exchange_order_id == EX_ID_1:
             return CoinbaseOrder(
                 client_order_id=exit1_id,
@@ -235,13 +242,13 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
             )
         return None
 
-    report = run_startup_reconciliation(
+    report1 = run_startup_reconciliation(
         list_orders_fn=lambda: [],
         cancel_order_fn=lambda eid: True,
-        get_order_fn=get_order_fn_step4,
+        get_order_fn=get_order_fn_r1,
         db_path=db,
     )
-    assert report.allowed_to_trade, f"Unexpected unresolved items: {report.unresolved}"
+    assert report1.allowed_to_trade, f"Unexpected unresolved: {report1.unresolved}"
 
     with get_db(db) as conn:
         e1 = conn.execute("SELECT * FROM orders WHERE id=?", (exit1_id,)).fetchone()
@@ -253,7 +260,7 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert e1["status"] == "CANCELLED"
     assert fill_count == 1, "partial fill must be recorded in fills table"
     assert pos_row["status"] == "CLOSING"
-    assert pos_row["qty_base_remaining"] == pytest.approx(ENTRY_QTY - PARTIAL_FILL_QTY)
+    assert pos_row["qty_base_remaining"] == pytest.approx(SECOND_FILL_QTY)
 
     # ── Step 5: EXIT executor → second SELL for exactly remaining 60% ─────────
     def sell_fn_2(order_id: str, asset: str, qty_base: float) -> str:
@@ -277,21 +284,52 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert e2["qty_base_requested"] == pytest.approx(SECOND_FILL_QTY)
     assert e2["position_id"] == pos_id
 
-    # ── Step 6: second fill → position CLOSED ────────────────────────────────
+    # ── Step 6: reconciliation round 2 — second EXIT FILLED → position CLOSED ─
+    def get_order_fn_r2(exchange_order_id: str):
+        if exchange_order_id == EX_ID_2:
+            return CoinbaseOrder(
+                client_order_id=exit2_id,
+                exchange_order_id=EX_ID_2,
+                status="FILLED",
+                fills=[CoinbaseFill(
+                    exchange_fill_id=SECOND_FILL_ID,
+                    fill_price=SECOND_FILL_PRICE,
+                    fill_qty_base=SECOND_FILL_QTY,
+                    fee_usd=SECOND_FILL_FEE,
+                    filled_at=_now(),
+                )],
+                product_id=ASSET,
+                side="SELL",
+            )
+        if exchange_order_id == EX_ID_1:
+            # exit1 was CANCELLED in round 1 with fills_finalized_at IS NULL
+            # (within the 10-min settlement window). Round 2 re-checks it via
+            # terminal_rows; return CANCELLED with no new fills so
+            # _check_late_fills_for_terminal_order short-circuits cleanly.
+            return CoinbaseOrder(
+                client_order_id=exit1_id,
+                exchange_order_id=EX_ID_1,
+                status="CANCELLED",
+                fills=[],
+                product_id=ASSET,
+                side="SELL",
+            )
+        return None
+
+    report2 = run_startup_reconciliation(
+        list_orders_fn=lambda: [],
+        cancel_order_fn=lambda eid: True,
+        get_order_fn=get_order_fn_r2,
+        db_path=db,
+    )
+    assert report2.allowed_to_trade, f"Unexpected unresolved: {report2.unresolved}"
+
     with get_db(db) as conn:
-        r2 = apply_fill(
-            order_id=exit2_id,
-            fill_price=SECOND_FILL_PRICE,
-            fill_qty_base=SECOND_FILL_QTY,
-            fee_usd=SECOND_FILL_FEE,
-            exchange_fill_id=SECOND_FILL_ID,
-            conn=conn,
-        )
+        e2 = conn.execute("SELECT * FROM orders WHERE id=?", (exit2_id,)).fetchone()
 
-    assert r2["status"] == "FILLED"
-    assert r2["position_id"] == pos_id
+    assert e2["status"] == "FILLED"
 
-    # ── Step 7: verify P&L and fees ──────────────────────────────────────────
+    # ── Step 7: verify P&L, VWAP, and fees ───────────────────────────────────
     with get_db(db) as conn:
         pos_closed = conn.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone()
 
@@ -303,8 +341,8 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert pos_closed["pnl_pct"] == pytest.approx(EXPECTED_PNL_PCT)
 
     # ── Step 8: idempotent fill replay ────────────────────────────────────────
-    # Both fills have exchange_fill_ids; the early idempotency check fires
-    # before the terminal-order check, so reconciliation_mode is not needed.
+    # The early exchange_fill_id dedup in apply_fill fires before the terminal-order
+    # check, so reconciliation_mode is not required for CANCELLED/FILLED orders.
     with get_db(db) as conn:
         replay1 = apply_fill(
             order_id=exit1_id,
@@ -329,7 +367,7 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
     assert pos_after_replay["pnl_usd"] == pytest.approx(EXPECTED_PNL_USD)
     assert pos_after_replay["qty_base_remaining"] == 0.0
 
-    # ── Step 9: EXIT executor on CLOSED position → no sells placed ────────────
+    # ── Step 9: EXIT executor on CLOSED position → no sells ───────────────────
     final_sell_calls: list[str] = []
 
     def sell_fn_final(order_id: str, asset: str, qty_base: float) -> str:
@@ -338,7 +376,7 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
 
     actions_final = run_exit_executor(ASSET, TRIGGER_PRICE, sell_fn_final, db_path=db)
     assert final_sell_calls == []
-    assert actions_final == []  # no open/closing positions remain
+    assert actions_final == []
 
     # ── Step 10: epoch closed P&L ─────────────────────────────────────────────
     with get_db(db) as conn:
@@ -350,37 +388,46 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Crash variant: TX-A SUBMITTING survives restart
+# Crash variant: real TX-A via place_exit_outbox + TimeoutError
 # ---------------------------------------------------------------------------
 
 def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
     tmp_db: Path,
 ) -> None:
     """
-    Crash variant: TX-A committed (EXIT SUBMITTING) but process crashed before TX-B.
+    Crash variant: sell_fn raises TimeoutError (ambiguous network failure).
 
-    On restart reconciliation finds the EXIT on Coinbase via list_orders_fn
-    (matched by client_order_id = local order UUID) and resolves
-    SUBMITTING → OPEN without creating a second SELL order.
+    place_exit_outbox() commits TX-A (SUBMITTING order in ledger) and then
+    calls coinbase_sell_fn.  The TimeoutError is caught as an ambiguous failure
+    → TX-B is skipped → order remains SUBMITTING.
 
-    Key assertions:
-      - Exactly one EXIT order exists after reconciliation.
-      - That EXIT is OPEN with exchange_order_id from Coinbase.
-      - Position is still OPEN (no fills in the crash window).
-      - Subsequent run_exit_executor tick finds active EXIT → no sell placed.
+    On the next startup, run_startup_reconciliation finds the SUBMITTING order
+    on Coinbase via list_orders_fn (matched by client_order_id = local UUID)
+    and resolves it SUBMITTING → OPEN without placing a duplicate SELL.
     """
     db = tmp_db
     _, pos_id = _setup_open_position(db)
 
-    # Simulate TX-A: SUBMITTING EXIT committed, exchange_order_id not set yet
+    # Pre-generate order_id so we can reference it in the mock after TX-A
     crash_exit_oid = _oid()
-    with get_db(db) as conn:
-        insert_order(
-            order_id=crash_exit_oid, epoch_id=EPOCH_ID, asset=ASSET,
-            side="SELL", order_type="MARKET", purpose="EXIT",
-            position_id=pos_id, placed_at=_now(),
-            qty_base_requested=ENTRY_QTY, conn=conn,
-        )
+    CB_EX_ID = "EX-CRASH-001"
+
+    def crash_sell_fn(order_id: str, asset: str, qty_base: float) -> str:
+        # Simulates: API call was sent, response never received (dropped connection)
+        raise TimeoutError("simulated network timeout — no response from Coinbase")
+
+    # TX-A: insert SUBMITTING EXIT order (committed before sell_fn is called)
+    # TX-B: skipped because TimeoutError is treated as ambiguous
+    result = place_exit_outbox(
+        position_id=pos_id,
+        exit_reason="STOP_LOSS",
+        coinbase_sell_fn=crash_sell_fn,
+        order_id=crash_exit_oid,
+        db_path=db,
+    )
+
+    assert result.status == "SUBMITTING"
+    assert result.exchange_order_id is None
 
     with get_db(db) as conn:
         crash_row = conn.execute(
@@ -389,10 +436,11 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
 
     assert crash_row["status"] == "SUBMITTING"
     assert crash_row["exchange_order_id"] is None
+    assert crash_row["purpose"] == "EXIT"
+    assert crash_row["position_id"] == pos_id
 
-    # Coinbase received the order before the crash (sell_fn executed, TX-B did not)
-    CB_EX_ID = "EX-CRASH-001"
-
+    # Coinbase received the request (sell_fn fired before raising) so the order exists
+    # there under CB_EX_ID.  Reconciliation discovers it via client_order_id match.
     def list_orders_fn():
         return [CoinbaseOrder(
             client_order_id=crash_exit_oid,
@@ -423,7 +471,7 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
     )
     assert report.allowed_to_trade, f"Unexpected unresolved: {report.unresolved}"
 
-    # SUBMITTING → OPEN, exchange_order_id populated
+    # SUBMITTING → OPEN with exchange_order_id from Coinbase
     with get_db(db) as conn:
         crash_row = conn.execute(
             "SELECT * FROM orders WHERE id=?", (crash_exit_oid,)
@@ -432,14 +480,14 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
     assert crash_row["status"] == "OPEN"
     assert crash_row["exchange_order_id"] == CB_EX_ID
 
-    # Position still OPEN (no fills during crash interval)
+    # Position still OPEN — no fills arrived during the crash window
     with get_db(db) as conn:
         pos_row = conn.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone()
 
     assert pos_row["status"] == "OPEN"
     assert pos_row["qty_base_remaining"] == pytest.approx(ENTRY_QTY)
 
-    # EXIT executor: active EXIT (OPEN) already exists → no sell placed
+    # Subsequent EXIT executor tick: active EXIT (OPEN) blocks a second SELL
     guard_calls: list[str] = []
 
     def sell_fn_guard(order_id: str, asset: str, qty_base: float) -> str:
@@ -450,7 +498,7 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
     assert guard_calls == [], "sell_fn must not fire when active EXIT already exists"
     assert any(a.get("note") == "active_exit_already_exists" for a in actions)
 
-    # Exactly one EXIT order — no duplicate created by the reconciler or executor
+    # Exactly one EXIT order — reconciler and executor both prevented duplicates
     with get_db(db) as conn:
         total_exits = conn.execute(
             "SELECT COUNT(*) FROM orders WHERE position_id=? AND purpose='EXIT'",
@@ -458,3 +506,95 @@ def test_e2e_crash_variant_tx_a_submitting_resolves_without_second_sell(
         ).fetchone()[0]
 
     assert total_exits == 1
+
+
+# ---------------------------------------------------------------------------
+# Adverse-slippage / negative P&L (P2 realistic scenario)
+# ---------------------------------------------------------------------------
+
+def test_e2e_stop_loss_adverse_slippage_negative_pnl(tmp_db: Path) -> None:
+    """
+    Realistic stop-loss with adverse slippage: the market SELL fills below
+    the trigger price due to a gap-down / thin-book scenario.
+
+    Entry: $100, stop: $90.  Price gaps to $78 (below stop AND trigger).
+    Market SELL executes at $78 (2.5% below trigger) with a $0.80 fee.
+    Expected outcome: negative P&L, correctly stored through the reconciler.
+
+    This complements the main lifecycle test's P&L arithmetic check with
+    a semantically realistic scenario where the stop actually incurs a loss.
+    """
+    db = tmp_db
+    _, pos_id = _setup_open_position(db)
+
+    # EXIT executor: price gap triggers STOP_LOSS at $78 (below stop $90)
+    SLIPPAGE_TRIGGER = 78.0
+    SLIP_EX_ID = "EX-SLIP-001"
+    SLIP_FILL_ID = "F-SLIP-001"
+    SLIP_FILL_PRICE = 78.0    # fills at the gapped price — adverse slippage
+    SLIP_FILL_QTY = ENTRY_QTY
+    SLIP_FILL_FEE = 0.80
+
+    exit_oid_box: list[str] = []
+
+    def sell_fn_slip(order_id: str, asset: str, qty_base: float) -> str:
+        assert asset == ASSET
+        assert qty_base == pytest.approx(ENTRY_QTY)
+        exit_oid_box.append(order_id)
+        return SLIP_EX_ID
+
+    actions = run_exit_executor(ASSET, SLIPPAGE_TRIGGER, sell_fn_slip, db_path=db)
+    assert len(actions) == 1
+    assert actions[0]["exit_reason"] == "STOP_LOSS"
+    slip_exit_id = actions[0]["result"].order_id
+
+    # Route the fill through reconciliation (full CoinbaseOrder → reconciler path)
+    def get_order_fn_slip(exchange_order_id: str):
+        if exchange_order_id == SLIP_EX_ID:
+            return CoinbaseOrder(
+                client_order_id=slip_exit_id,
+                exchange_order_id=SLIP_EX_ID,
+                status="FILLED",
+                fills=[CoinbaseFill(
+                    exchange_fill_id=SLIP_FILL_ID,
+                    fill_price=SLIP_FILL_PRICE,
+                    fill_qty_base=SLIP_FILL_QTY,
+                    fee_usd=SLIP_FILL_FEE,
+                    filled_at=_now(),
+                )],
+                product_id=ASSET,
+                side="SELL",
+            )
+        return None
+
+    report = run_startup_reconciliation(
+        list_orders_fn=lambda: [],
+        cancel_order_fn=lambda eid: True,
+        get_order_fn=get_order_fn_slip,
+        db_path=db,
+    )
+    assert report.allowed_to_trade, f"Unexpected unresolved: {report.unresolved}"
+
+    with get_db(db) as conn:
+        pos_closed = conn.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone()
+
+    assert pos_closed["status"] == "CLOSED"
+    assert pos_closed["qty_base_remaining"] == 0.0
+
+    # pnl = (78 - 100) * 1.0 - 0.80 - 0.50 = -22.0 - 1.30 = -23.30
+    expected_pnl = (SLIP_FILL_PRICE - ENTRY_PRICE) * SLIP_FILL_QTY - SLIP_FILL_FEE - ENTRY_FEE
+    expected_pnl_pct = expected_pnl / (ENTRY_PRICE * ENTRY_QTY) * 100
+
+    assert expected_pnl < 0, "stop-loss with adverse slippage must produce a loss"
+    assert pos_closed["exit_price"] == pytest.approx(SLIP_FILL_PRICE)
+    assert pos_closed["exit_fee_usd"] == pytest.approx(SLIP_FILL_FEE)
+    assert pos_closed["pnl_usd"] == pytest.approx(expected_pnl)
+    assert pos_closed["pnl_pct"] == pytest.approx(expected_pnl_pct)
+
+    # Epoch P&L is also negative
+    with get_db(db) as conn:
+        closed = get_epoch_closed_pnl(EPOCH_ID, conn)
+
+    assert len(closed) == 1
+    assert closed[0]["pnl_usd"] == pytest.approx(expected_pnl)
+    assert closed[0]["pnl_usd"] < 0
