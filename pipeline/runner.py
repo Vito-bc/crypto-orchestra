@@ -1339,7 +1339,46 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
             else:
                 print(f"[ExitExecutor] snapshot still unavailable for {asset} (alert suppressed — cooldown active)")
 
-    # Step 4: ENTRY gate
+    # Step 4: ProductState prewarm — fetch rules + trading flags from Coinbase.
+    # Runs after reconciliation so any stale LKG is already available as fallback.
+    # Failures here block ENTRY (fail-closed) but never block EXIT.
+    from pipeline.product_state import prewarm as _prewarm, is_entry_allowed
+    from exchange.coinbase_client import is_dry_run as _is_dry_run
+    if not _is_dry_run():
+        prewarm_results = _prewarm(ASSETS)
+        prewarm_failures = [pid for pid, ok in prewarm_results.items() if not ok]
+        if prewarm_failures:
+            msg = (
+                f"[Startup] ProductState prewarm FAILED for: {prewarm_failures}. "
+                "ENTRY blocked for affected assets; EXIT unaffected."
+            )
+            print(msg)
+            send_telegram_message(msg)
+    else:
+        # DRY_RUN: inject synthetic state so entry gate passes without real API calls.
+        from pipeline.product_state import (
+            _inject_cache, ProductRules, ProductState,
+        )
+        _t = time.monotonic()
+        for _pid in ASSETS:
+            _inject_cache(
+                _pid,
+                rules=ProductRules(
+                    product_id=_pid,
+                    base_increment="0.00000001", base_min_size="0.00000001",
+                    base_max_size="9000", quote_increment="0.01",
+                    fetched_wall=time.time(),
+                ),
+                state=ProductState(
+                    product_id=_pid,
+                    is_disabled=False, trading_disabled=False,
+                    cancel_only=False, limit_only=False,
+                    post_only=False, auction_mode=False, view_only=False,
+                    fetched_wall=time.time(), fetched_mono=_t,
+                ),
+            )
+
+    # Step 5: ENTRY gate
     if not entry_ok:
         print("[Startup] Halting — reconciliation blocked new ENTRY orders.")
         return {}
@@ -1348,6 +1387,20 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     results = {}
     for asset in trade_assets:
         print(f"\n{'='*65}")
+        allowed, reason = is_entry_allowed(asset)
+        if not allowed:
+            msg = f"[ENTRY] BLOCKED {asset} — {reason}"
+            print(msg)
+            send_telegram_message(msg)
+            results[asset] = TradeDecision(
+                asset=asset,
+                timestamp=datetime.now(timezone.utc),
+                action=TradeAction.HOLD,
+                confidence=0.0,
+                reasoning=reason,
+                votes=[],
+            )
+            continue
         decision = run_pipeline(asset, _skip_exit_check=True)
         results[asset] = decision
     return results
