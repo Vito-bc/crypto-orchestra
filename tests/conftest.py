@@ -17,14 +17,16 @@ def _block_telegram_sends():
     """
     Prevent any test from sending real Telegram messages.
 
-    All tests run with pipeline.runner.send_telegram_message replaced by a
-    no-op MagicMock. Tests that need to assert Telegram behaviour apply their
-    own patch inside the test body (the inner patch shadows this one while
-    active), then restore to the no-op on exit — still safe.
+    Patches at the transport layer (notifications.telegram.request.urlopen)
+    rather than individual module-level aliases.  Every call to
+    send_telegram_message — from pipeline.runner, pipeline.daily_summary,
+    pipeline.weekly_review, or any future module — ultimately calls
+    request.urlopen inside notifications/telegram.py, so this single patch
+    is a true global guard with no per-module enumeration needed.
 
-    Without this fixture, unit tests that call run_all_assets() without fully
-    mocking _get_open_position_assets() read the real ledger, fail, and fire
-    live CRITICAL alerts to the production Telegram channel.
+    Tests that need to assert Telegram behaviour can apply their own inner
+    patch; it will shadow this one while active, then yield back to the
+    no-op on exit.
     """
-    with patch("pipeline.runner.send_telegram_message"):
+    with patch("notifications.telegram.request.urlopen"):
         yield

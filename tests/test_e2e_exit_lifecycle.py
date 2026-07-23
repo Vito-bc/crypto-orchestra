@@ -333,8 +333,18 @@ def test_e2e_exit_lifecycle(tmp_db: Path) -> None:
 
     with get_db(db) as conn:
         e2 = conn.execute("SELECT * FROM orders WHERE id=?", (exit2_id,)).fetchone()
+        # Idempotency invariant: get_order_fn_r2 re-returned PARTIAL_FILL_ID for exit1.
+        # apply_fill's early exchange_fill_id dedup must block the duplicate → exactly 1
+        # fill recorded for exit1 (not 2), proving the reconciler did not double-count.
+        exit1_fill_count = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE order_id=?", (exit1_id,)
+        ).fetchone()[0]
 
     assert e2["status"] == "FILLED"
+    assert exit1_fill_count == 1, (
+        f"Idempotency broken: exit1 has {exit1_fill_count} fills after round-2 "
+        f"reconciliation re-presented PARTIAL_FILL_ID; expected exactly 1"
+    )
 
     # ── Step 7: verify P&L, VWAP, and fees ───────────────────────────────────
     with get_db(db) as conn:
