@@ -52,3 +52,6 @@ dist/
 # Obsidian vault — personal knowledge base, not versioned
 obsidian_vault/
 cdp_api_key.json
+
+# Editor workspace — per-developer, not versioned
+*.code-workspace

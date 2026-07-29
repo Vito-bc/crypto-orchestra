@@ -13,6 +13,7 @@ Coverage:
 from __future__ import annotations
 
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -55,6 +56,31 @@ def _now() -> str:
 
 def _ago(minutes: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+@pytest.fixture(autouse=True)
+def _product_rules_in_cache():
+    """
+    Populate the ProductRules cache the way prewarm() does in production.
+
+    run_exit_executor resolves rounding rules through
+    product_state.get_rules_for_exit().  Without a populated cache every test
+    would fall through to hardcoded defaults and trip the degraded-rules alert,
+    which is correct production behaviour but is not what these tests exercise.
+    The values match the old DRY_RUN product defaults so existing DUST
+    expectations are unchanged.
+    """
+    from pipeline.product_state import ProductRules, _inject_cache
+
+    _inject_cache(_ASSET, rules=ProductRules(
+        product_id=_ASSET,
+        base_increment="0.00000001",
+        base_min_size="0.00000001",
+        base_max_size="9000",
+        quote_increment="0.01",
+        fetched_wall=time.time(),
+    ))
+    yield
 
 
 @pytest.fixture
@@ -1111,9 +1137,15 @@ def test_dust_sends_telegram_critical_alert(tmp_db: Path) -> None:
 
     _, pos_id = _open_position(tmp_db, qty_base=0.0001)
 
-    with patch("notifications.telegram.send_telegram_message") as mock_alert, \
-         patch("exchange.coinbase_client.get_product_info",
-               return_value={"base_increment": "0.00000001", "base_min_size": "0.001"}):
+    # Exchange minimum of 0.001 makes the 0.0001 position DUST.  Rules come from
+    # the ProductRules cache, exactly as in production after prewarm().
+    from pipeline.product_state import ProductRules, _inject_cache
+    _inject_cache(_ASSET, rules=ProductRules(
+        product_id=_ASSET, base_increment="0.00000001", base_min_size="0.001",
+        base_max_size="9000", quote_increment="0.01", fetched_wall=time.time(),
+    ))
+
+    with patch("notifications.telegram.send_telegram_message") as mock_alert:
         actions = run_exit_executor(
             asset=_ASSET,
             current_price=85.0,   # below stop_price=90.0 → STOP_LOSS trigger
@@ -1141,8 +1173,6 @@ def test_closing_position_exits_even_when_price_is_safe(tmp_db: Path) -> None:
     the position is mid-exit (partial fill or DUST_REVIVED), so the remainder must
     be sold unconditionally rather than waiting for another stop/target trigger.
     """
-    from unittest.mock import patch
-
     _, pos_id = _open_position(
         tmp_db, entry_price=100.0, stop_price=90.0, target_price=130.0, qty_base=1.0
     )
@@ -1157,14 +1187,12 @@ def test_closing_position_exits_even_when_price_is_safe(tmp_db: Path) -> None:
         return f"EX-{order_id[:8]}"
 
     # Price is safe (above stop, below target) — an OPEN position would not exit
-    with patch("exchange.coinbase_client.get_product_info",
-               return_value={"base_increment": "0.00000001", "base_min_size": "0.001"}):
-        actions = run_exit_executor(
-            asset=_ASSET,
-            current_price=105.0,   # between stop=90 and target=130 → OPEN would skip
-            coinbase_sell_fn=_sell,
-            db_path=tmp_db,
-        )
+    actions = run_exit_executor(
+        asset=_ASSET,
+        current_price=105.0,   # between stop=90 and target=130 → OPEN would skip
+        coinbase_sell_fn=_sell,
+        db_path=tmp_db,
+    )
 
     assert len(sell_calls) == 1, (
         "CLOSING position must place EXIT even when price is in the safe zone"
@@ -1237,3 +1265,575 @@ def test_run_pipeline_skip_exit_check_does_not_call_check_open_positions() -> No
     assert check_calls == [], (
         "_check_open_positions must not be called when _skip_exit_check=True"
     )
+
+# ---------------------------------------------------------------------------
+# 30. P0 regression — EXIT must never be skipped because product metadata failed
+# ---------------------------------------------------------------------------
+# The original defect: run_exit_executor called
+# exchange.coinbase_client.get_product_info(asset) directly and, on any
+# exception, appended "product_info_fetch_failed" and `continue`d — so a
+# transient Coinbase outage silently skipped a triggered stop-loss until the
+# next scheduler tick, roughly 60 minutes later.  Rules now resolve through
+# product_state.get_rules_for_exit(), which never raises.
+
+
+def _stop_loss_position(tmp_db: Path):
+    """OPEN position with stop_price=90 — trigger by passing current_price<90."""
+    return _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)
+
+
+def test_exit_proceeds_when_coinbase_product_metadata_is_unreachable(tmp_db: Path) -> None:
+    """Total Coinbase metadata outage: the SELL must still be placed."""
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _, pos_id = _stop_loss_position(tmp_db)
+    _clear_cache()   # no cache, no LKG — worst case
+
+    sell_calls: list[str] = []
+
+    def _sell(order_id: str, asset: str, qty: str) -> str:
+        sell_calls.append(qty)
+        return f"EX-{order_id[:8]}"
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("coinbase unreachable")
+
+    with patch("notifications.telegram.send_telegram_message"), \
+         patch("exchange.coinbase_client._get_client", side_effect=_boom):
+        actions = run_exit_executor(
+            asset=_ASSET, current_price=85.0,
+            coinbase_sell_fn=_sell, db_path=tmp_db,
+        )
+
+    assert len(sell_calls) == 1, "EXIT must be placed despite metadata failure"
+    assert actions[0]["exit_reason"] == "STOP_LOSS"
+    assert actions[0]["result"] is not None
+    assert "error" not in actions[0]
+
+
+def test_exit_never_reports_product_info_fetch_failed(tmp_db: Path) -> None:
+    """The old failure mode must be gone, not merely unlikely."""
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _stop_loss_position(tmp_db)
+    _clear_cache()
+
+    with patch("notifications.telegram.send_telegram_message"), \
+         patch("exchange.coinbase_client._get_client",
+               side_effect=RuntimeError("coinbase unreachable")):
+        actions = run_exit_executor(
+            asset=_ASSET, current_price=85.0,
+            coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db,
+        )
+
+    assert not any("product_info_fetch_failed" in str(a.get("error")) for a in actions)
+
+
+def test_exit_executor_does_not_import_get_product_info() -> None:
+    """
+    Source-level lock on the wiring itself.
+
+    get_rules_for_exit() existed before this fix but nothing in the production
+    EXIT path called it.  A unit test on behaviour alone would not catch someone
+    reintroducing the direct call as a "fallback", so assert on the source.
+    """
+    import pipeline.exit_executor as _mod
+
+    source = Path(_mod.__file__).read_text(encoding="utf-8")
+    code_lines = [
+        ln for ln in source.splitlines()
+        if not ln.lstrip().startswith("#")
+    ]
+    code = "\n".join(code_lines)
+    assert "get_product_info" not in code, (
+        "exit_executor must resolve rules via product_state.get_rules_for_exit(); "
+        "a direct get_product_info() call reintroduces the P0 EXIT-skip defect"
+    )
+    assert "get_rules_for_exit" in code
+
+
+def test_exit_uses_lkg_rules_when_cache_is_empty(tmp_db: Path, tmp_path: Path, monkeypatch) -> None:
+    """Cache cleared but LKG on disk → LKG increment is what reaches the wire."""
+    from unittest.mock import patch
+    import pipeline.product_state as _ps
+
+    monkeypatch.setattr(_ps, "LKG_PATH", tmp_path / "product_lkg.json")
+    _ps._clear_cache()
+    _ps._save_lkg(
+        _ps.ProductRules(
+            product_id=_ASSET, base_increment="0.01", base_min_size="0.01",
+            base_max_size="9000", quote_increment="0.01", fetched_wall=time.time(),
+        ),
+        _ps.ProductState(
+            product_id=_ASSET, is_disabled=False, trading_disabled=False,
+            cancel_only=False, limit_only=False, post_only=False,
+            auction_mode=False, view_only=False,
+            fetched_wall=time.time(), fetched_mono=time.monotonic(),
+        ),
+    )
+
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.237)
+
+    wire_qty: list[str] = []
+
+    def _sell(order_id: str, asset: str, qty: str) -> str:
+        wire_qty.append(qty)
+        return f"EX-{order_id[:8]}"
+
+    with patch("notifications.telegram.send_telegram_message"):
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=_sell, db_path=tmp_db)
+
+    assert wire_qty == ["1.23"], f"expected LKG 0.01 rounding, got {wire_qty}"
+
+
+def test_exit_on_defaults_alerts_once_per_asset(tmp_db: Path) -> None:
+    """Two degraded positions in one pass produce exactly one aggregated alert."""
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _clear_cache()
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=2.0)
+
+    with patch("notifications.telegram.send_telegram_message") as mock_alert:
+        actions = run_exit_executor(
+            asset=_ASSET, current_price=85.0,
+            coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db,
+        )
+
+    assert len(actions) == 2
+    assert all(a["result"] is not None for a in actions), "both EXITs must be placed"
+    assert mock_alert.call_count == 1, (
+        f"degraded-rules alert must aggregate per asset, got {mock_alert.call_count}"
+    )
+    body = mock_alert.call_args[0][0]
+    assert "DEGRADED" in body
+    assert "positions=2" in body, "aggregated alert should name the position count"
+
+
+def test_exit_on_fresh_cache_does_not_alert(tmp_db: Path) -> None:
+    """Normal path — cached rules, no alert."""
+    from unittest.mock import patch
+
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)
+
+    with patch("notifications.telegram.send_telegram_message") as mock_alert:
+        run_exit_executor(
+            asset=_ASSET, current_price=85.0,
+            coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db,
+        )
+
+    assert not mock_alert.called
+
+
+# ---------------------------------------------------------------------------
+# 37. Degraded-rules alert must never sit in front of a risk-reducing SELL
+# ---------------------------------------------------------------------------
+
+def test_degraded_alert_is_sent_after_all_sells(tmp_db: Path) -> None:
+    """
+    The alert (a potentially blocking network call) must fire only after every
+    SELL for the asset is on the wire — never inline before place_exit_outbox.
+    """
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _clear_cache()
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=2.0)
+
+    events: list[str] = []
+
+    def _sell(oid, a, q):
+        events.append("SELL")
+        return f"EX-{oid[:8]}"
+
+    def _send(_msg):
+        events.append("ALERT")
+        return True
+
+    with patch("notifications.telegram.send_telegram_message", side_effect=_send):
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=_sell, db_path=tmp_db)
+
+    assert events.count("SELL") == 2
+    assert events.count("ALERT") == 1
+    # Every SELL comes before the single ALERT — the send never delays a SELL.
+    assert events.index("ALERT") == len(events) - 1
+    assert events[:2] == ["SELL", "SELL"]
+
+
+def test_failed_send_no_same_pass_storm(tmp_db: Path) -> None:
+    """
+    Several degraded positions with a failing Telegram must still trigger only
+    ONE send attempt in the pass — aggregation prevents each position from
+    serially eating a network timeout.
+    """
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _clear_cache()
+    for qty in (1.0, 2.0, 3.0):
+        _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=qty)
+
+    with patch("notifications.telegram.send_telegram_message", return_value=False) as m:
+        actions = run_exit_executor(
+            asset=_ASSET, current_price=85.0,
+            coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db,
+        )
+
+    assert len([a for a in actions if a["result"] is not None]) == 3
+    assert m.call_count == 1, "aggregation must collapse the pass to one send attempt"
+
+
+def test_failed_send_uses_short_retry_cooldown(tmp_db: Path) -> None:
+    """
+    A failed send arms only the SHORT retry cooldown: suppressed within 60s,
+    re-sent once the retry window elapses.  A delivered alert would instead arm
+    the 1h window.
+    """
+    import pipeline.exit_executor as _ee
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _clear_cache()
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)
+
+    # Pass 1 — send fails → short retry cooldown armed.
+    with patch("notifications.telegram.send_telegram_message", return_value=False) as m1:
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db)
+    assert m1.call_count == 1
+    assert _ASSET in _ee._rules_alert_until
+
+    # A second position in the SAME window must be suppressed (no storm).
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=2.0)
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m2:
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db)
+    assert m2.call_count == 0, "within the retry window the alert must be suppressed"
+
+    # Simulate the retry window elapsing → the alert is delivered on the next tick.
+    _ee._rules_alert_until[_ASSET] -= (_ee._RULES_ALERT_RETRY_COOLDOWN_S + 1)
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=3.0)
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m3:
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db)
+    assert m3.call_count == 1, "after the retry window the alert must be re-sent"
+
+
+def test_delivered_alert_uses_long_cooldown(tmp_db: Path) -> None:
+    """A delivered alert arms the 1h window: the next pass stays quiet."""
+    import pipeline.exit_executor as _ee
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _clear_cache()
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)
+
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m1:
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db)
+    assert m1.call_count == 1
+    armed = _ee._rules_alert_until[_ASSET]
+
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=2.0)
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m2:
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=lambda oid, a, q: f"EX-{oid[:8]}", db_path=tmp_db)
+    assert m2.call_count == 0, "1h cooldown must suppress the next pass"
+    # Still short of the retry-only window: confirms the LONG cooldown was armed.
+    assert armed - _ee._RULES_ALERT_RETRY_COOLDOWN_S > 0
+
+
+# ---------------------------------------------------------------------------
+# 38. Degraded alert must report the real outcome, not assume "placed"
+# ---------------------------------------------------------------------------
+
+def test_degraded_alert_reports_rejected_outcome(tmp_db: Path) -> None:
+    """
+    A degraded EXIT that Coinbase REJECTS must not be reported as placed.  The
+    aggregated alert must name the REJECTED outcome and must not claim the SELL
+    landed — a false stop-loss confirmation is dangerous for LIVE.
+    """
+    from unittest.mock import patch
+    from pipeline.product_state import _clear_cache
+
+    _clear_cache()   # defaults -> degraded path
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)
+
+    def _reject(order_id: str, asset: str, qty: str) -> str:
+        raise CoinbaseRejected("INSUFFICIENT_FUND")
+
+    with patch("notifications.telegram.send_telegram_message") as mock_alert:
+        actions = run_exit_executor(
+            asset=_ASSET, current_price=85.0,
+            coinbase_sell_fn=_reject, db_path=tmp_db,
+        )
+
+    assert actions[0]["result"].status == "REJECTED"
+    assert mock_alert.call_count == 1
+    body = mock_alert.call_args[0][0]
+    assert "REJECTED=1" in body, "alert must report the real REJECTED outcome"
+    assert "were still placed" not in body
+    assert "proceeded anyway" not in body
+
+
+def test_degraded_alert_reports_dust_outcome(tmp_db: Path) -> None:
+    """A degraded EXIT that goes DUST is reported as DUST, not placed.
+
+    get_rules_for_exit is patched to return stale rules whose min (0.001) dusts
+    the 0.0001 position — combining the degraded-rules path with a DUST outcome.
+    """
+    from unittest.mock import patch
+
+    degraded_dusting = {
+        "base_increment": "0.00000001", "base_min_size": "0.001",
+        "source": "lkg_stale", "stale": True, "age_s": 999999.0,
+    }
+    with patch("pipeline.exit_executor.get_rules_for_exit", return_value=degraded_dusting), \
+         patch("notifications.telegram.send_telegram_message") as mock_alert:
+        _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=0.0001)
+        actions = run_exit_executor(
+            asset=_ASSET, current_price=85.0,
+            coinbase_sell_fn=_no_sell, db_path=tmp_db,
+        )
+
+    assert "placement_blocked" in (actions[0].get("note") or "")
+    bodies = [c.args[0] for c in mock_alert.call_args_list]
+    degraded = [b for b in bodies if "DEGRADED product rules" in b]
+    assert degraded, "degraded alert must be sent"
+    assert "DUST=1" in degraded[0], "degraded alert must report the DUST outcome"
+    assert "were still placed" not in degraded[0]
+
+
+def test_dust_alert_does_not_delay_later_sell(tmp_db: Path) -> None:
+    """
+    A DUST position early in the pass must not delay a later position's SELL:
+    every SELL attempt must happen before any Telegram send.
+    """
+    from unittest.mock import patch
+    from pipeline.product_state import ProductRules, _inject_cache
+
+    # Rules with min 0.001: the 0.0001 position dusts, the 1.0 position sells.
+    _inject_cache(_ASSET, rules=ProductRules(
+        product_id=_ASSET, base_increment="0.00000001", base_min_size="0.001",
+        base_max_size="9000", quote_increment="0.01", fetched_wall=time.time(),
+    ))
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=0.0001)  # DUST
+    _open_position(tmp_db, entry_price=100.0, stop_price=90.0, qty_base=1.0)     # sells
+
+    events: list[str] = []
+
+    def _sell(oid, a, q):
+        events.append("SELL")
+        return f"EX-{oid[:8]}"
+
+    def _send(_msg):
+        events.append("TELEGRAM")
+        return True
+
+    with patch("notifications.telegram.send_telegram_message", side_effect=_send):
+        run_exit_executor(asset=_ASSET, current_price=85.0,
+                          coinbase_sell_fn=_sell, db_path=tmp_db)
+
+    assert "SELL" in events, "the non-dust position must be sold"
+    # No TELEGRAM may appear before the SELL.
+    first_telegram = events.index("TELEGRAM") if "TELEGRAM" in events else len(events)
+    assert events.index("SELL") < first_telegram, (
+        "the SELL must be placed before any Telegram send"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 39. DUST alert must be delivered at-least-once — retry until it lands
+# ---------------------------------------------------------------------------
+
+def _dust_event_id(db_path: Path, pos_id: str) -> int:
+    from pipeline.ledger import get_db
+    with get_db(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM position_events WHERE position_id=? AND event_type='DUST_SETTLED'"
+            " ORDER BY id DESC LIMIT 1", (pos_id,),
+        ).fetchone()
+    return row["id"]
+
+
+def test_dust_alert_retries_until_delivered(tmp_db: Path) -> None:
+    """
+    A DUST alert that fails to send must be re-sent on a later pass, even with no
+    new DUST event.  The intra-pass retry cooldown is bypassed here to simulate
+    the next scheduler pass.
+    """
+    import pipeline.exit_executor as _ee
+    from unittest.mock import patch
+    from pipeline.ledger import get_db, transition_position_to_dust
+
+    _, pos_id = _open_position(tmp_db, qty_base=1.0)
+    with get_db(tmp_db) as conn:
+        transition_position_to_dust(pos_id, conn)
+    eid = _dust_event_id(tmp_db, pos_id)
+
+    # Pass 1 — transport fails; must NOT mark delivered, but arms the cooldown.
+    with patch("notifications.telegram.send_telegram_message", return_value=False) as m1:
+        _ee.sweep_dust_alerts(db_path=tmp_db)
+    assert m1.call_count == 1
+    assert eid not in _ee._dust_delivered
+    assert eid in _ee._dust_retry_until
+
+    # Simulate the next scheduler pass by expiring the retry cooldown.
+    _ee._dust_retry_until[eid] -= (_ee._DUST_RETRY_COOLDOWN_S + 1)
+
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m2:
+        _ee.sweep_dust_alerts(db_path=tmp_db)
+    assert m2.call_count == 1, "a lost DUST alert must be retried on a later pass"
+    assert eid in _ee._dust_delivered
+
+    # Already delivered → stay quiet.
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m3:
+        _ee.sweep_dust_alerts(db_path=tmp_db)
+    assert m3.call_count == 0, "a delivered DUST alert must not repeat"
+
+
+def test_dust_alert_not_retried_within_same_pass(tmp_db: Path) -> None:
+    """
+    P2: a failed send must not be retried within the same pass.  The per-asset
+    sweep and the global Step 3b sweep run back-to-back; a network timeout must
+    cost at most one stall, not two.
+    """
+    import pipeline.exit_executor as _ee
+    from unittest.mock import patch
+    from pipeline.ledger import get_db, transition_position_to_dust
+
+    _, pos_id = _open_position(tmp_db, qty_base=1.0)
+    with get_db(tmp_db) as conn:
+        transition_position_to_dust(pos_id, conn)
+
+    with patch("notifications.telegram.send_telegram_message", return_value=False) as m:
+        _ee.sweep_dust_alerts(db_path=tmp_db, asset=_ASSET)  # per-asset sweep
+        _ee.sweep_dust_alerts(db_path=tmp_db)                # global Step 3b sweep
+    assert m.call_count == 1, "the same pass must not retry (and stall) twice"
+
+
+def test_dust_alert_fires_again_after_revive_then_redust(tmp_db: Path) -> None:
+    """
+    P1: DUST → CLOSING (DUST_REVIVED) → DUST must produce a SECOND alert.
+    Delivery is keyed by the DUST_SETTLED event id, so the re-dusted exposure —
+    a genuinely new manual-action item — is not suppressed as already delivered.
+    """
+    import pipeline.exit_executor as _ee
+    from unittest.mock import patch
+    from pipeline.ledger import get_db, transition_position_to_dust
+
+    _, pos_id = _open_position(tmp_db, qty_base=1.0)
+
+    # First DUST episode → delivered.
+    with get_db(tmp_db) as conn:
+        transition_position_to_dust(pos_id, conn)
+    eid1 = _dust_event_id(tmp_db, pos_id)
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m1:
+        _ee.sweep_dust_alerts(db_path=tmp_db)
+    assert m1.call_count == 1
+    assert eid1 in _ee._dust_delivered
+
+    # Revive to CLOSING, then dust again → a NEW DUST_SETTLED event id.
+    with get_db(tmp_db) as conn:
+        conn.execute("UPDATE positions SET status='CLOSING' WHERE id=?", (pos_id,))
+        conn.execute(
+            "INSERT INTO position_events(position_id, event_type, payload, occurred_at)"
+            " VALUES (?, 'DUST_REVIVED', '{}', ?)",
+            (pos_id, "2026-07-25T00:00:00+00:00"),
+        )
+    with get_db(tmp_db) as conn:
+        transition_position_to_dust(pos_id, conn)   # OPEN/CLOSING → DUST again
+    eid2 = _dust_event_id(tmp_db, pos_id)
+    assert eid2 != eid1, "a re-dust must create a new DUST_SETTLED event"
+
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m2:
+        _ee.sweep_dust_alerts(db_path=tmp_db)
+    assert m2.call_count == 1, "the re-dusted exposure must alert again"
+    assert eid2 in _ee._dust_delivered
+
+
+def test_dust_sweep_reports_residual_qty(tmp_db: Path) -> None:
+    """The DUST alert names the position and its residual quantity."""
+    import pipeline.exit_executor as _ee
+    from unittest.mock import patch
+    from pipeline.ledger import get_db, transition_position_to_dust
+
+    _, pos_id = _open_position(tmp_db, qty_base=1.0)
+    with get_db(tmp_db) as conn:
+        transition_position_to_dust(pos_id, conn)
+
+    with patch("notifications.telegram.send_telegram_message", return_value=True) as m:
+        _ee.sweep_dust_alerts(db_path=tmp_db, asset=_ASSET)
+
+    body = m.call_args[0][0]
+    assert "CRITICAL" in body and "DUST" in body
+    assert pos_id in body
+
+
+def test_run_all_assets_dust_sweep_one_send_per_pass(tmp_db: Path, monkeypatch) -> None:
+    """
+    Integration: the position is OPEN and DUSTS DURING the per-asset EXIT path,
+    so BOTH the per-asset sweep (end of run_exit_executor) and the global Step 3b
+    sweep run in the same pass.  Despite that, exactly one DUST alert is sent for
+    the event; a failed send is not retried until a later pass, after the cooldown.
+    """
+    import pipeline.ledger as _ledger
+    import pipeline.exit_executor as _ee
+    from pipeline.product_state import ProductRules, _inject_cache
+    from pipeline.preflight import _dry_run_result
+    from pipeline.runner import run_all_assets
+    from unittest.mock import patch
+
+    # OPEN position whose 0.0001 qty rounds below base_min_size 0.001 → it dusts
+    # the first time the EXIT executor tries to place the stop-loss SELL.
+    _, pos_id = _open_position(
+        tmp_db, entry_price=100.0, stop_price=90.0, qty_base=0.0001
+    )
+    _inject_cache(_ASSET, rules=ProductRules(
+        product_id=_ASSET, base_increment="0.00000001", base_min_size="0.001",
+        base_max_size="9000", quote_increment="0.01", fetched_wall=time.time(),
+    ))
+    monkeypatch.setattr(_ledger, "DB_PATH", tmp_db)
+
+    with (
+        patch("pipeline.runner._startup_reconciliation", return_value=(True, None)),
+        patch("pipeline.runner.get_snapshot", return_value={"close": 85.0}),  # < stop → STOP_LOSS
+        patch("exchange.coinbase_client.is_dry_run", return_value=True),
+        patch("pipeline.preflight.run_preflight",
+              return_value=_dry_run_result(["ETH-USD", "ZEC-USD"])),
+        patch("pipeline.runner.run_pipeline"),
+        patch("pipeline.runner.send_telegram_message") as runner_send,
+        patch("notifications.telegram.send_telegram_message", return_value=False) as dust_send,
+    ):
+        # Pass 1 — position is OPEN, so the per-asset EXIT path runs, dusts the
+        # position, and its sweep fires; Step 3b then sees the same event under
+        # cooldown and does NOT re-send.
+        run_all_assets()
+        assert dust_send.call_count == 1, (
+            "per-asset + Step 3b sweeps must not double-send within one pass"
+        )
+        # Confirm the position actually dusted via the EXIT path (not pre-marked).
+        with _ledger.get_db(tmp_db) as conn:
+            status = conn.execute(
+                "SELECT status FROM positions WHERE id=?", (pos_id,)
+            ).fetchone()["status"]
+        assert status == "DUST", "position must have dusted during the EXIT path"
+        eid = _dust_event_id(tmp_db, pos_id)
+
+        # Pass 2 — still within the retry cooldown → no re-send.
+        run_all_assets()
+        assert dust_send.call_count == 1, "must not retry within the cooldown"
+
+        # A later pass, after the cooldown expires → retried and delivered.
+        _ee._dust_retry_until[eid] -= (_ee._DUST_RETRY_COOLDOWN_S + 1)
+        dust_send.return_value = True
+        run_all_assets()
+        assert dust_send.call_count == 2, "after the cooldown the alert is retried"
+
+    assert runner_send.call_count == 0, "no unrelated runner alert should fire in this scenario"

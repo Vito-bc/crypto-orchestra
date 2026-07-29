@@ -27,6 +27,7 @@ test_e2e_stop_loss_adverse_slippage_negative_pnl:
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -139,6 +140,24 @@ def _setup_open_position(db: Path) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _product_rules_in_cache():
+    """Populate ProductRules the way prewarm() does, so the exit path uses
+    cached rules rather than falling through to defaults (which would fire the
+    degraded-rules alert)."""
+    from pipeline.product_state import ProductRules, _inject_cache
+
+    _inject_cache(ASSET, rules=ProductRules(
+        product_id=ASSET,
+        base_increment="0.00000001",
+        base_min_size="0.00000001",
+        base_max_size="9000",
+        quote_increment="0.01",
+        fetched_wall=time.time(),
+    ))
+    yield
+
 
 @pytest.fixture
 def tmp_db(tmp_path: Path) -> Path:

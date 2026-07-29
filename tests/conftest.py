@@ -13,6 +13,33 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _reset_module_level_caches():
+    """
+    Clear process-wide caches that outlive a single test.
+
+    product_state holds ProductRules/ProductState in module-level dicts, and
+    exit_executor keeps an alert cooldown map.  Both are correct for a
+    long-running scheduler process and both leak between tests: a cooldown set
+    by one test silently suppresses the alert another test asserts on.
+    """
+    import pipeline.exit_executor as _exit_executor
+    import pipeline.product_state as _product_state
+    import pipeline.runner as _runner
+
+    def _reset():
+        _product_state._clear_cache()
+        _product_state._last_persistence_failures.clear()
+        _exit_executor._rules_alert_until.clear()
+        _exit_executor._dust_delivered.clear()
+        _exit_executor._dust_retry_until.clear()
+        _runner._persist_reported = frozenset()
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
 def _block_telegram_sends():
     """
     Prevent any test from sending real Telegram messages.

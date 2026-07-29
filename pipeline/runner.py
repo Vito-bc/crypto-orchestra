@@ -1150,6 +1150,56 @@ ASSETS = ["ETH-USD", "ZEC-USD"]
 _snapshot_alert_cooldown: dict[str, float | None] = {}
 _SNAPSHOT_ALERT_COOLDOWN_S = 3600.0
 
+# The LKG-persistence-failure set that has been CONFIRMED delivered to the
+# operator.  Notifications describe transitions of the failure set, and this
+# only advances on a delivered send — so (P1) a send that returns False is
+# retried on the next pass, and (P2) a change of the failing set (e.g. ETH→ZEC)
+# differs from what was reported and re-alerts, rather than being masked by a
+# boolean "already reported" flag.  ENTRY is never gated by this: the in-process
+# cache is authoritative for the session; degradation only means a restart before
+# recovery would fall back to an older LKG.
+_persist_reported: frozenset = frozenset()
+
+
+def _handle_persistence_status(failures: list[str]) -> None:
+    """Delivery-confirmed operational alert for LKG persistence failures.
+
+    Sends when the current failure set differs from the last SUCCESSFULLY
+    delivered one — covering entry to degraded, a change of which products fail,
+    and full recovery — and advances the reported state only when the transport
+    confirms delivery, so a failed send (or a failed recovery send) is retried on
+    the next scheduler pass.  Observability only; never blocks ENTRY.
+    """
+    global _persist_reported
+    current = frozenset(failures)
+    if current == _persist_reported:
+        return   # this exact state has already been communicated
+
+    if current:
+        msg = (
+            f"[Startup] ProductState LKG persistence DEGRADED for: {sorted(current)}. "
+            "Live state is cached and ENTRY continues; durable rules were NOT "
+            "written, so a restart before recovery would use older LKG. "
+            "Check disk space and concurrent writers."
+        )
+    else:
+        msg = "[Startup] ProductState LKG persistence RECOVERED — durable writes succeeded."
+
+    print(msg)
+    delivered = False
+    try:
+        delivered = bool(send_telegram_message(msg))
+    except Exception as exc:
+        print(f"[Startup] persistence alert send error: {exc}")
+        delivered = False
+
+    if delivered:
+        # Advance only on confirmed delivery; otherwise leave the reported state
+        # behind so the next pass re-sends this same transition.
+        _persist_reported = current
+    else:
+        print("[Startup] persistence alert NOT delivered — will retry next pass.")
+
 # Per-asset daily EMA period for the trend gate in _check_entry_filters
 _DAILY_EMA_PERIOD: dict[str, int] = {
     "ETH-USD": 50,   # 50EMA is faster — catches ETH tops/bottoms weeks earlier
@@ -1341,10 +1391,19 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
             else:
                 print(f"[ExitExecutor] snapshot still unavailable for {asset} (alert suppressed — cooldown active)")
 
+    # Step 3b: Durable DUST sweep across ALL assets — not just those with an
+    # OPEN/CLOSING position this pass.  A position that has already gone DUST no
+    # longer appears in any exit loop, so this is the only place a previously
+    # undelivered DUST alert gets retried.  Never blocks anything.
+    from pipeline.exit_executor import sweep_dust_alerts
+    sweep_dust_alerts()
+
     # Step 4: ProductState prewarm — fetch rules + trading flags from Coinbase.
     # Runs after reconciliation so any stale LKG is already available as fallback.
     # Failures here block ENTRY (fail-closed) but never block EXIT.
-    from pipeline.product_state import prewarm as _prewarm, is_entry_allowed
+    from pipeline.product_state import (
+        prewarm as _prewarm, is_entry_allowed, last_persistence_failures,
+    )
     from exchange.coinbase_client import is_dry_run as _is_dry_run
     if not _is_dry_run():
         prewarm_results = _prewarm(ASSETS)
@@ -1356,6 +1415,8 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
             )
             print(msg)
             send_telegram_message(msg)
+        # Durable-persistence failures are observable but non-blocking.
+        _handle_persistence_status(last_persistence_failures())
     else:
         # DRY_RUN: inject synthetic state so entry gate passes without real API calls.
         from pipeline.product_state import (
@@ -1384,19 +1445,15 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     # USD account health, product rules for all assets.
     # DRY_RUN: synthetic result (no API calls).
     # LIVE: real GET calls via read-only facade; Create/Cancel/Transfer blocked.
+    # Scope matters here: overall_status covers account/key/portfolio problems,
+    # which block every asset.  Product-specific problems are reported through
+    # _preflight.entry_allowed_for(asset) inside the ENTRY loop so that one
+    # halted or malformed product cannot stop the other assets from trading.
     from pipeline.preflight import run_preflight
     _preflight = run_preflight(ASSETS, live_reads=not _is_dry_run())
-    if _preflight.overall_status == "CRITICAL":
+    if _preflight.overall_status in ("CRITICAL", "ENTRY_BLOCKED"):
         msg = (
-            "[Startup] Preflight CRITICAL — ENTRY halted.\n"
-            + "\n".join(f"  • {e}" for e in _preflight.errors[:10])
-        )
-        print(msg)
-        send_telegram_message(msg)
-        entry_ok = False
-    elif _preflight.overall_status == "ENTRY_BLOCKED":
-        msg = (
-            "[Startup] Preflight ENTRY_BLOCKED — ENTRY halted.\n"
+            f"[Startup] Preflight {_preflight.overall_status} — ENTRY halted for ALL assets.\n"
             + "\n".join(f"  • {e}" for e in _preflight.errors[:10])
         )
         print(msg)
@@ -1404,6 +1461,9 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
         entry_ok = False
     else:
         print(f"[Startup] Preflight OK — latency {_preflight.latency_ms:.0f} ms")
+        if _preflight.blocked_products:
+            for _pid, _why in _preflight.blocked_products.items():
+                print(f"[Startup] Preflight blocks ENTRY for {_pid}: {_why}")
 
     # Step 6: ENTRY gate
     if not entry_ok:
@@ -1414,7 +1474,12 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     results = {}
     for asset in trade_assets:
         print(f"\n{'='*65}")
-        allowed, reason = is_entry_allowed(asset)
+        # Two independent per-asset gates: preflight's product-scope verdict and
+        # the live ProductState flag check. Both must pass; either alone blocks
+        # only this asset.
+        allowed, reason = _preflight.entry_allowed_for(asset)
+        if allowed:
+            allowed, reason = is_entry_allowed(asset)
         if not allowed:
             msg = f"[ENTRY] BLOCKED {asset} — {reason}"
             print(msg)
