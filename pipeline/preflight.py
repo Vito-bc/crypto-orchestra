@@ -29,11 +29,19 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+
+from pipeline.product_parse import (
+    ALL_NUMERIC,
+    parse_product_payload,
+    safe_decimal,
+    strict_bool,
+    strict_positive_decimal,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
@@ -104,11 +112,33 @@ class PreflightResult:
     accounts_summary: list[AccountSummary]
     product_states: list[ProductState]
     latency_ms: float
-    errors: list[str]
+    errors: list[str]        # account/key/portfolio scope — these block everything
     overall_status: str      # "OK" | "ENTRY_BLOCKED" | "CRITICAL"
+    # Product-scope problems, keyed by product_id.  These block ENTRY for that
+    # asset only — one delisted or halted product must not stop every other
+    # asset from trading.
+    product_errors: dict[str, list[str]] = field(default_factory=dict)
+    blocked_products: dict[str, str] = field(default_factory=dict)
 
     def entry_allowed(self) -> bool:
+        """Account-level verdict: are the global preconditions for ENTRY met?"""
         return self.overall_status == "OK"
+
+    def entry_allowed_for(self, product_id: str) -> tuple[bool, str]:
+        """
+        Per-asset ENTRY verdict: global checks AND this product's own state.
+
+        Returns (True, "") or (False, reason).  Fails closed for a product that
+        was never successfully fetched — an asset with no known state is not an
+        asset that is fine.
+        """
+        if not self.entry_allowed():
+            return False, f"preflight {self.overall_status}: " + "; ".join(self.errors[:3])
+        if product_id in self.blocked_products:
+            return False, self.blocked_products[product_id]
+        if not any(p.product_id == product_id for p in self.product_states):
+            return False, f"{product_id}: no product state returned by preflight"
+        return True, ""
 
     def exit_supervision_allowed(self) -> bool:
         """
@@ -170,61 +200,12 @@ def _build_read_only_client() -> _ReadOnlyClient:
 
 # ── Strict parsers ────────────────────────────────────────────────────────────
 
-def _strict_bool(value, field_name: str, errors: list[str]) -> Optional[bool]:
-    """
-    Accept only a native Python bool.
-
-    Coinbase returns JSON booleans which the SDK parses to Python bools.
-    A string "false" or integer 0 signals a malformed/unexpected response
-    and must not silently pass as False — bool("false") == True is the bug
-    this parser closes.
-    """
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        errors.append(f"CRITICAL: {field_name} is missing in API response")
-    else:
-        errors.append(
-            f"CRITICAL: {field_name}={value!r} is not a boolean "
-            f"(got {type(value).__name__!r}) — malformed API response"
-        )
-    return None
-
-
-def _strict_positive_decimal(
-    value, field_name: str, errors: list[str]
-) -> Optional[Decimal]:
-    if value is None:
-        errors.append(f"CRITICAL: {field_name} is missing")
-        return None
-    try:
-        d = Decimal(str(value))
-    except InvalidOperation:
-        errors.append(f"CRITICAL: {field_name}={value!r} is not a valid Decimal")
-        return None
-    if not d.is_finite():
-        errors.append(f"CRITICAL: {field_name}={value!r} is NaN or Infinity")
-        return None
-    if d <= 0:
-        errors.append(f"CRITICAL: {field_name}={value!r} must be positive")
-        return None
-    return d
-
-
-def _safe_decimal(value, field_name: str, errors: list[str]) -> Optional[Decimal]:
-    """Non-negative Decimal — for balance fields (may be zero)."""
-    if value is None:
-        errors.append(f"CRITICAL: {field_name} is missing")
-        return None
-    try:
-        d = Decimal(str(value))
-    except InvalidOperation:
-        errors.append(f"CRITICAL: {field_name}={value!r} is not a valid Decimal")
-        return None
-    if not d.is_finite() or d < 0:
-        errors.append(f"CRITICAL: {field_name}={value!r} must be finite and non-negative")
-        return None
-    return d
+# Re-exported from the shared parser so preflight and product_state can never
+# drift apart on what a valid Coinbase payload looks like.  The module-level
+# names are kept for backward compatibility with existing callers and tests.
+_strict_bool             = strict_bool
+_strict_positive_decimal = strict_positive_decimal
+_safe_decimal            = safe_decimal
 
 
 def _mask_uuid(uuid_str: str) -> str:
@@ -234,6 +215,22 @@ def _mask_uuid(uuid_str: str) -> str:
 
 
 # ── Check functions ───────────────────────────────────────────────────────────
+
+def _as_dict(value, label: str, errors: list[str]) -> Optional[dict]:
+    """
+    Fail closed on a malformed global payload.
+
+    A non-dict Get response (None, a list, an SDK object that lost its parse)
+    must produce a structured CRITICAL error, never an AttributeError that
+    escapes run_preflight and aborts run_all_assets with no status and no alert.
+    """
+    if isinstance(value, dict):
+        return value
+    errors.append(
+        f"CRITICAL: {label} returned {type(value).__name__}, expected a dict"
+    )
+    return None
+
 
 def _check_key_permissions(
     client: _ReadOnlyClient,
@@ -245,12 +242,29 @@ def _check_key_permissions(
         errors.append(f"CRITICAL: get_api_key_permissions failed: {exc}")
         return None
 
+    data = _as_dict(data, "get_api_key_permissions", errors)
+    if data is None:
+        return None
+
     perm_errors: list[str] = []
 
     can_view     = _strict_bool(data.get("can_view"),     "can_view",     perm_errors)
     can_trade    = _strict_bool(data.get("can_trade"),    "can_trade",    perm_errors)
     can_transfer = _strict_bool(data.get("can_transfer"), "can_transfer", perm_errors)
-    portfolio_uuid = data.get("portfolio_uuid") or ""
+
+    # portfolio_uuid must be a string (Coinbase returns the portfolio's string
+    # ID).  A non-string (int, dict) is malformed and would blow up masking/
+    # comparison downstream — reject it rather than coerce.
+    raw_uuid = data.get("portfolio_uuid")
+    if raw_uuid is None:
+        portfolio_uuid = ""
+    elif isinstance(raw_uuid, str):
+        portfolio_uuid = raw_uuid
+    else:
+        perm_errors.append(
+            f"CRITICAL: portfolio_uuid is {type(raw_uuid).__name__}, expected a string"
+        )
+        portfolio_uuid = ""
 
     if perm_errors:
         errors.extend(perm_errors)
@@ -283,27 +297,64 @@ def _check_portfolio_uuid(
     errors: list[str],
 ) -> str:
     """
-    Resolve and validate the portfolio UUID.
+    Resolve and validate the trading key's portfolio identity.
 
-    COINBASE_PORTFOLIO_UUID must be set in .env — unconfirmed identity blocks
-    ENTRY.  If the key returns a UUID it must match exactly.  Multiple portfolios
-    without a pinned UUID is CRITICAL (cannot determine which one to trade).
+    The ONLY proof that orders will land in the intended portfolio is the API
+    key's own portfolio binding: for API-key connections create_order() derives
+    the portfolio from the key itself (no portfolio id is passed — see
+    coinbase_client.place_limit_buy / place_market_sell), and Key Permissions
+    reports that binding as portfolio_uuid.
+
+    Therefore LIVE readiness requires a non-empty key_permissions.portfolio_uuid
+    that EXACTLY equals COINBASE_PORTFOLIO_UUID.  List Portfolios is only a
+    diagnostic cross-check: it proves the account CONTAINS a portfolio, never that
+    THIS key trades it, so it can never substitute for the key-scope match.  A
+    missing key uuid is CRITICAL even when the expected uuid appears in the list.
+
+    Because it is diagnostic, a List Portfolios failure/malformed payload does NOT
+    block ENTRY once the key match is confirmed — it is logged, not gated.  Its
+    problems are gate-blocking only when no UUID is pinned (the list is then load-
+    bearing for multiplicity detection) or when identity already fails for another
+    reason.
     """
     uuid_from_key = kp.portfolio_uuid if kp else ""
     expected      = os.getenv(_EXPECTED_UUID_ENV, "").strip()
 
-    # Fetch portfolios list for cross-check and fallback
+    # List Portfolios problems go here, NOT straight into `errors`.  Once the key
+    # itself proves scope (uuid_from_key == expected), a transient failure of this
+    # diagnostic endpoint must not block ENTRY — that would let a List Portfolios
+    # blip halt trading for a fully identity-proven key.  These are promoted to
+    # gate-blocking errors ONLY where the list is genuinely load-bearing (no
+    # pinned UUID → we need it to detect multiplicity) or where we are already
+    # blocking for an identity reason and the context is useful.
+    portfolio_diag: list[str] = []
     portfolios: list[dict] = []
+    data = None
     try:
-        data       = client.get_portfolios()
-        portfolios = data.get("portfolios") or []
+        raw = client.get_portfolios()
     except Exception as exc:
-        errors.append(f"CRITICAL: get_portfolios failed: {exc}")
+        portfolio_diag.append(f"CRITICAL: get_portfolios failed: {exc}")
+    else:
+        # A None/list/other return (no exception) is still a malformed payload.
+        data = _as_dict(raw, "get_portfolios", portfolio_diag)
+    raw_portfolios = data.get("portfolios") if data else None
+    if isinstance(raw_portfolios, list):
+        portfolios = raw_portfolios
+    elif raw_portfolios is not None:
+        portfolio_diag.append(
+            f"CRITICAL: get_portfolios 'portfolios' is {type(raw_portfolios).__name__}, "
+            "expected a list"
+        )
 
-    if not uuid_from_key and portfolios:
-        uuid_from_key = (portfolios[0] or {}).get("uuid", "")
+    portfolio_uuids = {
+        p["uuid"] for p in portfolios
+        if isinstance(p, dict) and isinstance(p.get("uuid"), str) and p["uuid"]
+    }
 
     if not expected:
+        # No pinned identity: the portfolios list IS load-bearing (multiplicity),
+        # so its problems block.
+        errors.extend(portfolio_diag)
         if len(portfolios) > 1:
             errors.append(
                 "CRITICAL: COINBASE_PORTFOLIO_UUID not set and key has multiple portfolios — "
@@ -314,13 +365,43 @@ def _check_portfolio_uuid(
                 "COINBASE_PORTFOLIO_UUID not set — portfolio identity unconfirmed; "
                 "set this env var before LIVE"
             )
-    elif uuid_from_key and uuid_from_key != expected:
+        return uuid_from_key
+
+    # expected is set — prove the KEY is bound to it.
+    if not uuid_from_key:
+        # List Portfolios cannot stand in for key scope: the key could enumerate
+        # portfolios it does not trade.  Fail closed even if `expected` is visible.
+        errors.extend(portfolio_diag)
+        seen = " (present in List Portfolios, which does not prove key scope)" \
+            if expected in portfolio_uuids else ""
+        errors.append(
+            "CRITICAL: key permissions report no portfolio_uuid — cannot prove the "
+            f"trading key is bound to COINBASE_PORTFOLIO_UUID {_mask_uuid(expected)!r}; "
+            f"orders would target the key's own portfolio{seen}"
+        )
+        return expected
+    if uuid_from_key != expected:
+        errors.extend(portfolio_diag)
         errors.append(
             f"CRITICAL: portfolio_uuid mismatch — key reports {_mask_uuid(uuid_from_key)!r}, "
             f"COINBASE_PORTFOLIO_UUID env is {_mask_uuid(expected)!r}"
         )
+        return uuid_from_key
 
-    return uuid_from_key
+    # uuid_from_key == expected → key scope CONFIRMED.  List Portfolios is now
+    # purely diagnostic: log any problem or cross-check discrepancy, but do NOT
+    # block ENTRY on it.  Strip the "CRITICAL:" prefix so external monitoring that
+    # greps for CRITICAL does not false-alert on a non-blocking diagnostic — the
+    # prefix is preserved only where these are promoted to gate-driving errors.
+    for d in portfolio_diag:
+        detail = d[len("CRITICAL: "):] if d.startswith("CRITICAL: ") else d
+        print(f"[Preflight] WARNING List Portfolios diagnostic (non-blocking): {detail}")
+    if not portfolio_diag and portfolio_uuids and expected not in portfolio_uuids:
+        print(
+            f"[Preflight] note: COINBASE_PORTFOLIO_UUID {_mask_uuid(expected)!r} matches the "
+            "key but is not in List Portfolios output (diagnostic only)."
+        )
+    return expected
 
 
 def _check_accounts(
@@ -341,12 +422,30 @@ def _check_accounts(
         while page < max_pages:
             page     += 1
             last_data = client.get_accounts(cursor=cursor)
+            if not isinstance(last_data, dict):
+                errors.append(
+                    f"CRITICAL: get_accounts returned {type(last_data).__name__}, "
+                    "expected a dict"
+                )
+                return summaries
             accounts  = last_data.get("accounts") or []
             has_next  = last_data.get("has_next", False)
             next_cur  = last_data.get("cursor", "")
 
+            if not isinstance(accounts, list):
+                errors.append(
+                    f"CRITICAL: get_accounts 'accounts' is {type(accounts).__name__}, "
+                    "expected a list"
+                )
+                return summaries
+
             # Deduplicate by account UUID before appending
             for acct in accounts:
+                if not isinstance(acct, dict):
+                    errors.append(
+                        f"CRITICAL: account entry is {type(acct).__name__}, expected a dict"
+                    )
+                    continue
                 uid = acct.get("uuid") or acct.get("id") or ""
                 if uid and uid in seen_uuids:
                     continue
@@ -385,7 +484,15 @@ def _check_accounts(
         return summaries
 
     for acct in all_accounts:
-        currency = (acct.get("currency") or "").upper()
+        # currency must be a string before .upper(); a malformed scalar (int,
+        # dict) must not raise an AttributeError that aborts the whole preflight.
+        currency_raw = acct.get("currency")
+        if currency_raw is not None and not isinstance(currency_raw, str):
+            errors.append(
+                f"CRITICAL: account.currency is {type(currency_raw).__name__}, expected a string"
+            )
+            continue
+        currency = (currency_raw or "").upper()
         if currency != "USD":
             continue
 
@@ -439,56 +546,38 @@ def _check_product(
         errors.append(f"CRITICAL: get_product({product_id}) failed: {exc}")
         return None
 
-    # product_id echo check
-    resp_pid = data.get("product_id", "")
-    if resp_pid and resp_pid != product_id:
-        prod_errors.append(
-            f"CRITICAL: product_id mismatch — requested {product_id!r}, "
-            f"response contains {resp_pid!r}"
+    # A non-dict payload (list, None, SDK object that lost its parse) must stay
+    # contained to THIS product.  Returning None here routes it to the caller's
+    # blocked_products for `product_id` alone; falling through to `data.get(...)`
+    # below would raise AttributeError and take down the whole preflight run,
+    # breaking per-asset isolation.  The parser also flags it, but we cannot
+    # build a ProductState from a non-dict, so return closed.
+    if not isinstance(data, dict):
+        errors.append(
+            f"CRITICAL: get_product({product_id}) returned "
+            f"{type(data).__name__}, expected a dict"
         )
+        return None
 
-    # ── Numeric rules (all required) ─────────────────────────────────────────
-    # Called for the validation side-effect (appends to prod_errors); the parsed
-    # increments are not needed here, unlike the min/max pair compared below.
-    _strict_positive_decimal(data.get("base_increment"),  f"{product_id}.base_increment",  prod_errors)
-    b_min  = _strict_positive_decimal(data.get("base_min_size"),   f"{product_id}.base_min_size",   prod_errors)
-    b_max  = _strict_positive_decimal(data.get("base_max_size"),   f"{product_id}.base_max_size",   prod_errors)
-    _strict_positive_decimal(data.get("quote_increment"),  f"{product_id}.quote_increment", prod_errors)
-    q_min  = _strict_positive_decimal(data.get("quote_min_size"),  f"{product_id}.quote_min_size",  prod_errors)
-    q_max  = _strict_positive_decimal(data.get("quote_max_size"),  f"{product_id}.quote_max_size",  prod_errors)
-
-    if b_min and b_max and b_min > b_max:
-        prod_errors.append(
-            f"CRITICAL: {product_id} base_min_size {b_min} > base_max_size {b_max}"
-        )
-    if q_min and q_max and q_min > q_max:
-        prod_errors.append(
-            f"CRITICAL: {product_id} quote_min_size {q_min} > quote_max_size {q_max}"
-        )
+    # Shared strict parser — identical rules to product_state.  Numeric fields
+    # are all required here; product_state requires only the four it uses.
+    # (This supersedes the inline per-field validation that used to live here;
+    # the min/max relation and product_id echo checks moved into the parser.)
+    parsed = parse_product_payload(data, product_id, required_numeric=ALL_NUMERIC)
+    prod_errors.extend(parsed.errors)
 
     def _str(key: str) -> str:
         return str(data.get(key) or "")
 
-    # ── Trading flags (strict bool — missing/string → CRITICAL) ─────────────
-    flag_errors: list[str] = []
-    is_disabled      = _strict_bool(data.get("is_disabled"),      "is_disabled",      flag_errors)
-    trading_disabled = _strict_bool(data.get("trading_disabled"), "trading_disabled", flag_errors)
-    cancel_only      = _strict_bool(data.get("cancel_only"),      "cancel_only",      flag_errors)
-    limit_only       = _strict_bool(data.get("limit_only"),       "limit_only",       flag_errors)
-    post_only        = _strict_bool(data.get("post_only"),        "post_only",        flag_errors)
-    auction_mode     = _strict_bool(data.get("auction_mode"),     "auction_mode",     flag_errors)
-    view_only        = _strict_bool(data.get("view_only"),        "view_only",        flag_errors)
-
-    prod_errors.extend(f"{product_id}: {e}" for e in flag_errors)
-
-    # Default to the safe (blocking) value when parsing failed
-    _dis   = bool(is_disabled)
-    _tdis  = bool(trading_disabled)
-    _cnly  = bool(cancel_only)
-    _lonly = bool(limit_only)
-    _ponly = bool(post_only)
-    _auct  = bool(auction_mode)
-    _vonly = bool(view_only)
+    # Flags fail CLOSED: a flag that could not be parsed comes back from the
+    # shared parser as its blocking value (True), never as a permissive False.
+    _dis   = parsed.flag("is_disabled")
+    _tdis  = parsed.flag("trading_disabled")
+    _cnly  = parsed.flag("cancel_only")
+    _lonly = parsed.flag("limit_only")
+    _ponly = parsed.flag("post_only")
+    _auct  = parsed.flag("auction_mode")
+    _vonly = parsed.flag("view_only")
 
     # ── Granular capability flags ─────────────────────────────────────────────
     # entry_supported: can we place a limit BUY?
@@ -497,8 +586,10 @@ def _check_product(
     entry_supported = not (_dis or _tdis or _cnly or _vonly or _auct)
 
     # market_exit_supported: can we place a market SELL?
-    #   blocked additionally by: limit_only (market orders rejected under limit_only)
-    market_exit_supported = not (_dis or _tdis or _cnly or _vonly or _lonly)
+    #   blocked additionally by: limit_only (market orders rejected under
+    #   limit_only) and post_only (a market IOC is inherently taker, so a
+    #   maker-only product rejects it).  EXIT uses market_market_ioc.
+    market_exit_supported = not (_dis or _tdis or _cnly or _vonly or _lonly or _ponly)
 
     # cancel_supported: can we cancel open orders?
     #   cancel_only=True actually ENABLES cancels; does not block cancel_supported
@@ -630,16 +721,50 @@ def run_preflight(
             overall_status="CRITICAL",
         )
 
+    # ── Global scope: a failure here blocks ENTRY for every asset ────────────
     kp             = _check_key_permissions(client, errors)
     portfolio_uuid = _check_portfolio_uuid(kp, client, errors)
     accounts       = _check_accounts(client, errors)
-    products       = [
-        s for pid in product_ids
-        if (s := _check_product(client, pid, errors)) is not None
-    ]
+
+    # ── Product scope: a failure here blocks ENTRY for that asset only ───────
+    products: list[ProductState] = []
+    product_errors: dict[str, list[str]] = {}
+    blocked_products: dict[str, str] = {}
+
+    for pid in product_ids:
+        pid_errors: list[str] = []
+        state = _check_product(client, pid, pid_errors)
+        if pid_errors:
+            product_errors[pid] = pid_errors
+
+        if state is None:
+            # get_product itself failed — no state at all. Fail closed.
+            blocked_products[pid] = (
+                f"{pid}: product state unavailable — "
+                + (pid_errors[0] if pid_errors else "Get Product failed")
+            )
+            continue
+
+        products.append(state)
+
+        if any(e.upper().startswith("CRITICAL") for e in pid_errors):
+            blocked_products[pid] = f"{pid}: malformed or invalid product payload"
+        elif not state.entry_supported:
+            blocked_products[pid] = f"{pid}: exchange flags block order placement"
+        elif not state.market_exit_supported:
+            # Placement would succeed, but the market SELL we exit with would be
+            # rejected. Never open a position we cannot exit with the order type
+            # we actually use. This is why limit_only blocks ENTRY for the asset
+            # while leaving entry_supported (a pure placement-capability flag) True.
+            blocked_products[pid] = (
+                f"{pid}: market EXIT unsupported (limit_only/post_only) — "
+                "refusing to open a position that cannot be market-exited"
+            )
 
     latency_ms = (time.monotonic() - t0) * 1000
 
+    # overall_status reflects GLOBAL scope only. Product problems surface through
+    # blocked_products / entry_allowed_for() so one bad asset cannot halt the rest.
     has_critical = any(e.upper().startswith("CRITICAL") for e in errors)
     status = "CRITICAL" if has_critical else "ENTRY_BLOCKED" if errors else "OK"
 
@@ -652,4 +777,6 @@ def run_preflight(
         latency_ms=latency_ms,
         errors=errors,
         overall_status=status,
+        product_errors=product_errors,
+        blocked_products=blocked_products,
     )

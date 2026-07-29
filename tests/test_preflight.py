@@ -6,6 +6,7 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 import pipeline.preflight as _mod
 from pipeline.preflight import (
@@ -529,3 +530,447 @@ def test_read_only_facade_has_no_dangerous_methods() -> None:
         assert not hasattr(client, forbidden), (
             f"_ReadOnlyClient must not expose {forbidden!r}"
         )
+
+# ── Per-asset gating ──────────────────────────────────────────────────────────
+# overall_status covers account/key/portfolio scope and blocks every asset.
+# Product-scope problems must block only the affected asset — previously a
+# single bad product set entry_ok=False and halted ENTRY for the whole universe.
+
+def _multi_product_client(per_product: dict) -> _ReadOnlyClient:
+    inner = _make_inner()
+    inner.get_product.side_effect = lambda product_id, **kw: per_product[product_id]
+    return _ReadOnlyClient(inner)
+
+
+_ENV_UUID = {"COINBASE_PORTFOLIO_UUID": "abc12345-1111-2222-3333-444455556666"}
+
+
+def _run(client, products):
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_build_read_only_client", return_value=client), \
+         patch.dict("os.environ", _ENV_UUID):
+        return run_preflight(products)
+
+
+def test_one_bad_product_does_not_block_the_other() -> None:
+    bad = {**_ok_product_data("ETH-USD"), "is_disabled": "false"}   # malformed
+    client = _multi_product_client({
+        "ETH-USD": bad,
+        "ZEC-USD": _ok_product_data("ZEC-USD"),
+    })
+    result = _run(client, ["ETH-USD", "ZEC-USD"])
+
+    assert result.overall_status == "OK", "a product fault is not an account fault"
+
+    eth_ok, eth_why = result.entry_allowed_for("ETH-USD")
+    zec_ok, _ = result.entry_allowed_for("ZEC-USD")
+    assert eth_ok is False and "ETH-USD" in eth_why
+    assert zec_ok is True, "ZEC must still be tradeable when ETH is broken"
+
+
+def test_get_product_failure_blocks_only_that_asset() -> None:
+    def _side_effect(product_id, **kw):
+        if product_id == "ETH-USD":
+            raise RuntimeError("product not found")
+        return _ok_product_data("ZEC-USD")
+
+    inner = _make_inner()
+    inner.get_product.side_effect = _side_effect
+    result = _run(_ReadOnlyClient(inner), ["ETH-USD", "ZEC-USD"])
+
+    assert result.entry_allowed_for("ETH-USD")[0] is False
+    assert result.entry_allowed_for("ZEC-USD")[0] is True
+
+
+def test_account_level_critical_blocks_every_asset() -> None:
+    inner = _make_inner()
+    inner.get_api_key_permissions.side_effect = RuntimeError("timeout")
+    result = _run(_ReadOnlyClient(inner), ["ETH-USD", "ZEC-USD"])
+
+    assert result.overall_status == "CRITICAL"
+    for pid in ("ETH-USD", "ZEC-USD"):
+        assert result.entry_allowed_for(pid)[0] is False
+
+
+def test_unknown_product_fails_closed() -> None:
+    client = _multi_product_client({"ZEC-USD": _ok_product_data("ZEC-USD")})
+    result = _run(client, ["ZEC-USD"])
+    allowed, why = result.entry_allowed_for("DOGE-USD")
+    assert allowed is False
+    assert "no product state" in why
+
+
+def test_limit_only_blocks_its_asset_without_touching_global_status() -> None:
+    """
+    Resolves the old contradiction: entry_supported stayed True for limit_only
+    (a limit BUY really does work) while the same flag pushed overall_status to
+    ENTRY_BLOCKED for the entire universe.  Now it blocks exactly one asset, and
+    it blocks because the market SELL we exit with would be rejected.
+    """
+    client = _multi_product_client({
+        "ETH-USD": {**_ok_product_data("ETH-USD"), "limit_only": True},
+        "ZEC-USD": _ok_product_data("ZEC-USD"),
+    })
+    result = _run(client, ["ETH-USD", "ZEC-USD"])
+
+    assert result.overall_status == "OK"
+    eth_ok, eth_why = result.entry_allowed_for("ETH-USD")
+    assert eth_ok is False
+    assert "market EXIT unsupported" in eth_why
+    assert result.entry_allowed_for("ZEC-USD")[0] is True
+
+
+def test_post_only_blocks_market_exit() -> None:
+    """EXIT places market_market_ioc, which a maker-only product rejects."""
+    d = {**_ok_product_data(), "post_only": True}
+    inner = MagicMock()
+    inner.get_product.return_value = d
+    errors: list[str] = []
+    state = _check_product(_ReadOnlyClient(inner), "ZEC-USD", errors)
+    assert state is not None
+    assert state.market_exit_supported is False
+
+
+def test_halted_product_blocks_only_itself() -> None:
+    client = _multi_product_client({
+        "ETH-USD": {**_ok_product_data("ETH-USD"), "trading_disabled": True},
+        "ZEC-USD": _ok_product_data("ZEC-USD"),
+    })
+    result = _run(client, ["ETH-USD", "ZEC-USD"])
+    assert result.entry_allowed_for("ETH-USD")[0] is False
+    assert result.entry_allowed_for("ZEC-USD")[0] is True
+
+
+def test_product_errors_are_reported_per_product() -> None:
+    client = _multi_product_client({
+        "ETH-USD": {**_ok_product_data("ETH-USD"), "cancel_only": True},
+        "ZEC-USD": _ok_product_data("ZEC-USD"),
+    })
+    result = _run(client, ["ETH-USD", "ZEC-USD"])
+    assert "ETH-USD" in result.product_errors
+    assert "ZEC-USD" not in result.product_errors
+
+
+def test_exit_supervision_stays_allowed_when_products_are_blocked() -> None:
+    client = _multi_product_client({
+        "ZEC-USD": {**_ok_product_data("ZEC-USD"), "view_only": True},
+    })
+    result = _run(client, ["ZEC-USD"])
+    assert result.entry_allowed_for("ZEC-USD")[0] is False
+    assert result.exit_supervision_allowed() is True
+
+
+# ── Mandatory portfolio UUID (LIVE config gate) ───────────────────────────────
+
+def test_missing_portfolio_uuid_env_blocks_entry_live() -> None:
+    """
+    .env has no COINBASE_PORTFOLIO_UUID, so DRY_RUN=false would block ENTRY on
+    every cycle. Lock the behaviour so it cannot silently regress to fail-open.
+    """
+    import os
+    client = _make_client()
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_build_read_only_client", return_value=client), \
+         patch.dict("os.environ", {}, clear=True):
+        os.environ.pop("COINBASE_PORTFOLIO_UUID", None)
+        result = run_preflight(["ZEC-USD"])
+
+    assert result.overall_status != "OK"
+    assert not result.entry_allowed()
+    assert any("COINBASE_PORTFOLIO_UUID" in e for e in result.errors)
+
+
+def test_non_dict_product_payload_does_not_crash_preflight() -> None:
+    """
+    A non-dict Get Product response for one asset must not take down the whole
+    preflight run.  Before the isolation guard, data.get(...) raised
+    AttributeError out of _check_product and aborted every asset's checks.
+    """
+    def _side_effect(product_id, **kw):
+        if product_id == "ETH-USD":
+            return ["unexpected", "list", "payload"]
+        return _ok_product_data("ZEC-USD")
+
+    inner = _make_inner()
+    inner.get_product.side_effect = _side_effect
+    result = _run(_ReadOnlyClient(inner), ["ETH-USD", "ZEC-USD"])
+
+    eth_ok, eth_why = result.entry_allowed_for("ETH-USD")
+    assert eth_ok is False and "ETH-USD" in eth_why
+    assert result.entry_allowed_for("ZEC-USD")[0] is True
+
+
+def test_none_product_payload_blocks_only_that_asset() -> None:
+    def _side_effect(product_id, **kw):
+        return None if product_id == "ETH-USD" else _ok_product_data("ZEC-USD")
+
+    inner = _make_inner()
+    inner.get_product.side_effect = _side_effect
+    result = _run(_ReadOnlyClient(inner), ["ETH-USD", "ZEC-USD"])
+
+    assert result.entry_allowed_for("ETH-USD")[0] is False
+    assert result.entry_allowed_for("ZEC-USD")[0] is True
+
+
+def test_missing_product_id_blocks_that_asset() -> None:
+    d = _ok_product_data("ZEC-USD")
+    del d["product_id"]
+    inner = MagicMock()
+    inner.get_product.return_value = d
+    errors: list[str] = []
+    _check_product(_ReadOnlyClient(inner), "ZEC-USD", errors)
+    assert any("no product_id" in e and "CRITICAL" in e for e in errors)
+
+
+# ── Malformed global payload shape-validation (must not crash preflight) ──────
+
+@pytest.mark.parametrize("bad", [None, ["a", "list"], "a string", 42])
+def test_key_permissions_non_dict_is_critical_not_crash(bad) -> None:
+    inner = MagicMock()
+    inner.get_api_key_permissions.return_value = bad
+    errors: list[str] = []
+    kp = _check_key_permissions(_ReadOnlyClient(inner), errors)
+    assert kp is None
+    assert any("CRITICAL" in e for e in errors)
+
+
+def test_run_preflight_key_permissions_none_returns_critical_result() -> None:
+    """A None key-permissions payload must yield a structured CRITICAL result,
+    not an AttributeError that aborts run_all_assets with no status."""
+    inner = _make_inner()
+    inner.get_api_key_permissions.return_value = None
+    client = _ReadOnlyClient(inner)
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_build_read_only_client", return_value=client), \
+         patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "abc12345-1111-2222-3333-444455556666"}):
+        result = run_preflight(["ZEC-USD"])
+    assert result.overall_status == "CRITICAL"
+    assert not result.entry_allowed()
+    assert result.exit_supervision_allowed() is True
+
+
+def test_portfolios_non_dict_is_critical_not_crash() -> None:
+    kp = KeyPermissions(can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="")
+    inner = MagicMock()
+    inner.get_portfolios.return_value = None
+    errors: list[str] = []
+    _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e for e in errors)
+
+
+def test_portfolios_field_not_a_list_is_critical() -> None:
+    kp = KeyPermissions(can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="")
+    inner = MagicMock()
+    inner.get_portfolios.return_value = {"portfolios": {"unexpected": "dict"}}
+    errors: list[str] = []
+    _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e and "expected a list" in e for e in errors)
+
+
+def test_accounts_non_dict_page_is_critical_not_crash() -> None:
+    inner = MagicMock()
+    inner.get_accounts.return_value = ["not", "a", "dict"]
+    errors: list[str] = []
+    summaries = _check_accounts(_ReadOnlyClient(inner), errors)
+    assert summaries == []
+    assert any("CRITICAL" in e for e in errors)
+
+
+# ── portfolio_uuid strict typing + identity confirmation ─────────────────────
+
+def test_key_permissions_non_string_uuid_is_critical() -> None:
+    inner = MagicMock()
+    inner.get_api_key_permissions.return_value = {**_ok_permissions_data(), "portfolio_uuid": 42}
+    errors: list[str] = []
+    kp = _check_key_permissions(_ReadOnlyClient(inner), errors)
+    assert kp is None
+    assert any("CRITICAL" in e and "portfolio_uuid" in e for e in errors)
+
+
+def test_run_preflight_non_string_uuid_does_not_crash() -> None:
+    """An int portfolio_uuid previously blew up KeyPermissions.__repr__; now CRITICAL."""
+    inner = _make_inner()
+    inner.get_api_key_permissions.return_value = {**_ok_permissions_data(), "portfolio_uuid": 42}
+    client = _ReadOnlyClient(inner)
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_build_read_only_client", return_value=client), \
+         patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "abc12345-1111-2222-3333-444455556666"}):
+        result = run_preflight(["ZEC-USD"])
+    assert result.overall_status == "CRITICAL"
+
+
+def test_missing_key_uuid_is_critical_even_with_empty_portfolios() -> None:
+    """
+    COINBASE_PORTFOLIO_UUID set, key advertises no portfolio_uuid → CRITICAL.
+    Orders derive their portfolio from the key, so an unbound key cannot be proven
+    to trade the intended portfolio.
+    """
+    kp = KeyPermissions(can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="")
+    inner = MagicMock()
+    inner.get_portfolios.return_value = {"portfolios": []}
+    errors: list[str] = []
+    with patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "pinned-uuid-xyz"}):
+        _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e and "no portfolio_uuid" in e for e in errors)
+
+
+def test_expected_uuid_not_proven_by_portfolio_list_alone() -> None:
+    """
+    SECURITY: List Portfolios proves the account CONTAINS the portfolio, not that
+    THIS trading key is bound to it.  A missing key portfolio_uuid must be CRITICAL
+    even when the expected uuid appears in List Portfolios — orders would still go
+    to the key's own (unproven) portfolio.
+    """
+    kp = KeyPermissions(can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="")
+    inner = MagicMock()
+    inner.get_portfolios.return_value = {"portfolios": [{"uuid": "pinned-uuid-xyz"}]}
+    errors: list[str] = []
+    with patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "pinned-uuid-xyz"}):
+        _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e and "no portfolio_uuid" in e for e in errors), (
+        "List Portfolios visibility must NOT substitute for key-scope proof"
+    )
+    assert any("does not prove key scope" in e for e in errors)
+
+
+def test_key_uuid_match_is_the_only_confirmation() -> None:
+    """The single OK path: the key's own portfolio_uuid equals the expected env."""
+    kp = KeyPermissions(
+        can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="pinned-uuid-xyz",
+    )
+    inner = MagicMock()
+    inner.get_portfolios.return_value = {"portfolios": [{"uuid": "pinned-uuid-xyz"}]}
+    errors: list[str] = []
+    with patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "pinned-uuid-xyz"}):
+        resolved = _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert resolved == "pinned-uuid-xyz"
+    assert not errors
+
+
+def test_key_uuid_match_ok_even_if_not_in_portfolio_list() -> None:
+    """Key-scope match is authoritative; List Portfolios is only diagnostic."""
+    kp = KeyPermissions(
+        can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="pinned-uuid-xyz",
+    )
+    inner = MagicMock()
+    inner.get_portfolios.return_value = {"portfolios": [{"uuid": "some-other-uuid"}]}
+    errors: list[str] = []
+    with patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "pinned-uuid-xyz"}):
+        resolved = _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert resolved == "pinned-uuid-xyz"
+    assert not errors
+
+
+# ── Malformed account scalars must not crash ─────────────────────────────────
+
+def test_accounts_non_string_currency_is_critical_not_crash() -> None:
+    page = _ok_accounts_page()
+    page["accounts"][0]["currency"] = 42
+    inner = MagicMock()
+    inner.get_accounts.return_value = page
+    errors: list[str] = []
+    summaries = _check_accounts(_ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e and "currency" in e for e in errors)
+    assert all(s.currency == "USD" for s in summaries)  # the bad one was skipped
+
+
+def test_accounts_non_dict_element_is_critical_not_crash() -> None:
+    inner = MagicMock()
+    inner.get_accounts.return_value = {
+        "accounts": ["not-a-dict", {"currency": "USD", "uuid": "u1",
+                                     "available_balance": {"value": "100"},
+                                     "hold": {"value": "0"}, "active": True, "ready": True}],
+        "has_next": False, "cursor": "",
+    }
+    errors: list[str] = []
+    summaries = _check_accounts(_ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e and "account entry" in e for e in errors)
+    assert len(summaries) == 1  # the valid USD account still parsed
+
+
+def test_accounts_field_not_a_list_is_critical() -> None:
+    inner = MagicMock()
+    inner.get_accounts.return_value = {"accounts": {"bad": "dict"}, "has_next": False, "cursor": ""}
+    errors: list[str] = []
+    _check_accounts(_ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e and "expected a list" in e for e in errors)
+
+
+# ── List Portfolios is diagnostic: must not block a scope-proven key ──────────
+
+def test_portfolios_failure_does_not_block_when_key_uuid_matches() -> None:
+    """
+    A transient List Portfolios failure must NOT block ENTRY once the key's own
+    portfolio_uuid already proves scope.  It is diagnostic, not a gate.
+    """
+    kp = KeyPermissions(
+        can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="pinned-uuid-xyz",
+    )
+    inner = MagicMock()
+    inner.get_portfolios.side_effect = RuntimeError("temporary 503")
+    errors: list[str] = []
+    with patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "pinned-uuid-xyz"}):
+        resolved = _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert resolved == "pinned-uuid-xyz"
+    assert errors == [], "diagnostic endpoint failure must not gate a proven key"
+
+
+def test_portfolios_malformed_does_not_block_when_key_uuid_matches() -> None:
+    kp = KeyPermissions(
+        can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="pinned-uuid-xyz",
+    )
+    inner = MagicMock()
+    inner.get_portfolios.return_value = None   # malformed
+    errors: list[str] = []
+    with patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "pinned-uuid-xyz"}):
+        resolved = _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert resolved == "pinned-uuid-xyz"
+    assert errors == []
+
+
+def test_run_preflight_ok_despite_portfolios_failure_when_key_matches() -> None:
+    """End-to-end: overall_status stays OK when the key proves scope and only the
+    diagnostic List Portfolios endpoint is down."""
+    inner = _make_inner()
+    # key portfolio_uuid already equals the env uuid used by _make_inner/_ok_*
+    inner.get_portfolios.side_effect = RuntimeError("temporary 503")
+    client = _ReadOnlyClient(inner)
+    with patch.object(_mod, "_DRY_RUN", False), \
+         patch.object(_mod, "_build_read_only_client", return_value=client), \
+         patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "abc12345-1111-2222-3333-444455556666"}):
+        result = run_preflight(["ZEC-USD"])
+    assert result.overall_status == "OK"
+    assert result.entry_allowed()
+
+
+def test_portfolios_failure_still_blocks_when_uuid_unset() -> None:
+    """When no UUID is pinned the list IS load-bearing, so its failure blocks."""
+    kp = KeyPermissions(can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="")
+    inner = MagicMock()
+    inner.get_portfolios.side_effect = RuntimeError("temporary 503")
+    errors: list[str] = []
+    with patch.dict("os.environ", {}, clear=True):
+        import os
+        os.environ.pop("COINBASE_PORTFOLIO_UUID", None)
+        _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    assert any("CRITICAL" in e and "get_portfolios" in e for e in errors)
+
+
+def test_nonblocking_portfolio_diagnostic_not_logged_as_critical(capsys) -> None:
+    """
+    When the key match is confirmed, a List Portfolios failure is logged as a
+    non-blocking WARNING — its stdout line must NOT contain the word CRITICAL,
+    so external monitoring that greps for CRITICAL does not false-alert.
+    """
+    kp = KeyPermissions(
+        can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="pinned-uuid-xyz",
+    )
+    inner = MagicMock()
+    inner.get_portfolios.side_effect = RuntimeError("temporary 503")
+    errors: list[str] = []
+    with patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "pinned-uuid-xyz"}):
+        _check_portfolio_uuid(kp, _ReadOnlyClient(inner), errors)
+    out = capsys.readouterr().out
+    assert "temporary 503" in out, "the diagnostic must still be visible"
+    assert "CRITICAL" not in out, "non-blocking diagnostic must not print CRITICAL"
+    assert errors == []

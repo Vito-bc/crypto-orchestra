@@ -1399,6 +1399,37 @@ def get_open_positions_for_asset(
     ).fetchall()
 
 
+def get_dust_positions(
+    asset: Optional[str], conn: sqlite3.Connection
+) -> list[sqlite3.Row]:
+    """
+    Return positions currently in DUST status, each annotated with the id of its
+    most recent DUST_SETTLED position_event as ``dust_event_id``.
+
+    DUST is durable, unresolved open exposure: it blocks new ENTRY and epoch
+    transitions until a human writes it off.  Reading it from the ledger (rather
+    than only reacting to the moment of transition) is what lets a lost DUST
+    alert be re-sent on a later pass with no new DUST event.
+
+    dust_event_id is the delivery identity for notifications.  A position can be
+    DUST → CLOSING (DUST_REVIVED) → DUST again; each DUST transition writes a new
+    DUST_SETTLED event with a new autoincrement id, so a re-dusted position gets a
+    fresh key and its second alert is not suppressed as "already delivered".
+    """
+    sql = (
+        "SELECT p.*, ("
+        "  SELECT e.id FROM position_events e"
+        "  WHERE e.position_id = p.id AND e.event_type = 'DUST_SETTLED'"
+        "  ORDER BY e.id DESC LIMIT 1"
+        ") AS dust_event_id"
+        " FROM positions p"
+        " WHERE p.status='DUST'"
+    )
+    if asset:
+        return conn.execute(sql + " AND p.asset=?", (asset,)).fetchall()
+    return conn.execute(sql).fetchall()
+
+
 def get_epoch_closed_pnl(epoch_id: str, conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM positions WHERE epoch_id=? AND status='CLOSED' ORDER BY closed_at",

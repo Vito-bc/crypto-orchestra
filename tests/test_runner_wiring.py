@@ -718,3 +718,217 @@ def test_list_reconciliation_orders_excludes_pending_cancel(monkeypatch):
     assert "CANCEL_QUEUED" in all_statuses, (
         "CANCEL_QUEUED must be included in live_statuses"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. Per-asset ENTRY gating — one blocked product must not halt the universe
+# ---------------------------------------------------------------------------
+
+def _preflight_result(*, status="OK", blocked=None, products=("ETH-USD", "ZEC-USD")):
+    from decimal import Decimal
+    from pipeline.preflight import (
+        AccountSummary, KeyPermissions, PreflightResult, ProductState,
+    )
+
+    return PreflightResult(
+        timestamp="2026-07-24T00:00:00+00:00",
+        portfolio_uuid="test-uuid",
+        key_permissions=KeyPermissions(
+            can_view=True, can_trade=True, can_transfer=False, portfolio_uuid="test-uuid",
+        ),
+        accounts_summary=[AccountSummary(
+            currency="USD", available_balance=Decimal("100"), hold=Decimal("0"),
+            active=True, ready=True,
+        )],
+        product_states=[
+            ProductState(
+                product_id=pid,
+                base_increment="0.00000001", base_min_size="0.001",
+                base_max_size="9000", quote_increment="0.01",
+                quote_min_size="1", quote_max_size="999999",
+                is_disabled=False, trading_disabled=False, cancel_only=False,
+                limit_only=False, post_only=False, auction_mode=False, view_only=False,
+                entry_supported=True, market_exit_supported=True, cancel_supported=True,
+            )
+            for pid in products
+        ],
+        latency_ms=1.0,
+        errors=[] if status == "OK" else ["CRITICAL: account unreachable"],
+        overall_status=status,
+        product_errors={},
+        blocked_products=blocked or {},
+    )
+
+
+def test_blocked_product_does_not_halt_other_assets():
+    """
+    Preflight blocking ETH must leave ZEC tradeable.  Before per-asset gating,
+    any product-scope error set entry_ok=False and run_all_assets returned {}
+    without evaluating a single asset.
+    """
+    from pipeline.runner import run_all_assets
+
+    pipeline_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation", return_value=(True, None)),
+        patch("pipeline.runner._get_open_position_assets", return_value=[]),
+        patch("pipeline.preflight.run_preflight", return_value=_preflight_result(
+            blocked={"ETH-USD": "ETH-USD: exchange flags block order placement"},
+        )),
+        patch("pipeline.runner.send_telegram_message"),
+        patch(
+            "pipeline.runner.run_pipeline",
+            side_effect=lambda asset, **kw: pipeline_calls.append(asset),
+        ),
+    ):
+        results = run_all_assets()
+
+    assert pipeline_calls == ["ZEC-USD"], (
+        f"only the unblocked asset should run the pipeline, got {pipeline_calls}"
+    )
+    assert results["ETH-USD"].action.value == "HOLD"
+
+
+def test_global_preflight_failure_still_halts_every_asset():
+    """Account-scope failures must keep their universe-wide halt."""
+    from pipeline.runner import run_all_assets
+
+    pipeline_calls: list[str] = []
+
+    with (
+        patch("pipeline.runner._startup_reconciliation", return_value=(True, None)),
+        patch("pipeline.runner._get_open_position_assets", return_value=[]),
+        patch("pipeline.preflight.run_preflight",
+              return_value=_preflight_result(status="CRITICAL")),
+        patch("pipeline.runner.send_telegram_message"),
+        patch("pipeline.runner.run_pipeline",
+              side_effect=lambda asset, **kw: pipeline_calls.append(asset)),
+    ):
+        results = run_all_assets()
+
+    assert pipeline_calls == []
+    assert results == {}
+
+
+# ---------------------------------------------------------------------------
+# 8. LKG persistence-degraded alert is edge-triggered and non-blocking
+# ---------------------------------------------------------------------------
+
+def test_persistence_degraded_alerts_once_then_recovers():
+    """
+    _handle_persistence_status alerts once on entering the degraded state, stays
+    quiet while still degraded, and sends one recovery event when it clears.
+    ENTRY is never gated by this.
+    """
+    import pipeline.runner as _runner
+    from unittest.mock import patch
+
+    _runner._persist_reported = frozenset()
+    with patch("pipeline.runner.send_telegram_message", return_value=True) as send:
+        _runner._handle_persistence_status(["ZEC-USD"])       # enter degraded
+        _runner._handle_persistence_status(["ZEC-USD"])       # still degraded
+        _runner._handle_persistence_status([])                # recovered
+        _runner._handle_persistence_status([])                # stays clear
+
+    bodies = [c.args[0] for c in send.call_args_list]
+    assert len(bodies) == 2, f"expected one alert + one recovery, got {len(bodies)}"
+    assert "DEGRADED" in bodies[0]
+    assert "RECOVERED" in bodies[1]
+
+
+def test_persistence_alert_retried_until_delivered():
+    """
+    A failed persistence alert must NOT be marked reported — the next pass must
+    re-send the same degraded state (P1: delivery, not just enqueue).
+    """
+    import pipeline.runner as _runner
+    from unittest.mock import patch
+
+    _runner._persist_reported = frozenset()
+
+    with patch("pipeline.runner.send_telegram_message", return_value=False) as m1:
+        _runner._handle_persistence_status(["ZEC-USD"])
+    assert m1.call_count == 1
+    assert _runner._persist_reported == frozenset(), "failed send must not advance reported state"
+
+    with patch("pipeline.runner.send_telegram_message", return_value=True) as m2:
+        _runner._handle_persistence_status(["ZEC-USD"])
+    assert m2.call_count == 1, "undelivered degraded alert must be retried"
+    assert _runner._persist_reported == frozenset({"ZEC-USD"})
+
+
+def test_persistence_recovery_retried_until_delivered():
+    """A failed RECOVERED send is retried too, not silently dropped."""
+    import pipeline.runner as _runner
+    from unittest.mock import patch
+
+    _runner._persist_reported = frozenset({"ZEC-USD"})   # already-reported degraded
+
+    with patch("pipeline.runner.send_telegram_message", return_value=False) as m1:
+        _runner._handle_persistence_status([])            # recovery send fails
+    assert m1.call_count == 1
+    assert _runner._persist_reported == frozenset({"ZEC-USD"}), "failed recovery must not advance"
+
+    with patch("pipeline.runner.send_telegram_message", return_value=True) as m2:
+        _runner._handle_persistence_status([])            # retried, delivered
+    assert m2.call_count == 1
+    assert _runner._persist_reported == frozenset()
+
+
+def test_persistence_alert_on_changed_failure_set():
+    """
+    A change in WHICH products fail (ETH→ZEC) must re-alert, not be masked by a
+    boolean 'already reported' flag (P2).
+    """
+    import pipeline.runner as _runner
+    from unittest.mock import patch
+
+    _runner._persist_reported = frozenset()
+
+    with patch("pipeline.runner.send_telegram_message", return_value=True) as m1:
+        _runner._handle_persistence_status(["ETH-USD"])
+    assert m1.call_count == 1
+    assert "ETH-USD" in m1.call_args[0][0]
+
+    with patch("pipeline.runner.send_telegram_message", return_value=True) as m2:
+        _runner._handle_persistence_status(["ZEC-USD"])   # set changed, no empty cycle
+    assert m2.call_count == 1, "a changed failure set must re-alert"
+    assert "ZEC-USD" in m2.call_args[0][0]
+
+    with patch("pipeline.runner.send_telegram_message", return_value=True) as m3:
+        _runner._handle_persistence_status(["ZEC-USD"])   # unchanged
+    assert m3.call_count == 0, "unchanged set must stay quiet"
+
+
+def test_persistence_failure_does_not_block_entry():
+    """A persistence failure must not set entry_ok False or halt the pipeline."""
+    from pipeline.runner import run_all_assets
+    from unittest.mock import patch
+
+    pipeline_calls: list[str] = []
+    alerts: list[str] = []
+
+    # LIVE path so the real prewarm + persistence handling runs.
+    with (
+        patch("pipeline.runner._startup_reconciliation", return_value=(True, None)),
+        patch("pipeline.runner._get_open_position_assets", return_value=[]),
+        patch("pipeline.product_state.prewarm", return_value={"ETH-USD": True, "ZEC-USD": True}),
+        patch("pipeline.product_state.last_persistence_failures",
+              return_value=["ZEC-USD"]),
+        patch("pipeline.product_state.is_entry_allowed", return_value=(True, "")),
+        patch("exchange.coinbase_client.is_dry_run", return_value=False),
+        patch("pipeline.preflight.run_preflight", return_value=_preflight_result()),
+        patch("pipeline.runner.send_telegram_message",
+              side_effect=lambda m: alerts.append(m)),
+        patch("pipeline.runner.run_pipeline",
+              side_effect=lambda asset, **kw: pipeline_calls.append(asset)),
+    ):
+        run_all_assets()
+
+    assert set(pipeline_calls) == {"ETH-USD", "ZEC-USD"}, (
+        "persistence failure must not block ENTRY for any asset"
+    )
+    assert any("persistence DEGRADED" in a.lower() or "DEGRADED" in a for a in alerts), (
+        "a persistence-degraded operational alert must be sent"
+    )
