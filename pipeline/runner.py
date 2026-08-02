@@ -1386,7 +1386,7 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     _preflight = run_preflight(ASSETS, live_reads=not _is_dry_run())
     if _preflight.overall_status == "CRITICAL":
         msg = (
-            f"[Startup] Preflight CRITICAL — ENTRY halted.\n"
+            "[Startup] Preflight CRITICAL — ENTRY halted.\n"
             + "\n".join(f"  • {e}" for e in _preflight.errors[:10])
         )
         print(msg)
@@ -1394,7 +1394,7 @@ def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
         entry_ok = False
     elif _preflight.overall_status == "ENTRY_BLOCKED":
         msg = (
-            f"[Startup] Preflight ENTRY_BLOCKED — ENTRY halted.\n"
+            "[Startup] Preflight ENTRY_BLOCKED — ENTRY halted.\n"
             + "\n".join(f"  • {e}" for e in _preflight.errors[:10])
         )
         print(msg)

@@ -1052,7 +1052,6 @@ def apply_fill(
 
             remaining = max(0.0, entry_qty - exit_qty)
             is_closed = remaining < 1e-9  # below 0.1 satoshi — float epsilon only
-            new_pos_status = "CLOSED" if is_closed else "CLOSING"
 
             if is_closed:
                 entry_cost = (pos["entry_price"] or 0.0) * entry_qty

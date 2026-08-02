@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 from backtesting.execution_replay import (
     FillModel, OrderState, LimitOrder, TradeResult, SignalResult,
     replay_signals, compute_stats, _simulate_filled_trade,
-    _MAKER_ENTRY, _TAKER_ENTRY, _TAKER_SL, _MAKER_TP,
+    _MAKER_ENTRY, _MAKER_TP,
 )
 
 
@@ -77,7 +77,6 @@ def _single_signal_result(
     """Run replay for a single synthetic signal with an explicit limit_price."""
     from backtesting.execution_replay import replay_signals as _rs
     from unittest.mock import patch
-    from tools.price_levels import get_levels
 
     atr = float(df.iloc[signal_i]["atr"])
 
@@ -131,8 +130,8 @@ def test_within_candle_stop_wins_pessimistically():
     # Build a candle where low <= stop AND high >= target
     fill_price   = 100.0
     atr          = 2.0
-    stop_price   = fill_price - 2.0 * atr   # 96.0
-    target_price = fill_price + 3.5 * atr   # 107.0
+    # With atr_stop=2.0 / atr_target=3.5 below: stop = 96.0, target = 107.0.
+    # The candle is built so low (95) < stop and high (108) > target.
 
     idx = pd.date_range("2026-01-01", periods=5, freq="h", tz="UTC")
     df = pd.DataFrame({

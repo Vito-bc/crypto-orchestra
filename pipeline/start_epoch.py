@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -94,7 +93,7 @@ def main() -> None:
 
     written = start_new_epoch(args.epoch_id, args.capital, reason)
     print()
-    print(f"Written to logs/risk_epochs.jsonl:")
+    print("Written to logs/risk_epochs.jsonl:")
     print(json.dumps(written, indent=2))
     print()
     print("Circuit breaker will now ignore all pre-epoch trades.")

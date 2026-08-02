@@ -148,7 +148,7 @@ def run_leave_one_event_out(
     pf_kept  = gw / gl if gl else float("inf")
     avg_kept = sum(kept_returns) / len(kept_returns)
 
-    print(f"\nWithout Oct cluster:")
+    print("\nWithout Oct cluster:")
     print(f"  Avg P&L      : {avg_kept:+.2f}%  (full: {sum(all_returns)/len(all_returns):+.2f}%)")
     print(f"  Profit factor: {pf_kept:.3f}  (full: {sum([r for r in all_returns if r>0]) / abs(sum([r for r in all_returns if r<=0])):.3f})")
     print(f"  Win rate     : {len(wins_k)/len(kept_returns)*100:.1f}%")
@@ -226,7 +226,7 @@ def run_bootstrap(period: str, asset: str = "ZEC-USD", block_size: int = 4, n_it
     p5, p25, p50, p75, p95 = np.percentile(finite_pfs, [5, 25, 50, 75, 95])
     pct_above_1 = (finite_pfs > 1.0).mean() * 100
 
-    print(f"\nBlock Bootstrap 95% CI on Profit Factor")
+    print("\nBlock Bootstrap 95% CI on Profit Factor")
     print(f"  5th  pct : {p5:.3f}")
     print(f"  25th pct : {p25:.3f}")
     print(f"  Median   : {p50:.3f}  (actual: {actual_pf:.3f})")
@@ -234,7 +234,7 @@ def run_bootstrap(period: str, asset: str = "ZEC-USD", block_size: int = 4, n_it
     print(f"  95th pct : {p95:.3f}")
     print(f"  P(PF > 1): {pct_above_1:.1f}%")
 
-    print(f"\nBlock Bootstrap 95% CI on Avg P&L")
+    print("\nBlock Bootstrap 95% CI on Avg P&L")
     avg_pls = []
     rng = np.random.default_rng(42)
     arr = np.array(returns, dtype=float)
@@ -283,7 +283,7 @@ if __name__ == "__main__":
     elif args.leave_out_event:
         start = args.leave_out_event[0] + "-01"
         # end: last day of given month
-        import calendar, datetime
+        import calendar
         y, m = int(args.leave_out_event[1].split("-")[0]), int(args.leave_out_event[1].split("-")[1])
         last_day = calendar.monthrange(y, m)[1]
         end = f"{y:04d}-{m:02d}-{last_day:02d}"

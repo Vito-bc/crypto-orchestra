@@ -47,7 +47,6 @@ from pipeline.ledger import (
     start_reconciliation,
     transition_order,
 )
-from pipeline.outbox import place_order_outbox
 from pipeline.reconciler import (
     CoinbaseFill,
     CoinbaseOrder,
@@ -477,7 +476,7 @@ def test_gate_no_reconciliation_ever_blocks(tmp_db: Path) -> None:
 
 
 def test_gate_unresolved_items_block(tmp_db: Path) -> None:
-    oid = _insert_submitting_entry(tmp_db)
+    _insert_submitting_entry(tmp_db)
     run_startup_reconciliation(
         list_orders_fn=lambda: [],  # not found → UNRESOLVED
         cancel_order_fn=_no_cancel,

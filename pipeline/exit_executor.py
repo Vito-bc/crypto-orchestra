@@ -37,7 +37,7 @@ from pipeline.ledger import (
     update_position_extensions,
     update_position_stop,
 )
-from pipeline.outbox import ExitPlaceResult, PlacementBlocked, place_exit_outbox
+from pipeline.outbox import PlacementBlocked, place_exit_outbox
 from pipeline.position_tracker import (
     BREAK_EVEN_PCT,
     EXTENSION_HOURS,

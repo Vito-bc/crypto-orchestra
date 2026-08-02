@@ -271,10 +271,8 @@ def test_epoch_drawdown_halts_at_threshold():
             assert equity == 85.0
             assert peak   == 100.0
             assert abs(dd - 15.0) < 0.01  # 15% DD
-            # The 12% threshold should fire
-            from pipeline.risk_epoch import _DD_HALT_PCT  # type: ignore[attr-defined]
-        except ImportError:
-            pass  # _DD_HALT_PCT lives in runner.py, not risk_epoch — that's fine
+            # The 12% halt threshold (_DD_HALT_PCT) is enforced in runner.py, not
+            # in risk_epoch — this test only verifies the drawdown computation.
         finally:
             re_mod.EPOCHS_FILE, re_mod.TRADE_HISTORY = orig_e, orig_h
         # Check the DD value itself (runner.py enforces the threshold)

@@ -6,14 +6,10 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 import pipeline.preflight as _mod
 from pipeline.preflight import (
-    AccountSummary,
     KeyPermissions,
-    PreflightResult,
-    ProductState,
     _ReadOnlyClient,
     _check_accounts,
     _check_key_permissions,
@@ -155,7 +151,7 @@ def test_run_preflight_dry_run_with_live_reads_calls_api() -> None:
     with patch.object(_mod, "_DRY_RUN", True), \
          patch.object(_mod, "_build_read_only_client", return_value=client), \
          patch.dict("os.environ", {"COINBASE_PORTFOLIO_UUID": "abc12345-1111-2222-3333-444455556666"}):
-        result = run_preflight(["ZEC-USD"], live_reads=True)
+        run_preflight(["ZEC-USD"], live_reads=True)
     assert client._c.get_api_key_permissions.called
 
 
@@ -451,7 +447,7 @@ def test_product_string_bool_flag_is_critical() -> None:
     inner = MagicMock()
     inner.get_product.return_value = d
     errors: list[str] = []
-    state = _check_product(_ReadOnlyClient(inner), "ZEC-USD", errors)
+    _check_product(_ReadOnlyClient(inner), "ZEC-USD", errors)
     assert any("CRITICAL" in e for e in errors)
 
 
