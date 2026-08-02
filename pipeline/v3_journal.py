@@ -306,7 +306,7 @@ def summarise_journal() -> None:
     adj_gl = abs(sum(adj_l))
     adj_pf  = adj_gw / adj_gl if adj_gl else float("inf")
     adj_avg = sum(adj_returns) / len(adj_returns)
-    print(f"\n  After +0.25% friction stress:")
+    print("\n  After +0.25% friction stress:")
     print(f"    Profit factor: {adj_pf:.3f}  avg: {adj_avg:+.2f}%")
 
     # Episode grouping: adjacent signals <= 30 days apart = same episode
@@ -317,7 +317,7 @@ def summarise_journal() -> None:
     print(f"    Largest episode's share of gross profit: {max_ep_contribution:.0%}")
 
     # 5-point activation criteria
-    print(f"\n  5-point OOS activation criteria (threshold 0.20 locked):")
+    print("\n  5-point OOS activation criteria (threshold 0.20 locked):")
     c1 = len(closed_a) >= 20
     c2 = pf > 1.20
     try:
@@ -336,7 +336,7 @@ def summarise_journal() -> None:
     for label, ok, detail in [
         ("n >= 20 closed trades",          c1, f"{len(closed_a)}"),
         ("PF > 1.20",                      c2, f"{pf:.3f}"),
-        (f"P_bootstrap(PF>1) > 90%",       c3, c3_str),
+        ("P_bootstrap(PF>1) > 90%",       c3, c3_str),
         ("Avg > 0% after +0.25% friction", c4, f"{adj_avg:+.2f}%"),
         ("No episode > 50% gross profit",  c5, f"{max_ep_contribution:.0%}"),
     ]:

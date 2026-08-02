@@ -12,10 +12,9 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import sys, json, tempfile, os
+import sys
 
 import pandas as pd
-import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -172,6 +171,7 @@ def test_resolver_writes_outcome_once(tmp_path):
     outcomes = [e for e in read_journal() if e.get("type") == "V3_OUTCOME"]
 
     # Two raw outcome lines exist — that's OK; fold produces one per signal_id
+    assert len(outcomes) == 2
     assert len([s for s in view if s.get("outcome") == "WIN"]) == 1
 
 

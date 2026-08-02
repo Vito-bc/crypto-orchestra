@@ -8,7 +8,6 @@ Tests that also need an OPEN entry position use db_with_position.
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -25,13 +24,10 @@ from pipeline.ledger import (
     get_active_epoch,
     get_db,
     get_epoch_closed_pnl,
-    get_open_orders_for_asset,
-    get_open_positions_for_asset,
     get_trade_intent,
     init_db,
     insert_epoch,
     insert_order,
-    insert_position,
     insert_trade_intent,
     run_migrations,
     start_epoch,

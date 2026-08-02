@@ -448,10 +448,12 @@ def _check_product(
         )
 
     # ── Numeric rules (all required) ─────────────────────────────────────────
-    b_inc  = _strict_positive_decimal(data.get("base_increment"),  f"{product_id}.base_increment",  prod_errors)
+    # Called for the validation side-effect (appends to prod_errors); the parsed
+    # increments are not needed here, unlike the min/max pair compared below.
+    _strict_positive_decimal(data.get("base_increment"),  f"{product_id}.base_increment",  prod_errors)
     b_min  = _strict_positive_decimal(data.get("base_min_size"),   f"{product_id}.base_min_size",   prod_errors)
     b_max  = _strict_positive_decimal(data.get("base_max_size"),   f"{product_id}.base_max_size",   prod_errors)
-    q_inc  = _strict_positive_decimal(data.get("quote_increment"),  f"{product_id}.quote_increment", prod_errors)
+    _strict_positive_decimal(data.get("quote_increment"),  f"{product_id}.quote_increment", prod_errors)
     q_min  = _strict_positive_decimal(data.get("quote_min_size"),  f"{product_id}.quote_min_size",  prod_errors)
     q_max  = _strict_positive_decimal(data.get("quote_max_size"),  f"{product_id}.quote_max_size",  prod_errors)
 

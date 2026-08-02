@@ -12,7 +12,6 @@ No real DB or network calls are made in any test.
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -293,7 +292,6 @@ def test_run_all_assets_halts_when_startup_blocked():
 def test_unknown_orphan_sets_global_exit_block():
     """An UNKNOWN-asset orphan in the reconciliation report must block EXIT for all positions."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
 
     report_with_unknown = ReconciliationReport(
         run_id=1, discovered=[], resolved=[],
@@ -316,7 +314,7 @@ def test_unknown_orphan_sets_global_exit_block():
               side_effect=lambda m: telegram_calls.append(m)),
         patch("pipeline.runner.get_snapshot", return_value={"close": 2000.0}),
     ):
-        result = run_all_assets()
+        run_all_assets()
 
     assert exit_calls == [], (
         "EXIT must be blocked for all positions when there is an UNKNOWN-asset orphan"
@@ -354,7 +352,6 @@ def test_get_open_position_assets_failure_blocks_all_exit():
     """When _get_open_position_assets() returns None (DB failure), all EXIT is blocked
     and a Telegram alert is sent."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
 
     exit_calls: list[str] = []
     telegram_calls: list[str] = []
@@ -369,7 +366,7 @@ def test_get_open_position_assets_failure_blocks_all_exit():
               side_effect=lambda m: telegram_calls.append(m)),
         patch("pipeline.runner.run_pipeline", return_value=MagicMock()),
     ):
-        result = run_all_assets(target_asset="ZEC-USD")
+        run_all_assets(target_asset="ZEC-USD")
 
     assert exit_calls == [], "No EXIT must run when open position read failed"
     assert any("CRITICAL" in m or "BLOCKED" in m for m in telegram_calls), (
@@ -381,7 +378,6 @@ def test_cli_target_asset_does_not_restrict_exit_supervisor():
     """EXIT supervisor must check ALL open positions even when target_asset is given.
     target_asset restricts only the ENTRY pipeline, not risk management."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
 
     exit_calls: list[str] = []
 
@@ -412,7 +408,6 @@ def test_cli_target_asset_does_not_restrict_exit_supervisor():
 def test_known_asset_orphan_blocks_only_that_asset():
     """A ZEC-USD orphan in the reconciliation report must block ZEC EXIT but allow ETH EXIT."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
 
     report_zec_orphan = ReconciliationReport(
         run_id=1, discovered=[], resolved=[],
@@ -503,7 +498,6 @@ def test_get_order_fn_transfers_product_id_and_side(monkeypatch):
     """make_get_order_fn() must populate product_id and side from the Get Order API response."""
     import exchange.coinbase_client as _cb
     import exchange.adapter as _adapter
-    from unittest.mock import MagicMock
 
     mock_client = MagicMock()
     mock_client.get_order.return_value = {
@@ -532,7 +526,6 @@ def test_get_order_fn_transfers_product_id_and_side(monkeypatch):
 def test_no_price_snapshot_sends_critical_alert():
     """When get_snapshot() returns None for an open position, a CRITICAL Telegram alert must fire."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
 
     exit_calls: list[str] = []
     telegram_calls: list[str] = []
@@ -560,7 +553,6 @@ def test_no_price_snapshot_sends_critical_alert():
 def test_snapshot_exception_sends_critical_alert():
     """When get_snapshot() raises, a CRITICAL Telegram alert must fire and EXIT must not run."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
 
     exit_calls: list[str] = []
     telegram_calls: list[str] = []
@@ -589,7 +581,6 @@ def test_snapshot_exception_sends_critical_alert():
 def test_snapshot_alert_suppressed_within_cooldown():
     """The CRITICAL no-snapshot alert must not fire again within the cooldown window."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
     import time as _time
 
     telegram_calls: list[str] = []
@@ -620,7 +611,7 @@ def test_snapshot_alert_fires_with_low_system_uptime():
     on a fresh boot.  None sentinel must distinguish 'never alerted' from 'alerted at t=0'.
     """
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     telegram_calls: list[str] = []
 
@@ -647,7 +638,6 @@ def test_snapshot_alert_fires_with_low_system_uptime():
 def test_snapshot_recovery_clears_cooldown_and_sends_recovered():
     """Successful snapshot after a failure must clear the cooldown and send RECOVERED alert."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
     import time as _time
 
     telegram_calls: list[str] = []
@@ -678,7 +668,6 @@ def test_snapshot_recovery_clears_cooldown_and_sends_recovered():
 def test_position_read_failure_also_halts_entry_pipeline():
     """When _get_open_position_assets() returns None, ENTRY pipeline must also be halted."""
     from pipeline.runner import run_all_assets
-    from unittest.mock import MagicMock
 
     pipeline_calls: list[str] = []
 

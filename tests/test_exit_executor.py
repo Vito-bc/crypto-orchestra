@@ -29,11 +29,9 @@ from pipeline.ledger import (
     insert_trade_intent,
     run_migrations,
     transition_order,
-    update_position_stop,
 )
 from pipeline.outbox import (
     CoinbaseRejected,
-    ExitPlaceResult,
     PlacementBlocked,
     place_exit_outbox,
 )
@@ -494,7 +492,6 @@ def test_run_exit_executor_idempotent_on_active_exit(tmp_db: Path) -> None:
     )
 
     assert len(sell_calls) == 1
-    first_order_id = sell_calls[0]
 
     # Second tick at same stop-loss price: must NOT place another exit
     actions = run_exit_executor(
@@ -868,16 +865,12 @@ def test_place_exit_outbox_definite_rejection_classified(tmp_db: Path) -> None:
     raise CoinbaseOrderRejected (definite), NOT RuntimeError (ambiguous).
     This ensures the EXIT order goes to REJECTED (not SUBMITTING).
     """
-    from unittest.mock import MagicMock, patch
 
     _, pos_id = _open_position(tmp_db)
 
-    # Simulate Coinbase response: success=False, known rejection code
-    fake_resp = {
-        "success": False,
-        "error_response": {"error": "INSUFFICIENT_FUND", "message": "not enough balance"},
-    }
-
+    # Simulates the Coinbase response success=False with a known rejection code
+    # {"success": False, "error_response": {"error": "INSUFFICIENT_FUND", ...}},
+    # which place_market_sell translates into CoinbaseOrderRejected.
     def _mock_sell(order_id: str, asset: str, qty: str) -> str:
         # Call the real place_market_sell logic by stubbing out create_order
         from exchange.coinbase_client import CoinbaseOrderRejected as _COR

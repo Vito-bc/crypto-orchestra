@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 
 from pipeline.product_rules import is_dust, round_base_qty
 

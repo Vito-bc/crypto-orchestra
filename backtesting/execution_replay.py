@@ -37,8 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 from tools.price_levels import get_levels
 from backtesting.signal_scanner import (
-    ASSET_CONFIG, PERIODS, _download_and_compute, _detect_breakout_signal,
-    _compute_regime_metrics,
+    ASSET_CONFIG, PERIODS, _download_and_compute,
 )
 
 # ── Fee constants (mirror signal_scanner.py exactly) ─────────────────────────
