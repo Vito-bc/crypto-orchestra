@@ -50,7 +50,11 @@ def _make_state(pid="ZEC-USD", fresh=True, **flags) -> ProductState:
         limit_only=False, post_only=False, auction_mode=False, view_only=False,
     )
     defaults.update(flags)
-    mono = time.monotonic() if fresh else 0.0   # 0.0 → always stale
+    # Anchor "stale" relative to the current monotonic clock, not to 0.0.
+    # time.monotonic() counts from an arbitrary origin — on a freshly booted CI
+    # runner it is only a few seconds, so a literal 0.0 is NOT older than the
+    # 5-minute TTL and the state reads as fresh, inverting fail-closed tests.
+    mono = time.monotonic() if fresh else time.monotonic() - _mod._STATE_TTL_S - 1.0
     return ProductState(
         product_id=pid,
         fetched_wall=time.time(),
@@ -76,7 +80,8 @@ def test_get_state_returns_value_when_fresh() -> None:
 def test_get_rules_returns_stale_cache_over_lkg(tmp_path: Path) -> None:
     """Stale rules cache is still preferred — numeric rules don't drift."""
     rules = _make_rules()
-    rules.fetched_mono = 0.0   # stale
+    # Relative to the monotonic clock, not 0.0 — see _make_state for why.
+    rules.fetched_mono = time.monotonic() - _mod._RULES_TTL_S - 1.0
     _inject_cache("ZEC-USD", rules=rules)
     # Confirm no LKG on disk
     assert not _mod.LKG_PATH.exists()
