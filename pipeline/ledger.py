@@ -79,16 +79,31 @@ class LedgerConsistencyError(RuntimeError):
 @contextmanager
 def get_db(
     path: Optional[Path] = None,
-    begin_immediate: bool = False,
+    begin_immediate: bool = True,
 ) -> Iterator[sqlite3.Connection]:
     """
     Yield a WAL-mode SQLite connection inside an explicit transaction.
     busy_timeout=10s handles transient database-locked errors.
     foreign_keys=ON enforced per-connection. Commits on clean exit; rolls back on error.
 
-    begin_immediate=True: use BEGIN IMMEDIATE to acquire the write lock up-front.
-    Required for operations that do a gate-check followed by an insert, to prevent
-    another writer from slipping in between the check and the write.
+    begin_immediate defaults to True — BEGIN IMMEDIATE takes the write lock
+    up-front.  This is a correctness requirement, not an optimisation:
+
+    A deferred BEGIN takes a SHARED lock on its first read, and a later write
+    must promote it to RESERVED.  If another connection already holds RESERVED,
+    SQLite returns SQLITE_BUSY *immediately and deliberately does NOT invoke the
+    busy handler*, because making both connections wait could deadlock (see the
+    sqlite3_busy_handler docs).  busy_timeout is therefore bypassed and the write
+    fails after ~2 ms instead of waiting its turn.
+
+    That bit the live path: outbox TX-B records the exchange order id AFTER the
+    order is already working at Coinbase, so an immediate "database is locked"
+    left a real exchange order whose acknowledgement was never written.  Taking
+    RESERVED up-front means contention is resolved by the busy handler (waiting)
+    rather than by an instant error.
+
+    Pass begin_immediate=False only for genuinely read-only work where a briefly
+    serialised writer lock is undesirable.
 
     NOTE: `PRAGMA journal_mode=WAL` is deliberately NOT issued here.  Setting the
     journal mode needs a lock that is not covered by busy_timeout, so running it

@@ -734,3 +734,72 @@ def test_get_db_does_not_set_journal_mode_per_connection() -> None:
     assert "journal_mode" not in code_only, (
         "get_db() must not set journal_mode — see run_migrations()"
     )
+
+
+def test_deferred_begin_would_fail_immediately_but_immediate_waits(tmp_path: Path) -> None:
+    """
+    Pin the SQLite behaviour that caused the live bug.
+
+    A deferred BEGIN takes SHARED on first read; promoting to RESERVED while
+    another connection holds RESERVED returns SQLITE_BUSY *immediately* — SQLite
+    deliberately skips the busy handler to avoid deadlock, so busy_timeout does
+    not apply. BEGIN IMMEDIATE takes RESERVED up-front, so the busy handler runs
+    and the writer waits its turn instead of erroring.
+
+    This is why get_db(begin_immediate=True) is the default.
+    """
+    import sqlite3 as _sq
+    import threading as _th
+    import time as _t
+
+    db = tmp_path / "lockmode.db"
+    run_migrations(db)
+
+    holder_ready = _th.Event()
+    release = _th.Event()
+
+    def holder() -> None:
+        c = _sq.connect(str(db), isolation_level=None, timeout=5.0)
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)"
+                  " VALUES ('HOLD', 1.0, 'x', '2026-01-01')")
+        holder_ready.set()
+        release.wait(timeout=5)
+        c.execute("COMMIT")
+        c.close()
+
+    t = _th.Thread(target=holder)
+    t.start()
+    holder_ready.wait(timeout=5)
+
+    # Deferred: read first (SHARED), then try to write (promote to RESERVED).
+    deferred = _sq.connect(str(db), isolation_level=None, timeout=5.0)
+    deferred.execute("BEGIN")
+    deferred.execute("SELECT COUNT(*) FROM risk_epochs").fetchone()
+    t0 = _t.monotonic()
+    deferred_error = None
+    try:
+        deferred.execute(
+            "INSERT INTO risk_epochs(epoch_id, paper_capital, reason, started_at)"
+            " VALUES ('DEF', 1.0, 'x', '2026-01-01')"
+        )
+    except _sq.OperationalError as exc:
+        deferred_error = (str(exc), _t.monotonic() - t0)
+    finally:
+        try:
+            deferred.execute("ROLLBACK")
+        except _sq.Error:
+            pass
+        deferred.close()
+
+    release.set()
+    t.join()
+
+    assert deferred_error is not None, (
+        "expected the deferred upgrade to be refused while RESERVED is held"
+    )
+    msg, waited = deferred_error
+    assert "locked" in msg
+    assert waited < 1.0, (
+        f"expected an IMMEDIATE refusal (busy handler skipped), waited {waited:.3f}s"
+    )
