@@ -380,6 +380,18 @@ def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
     """
     Simulate what would have happened if we entered at entry_i.
     Uses ATR-based stop/target and max_hold.
+
+    Every returned dict carries `resolved`:
+      True  — a stop, target, or a FULLY OBSERVED max-hold decided the outcome.
+      False — the data ended before the max-hold horizon elapsed and neither the
+              stop nor the target was touched, so the outcome is right-censored
+              and unknown.
+
+    A censored trade still reports the mark-to-market pnl at the last candle for
+    display, but `resolved=False` means that number is NOT a realised outcome and
+    must be excluded from PF, expectancy, bootstrap, episode concentration, and
+    closed-trade counts. Callers that ignore `resolved` keep the previous
+    behaviour exactly, so historical backtest figures are unchanged.
     """
     atr          = float(df.iloc[entry_i]["atr"])
     stop_price   = round(entry_price - atr_stop * atr, 2)
@@ -394,20 +406,29 @@ def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
             gross   = stop_price * (1 - _SL_FEE)
             net_pnl = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
             return {"reason": "STOP_LOSS", "exit_price": stop_price,
-                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
+                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2),
+                    "resolved": True}
 
         if high >= target_price:
             gross   = target_price * (1 - _TP_FEE)
             net_pnl = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
             return {"reason": "TAKE_PROFIT", "exit_price": target_price,
-                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
+                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2),
+                    "resolved": True}
 
-    # Max hold — market close, taker fee
-    exit_price = float(df.iloc[min(entry_i + max_hold_hours, len(df) - 1)]["close"])
+    # Neither stop nor target hit. Did we actually observe the whole max-hold
+    # horizon, or did the data simply run out?
+    last_i    = min(entry_i + max_hold_hours, len(df) - 1)
+    fully_obs = (entry_i + max_hold_hours) <= (len(df) - 1)
+
+    exit_price = float(df.iloc[last_i]["close"])
     gross      = exit_price * (1 - _SL_FEE)
     net_pnl    = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
-    return {"reason": "MAX_HOLD", "exit_price": round(exit_price, 2),
-            "hold_h": max_hold_hours, "pnl_pct": round(net_pnl, 2)}
+    return {"reason": "MAX_HOLD" if fully_obs else "PENDING",
+            "exit_price": round(exit_price, 2),
+            "hold_h": max_hold_hours if fully_obs else (last_i - entry_i),
+            "pnl_pct": round(net_pnl, 2),
+            "resolved": fully_obs}
 
 
 # ── Per-asset scanner ─────────────────────────────────────────────────────────
@@ -575,7 +596,23 @@ def _compute_regime_metrics(daily_df: pd.DataFrame | None, as_of_ts: pd.Timestam
     return result
 
 
-def scan_asset(asset: str, period: dict) -> dict:
+def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None) -> dict:
+    """
+    Scan one asset over `period`.
+
+    v3_enforcement:
+      None  — use the asset's configured `v3_enforcement_enabled` (default False).
+      True  — run the INTEGRATED path: a V3-blocked signal is skipped before the
+              trade is simulated, so it does not advance `skip_until` and does not
+              contribute to stop history. Later signals therefore differ from the
+              unfiltered path — this is what live enforcement would actually do.
+      False — run the UNFILTERED path: every signal is simulated and
+              `v3_would_block` is recorded for shadow accounting only.
+
+    This is an explicit, per-call argument precisely so that research code never
+    mutates the ASSET_CONFIG global to switch modes: a mutated global leaks into
+    every later scan in the same process and silently corrupts comparisons.
+    """
     print(f"\n  Downloading {asset} data (warmup from {period['warmup']})...")
 
     sig_df   = _download_and_compute(asset, period["warmup"], period["end"], "1h")
@@ -646,7 +683,12 @@ def scan_asset(asset: str, period: dict) -> dict:
     skip_until        = -1   # don't double-enter
     recent_stop_ts: list[pd.Timestamp] = []
     v3_threshold      = asset_cfg.get("v3_candidate_threshold")
-    v3_enforcement    = asset_cfg.get("v3_enforcement_enabled", False)
+    # Explicit per-call override wins; otherwise fall back to the asset config.
+    # Read once into a local so the value is immutable for this scan.
+    v3_enforcement    = (
+        asset_cfg.get("v3_enforcement_enabled", False)
+        if v3_enforcement is None else bool(v3_enforcement)
+    )
 
     # We need to operate on the full df (for lookback), but filter output to period
     full_len   = len(df)
@@ -706,6 +748,9 @@ def scan_asset(asset: str, period: dict) -> dict:
             "trade":        trade,
             "regime":       regime,
             "v3_would_block": v3_would_block,
+            # Which path produced this record. Stamped per-signal so an
+            # unfiltered cohort can never be passed off as an integrated one.
+            "v3_enforcement": v3_enforcement,
         }
         signals.append(record)
         skip_until = i + trade["hold_h"] + 1   # don't re-enter mid-hold
@@ -714,6 +759,9 @@ def scan_asset(asset: str, period: dict) -> dict:
         "asset":            asset,
         "candles":          len(df_period),
         "signals":          signals,
+        # Authoritative label for this result set. Consumers must check it rather
+        # than assuming which path they were handed.
+        "v3_enforcement":   v3_enforcement,
         "blocked_vol":      blocked_vol,
         "blocked_4h":       blocked_4h,
         "blocked_daily":    blocked_daily,
