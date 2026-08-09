@@ -648,3 +648,246 @@ def test_gate_idempotent_replay_bypasses_gate(tmp_db_ep: Path) -> None:
     ))
     assert r2.status == "OPEN"
     assert r2.order_id == order_id
+
+
+# ---------------------------------------------------------------------------
+# Concurrency regression: no connection-level lock errors under contention
+# ---------------------------------------------------------------------------
+
+def test_parallel_placements_repeated_no_lock_errors(tmp_path: Path) -> None:
+    """
+    Regression for the deferred read-to-write promotion race in outbox TX-B.
+
+    Root cause (proven by an instrumented CI traceback, not inferred): get_db()
+    used a deferred BEGIN. That takes SHARED on the first read, and the later
+    UPDATE in transition_order() must promote it to RESERVED. While another
+    connection holds RESERVED, SQLite returns SQLITE_BUSY *immediately* and
+    deliberately skips the busy handler to avoid deadlock — so busy_timeout does
+    not apply and the write fails in ~2ms.
+
+    TX-B records the exchange order id AFTER the order is already working at
+    Coinbase, so this left a real exchange order whose acknowledgement was never
+    written. Fixed by defaulting get_db(begin_immediate=True).
+
+    (The separate journal_mode cleanup removed a redundant lock-taking PRAGMA
+    from every connection; it was not this bug's cause.)
+
+    Repeated because the race is timing-dependent: it reproduced on Linux CI
+    while passing on a developer machine. Each round asserts the STRICT
+    invariant (exactly one placement, exactly one PlacementBlocked) — the guard
+    must never be weakened into "a lock error is acceptable".
+    """
+    rounds = 20
+    for i in range(rounds):
+        db = tmp_path / f"ledger_{i}.db"
+        run_migrations(db)
+        with get_db(db) as conn:
+            insert_epoch(_EPOCH_ID, _CAPITAL, "concurrency regression", conn=conn)
+
+        results: list[PlaceResult] = []
+        blocked: list[PlacementBlocked] = []
+        other_errors: list[BaseException] = []
+
+        def place_once() -> None:
+            import time as _t
+            import traceback as _tb
+            t0 = _t.monotonic()
+            try:
+                results.append(place_order_outbox(**_base_kwargs(db, coinbase_fn=_accepted)))
+            except PlacementBlocked as exc:
+                blocked.append(exc)
+            except BaseException:      # noqa: BLE001 — the point of the test
+                # Record where it was raised and how long it waited: a genuine
+                # busy_timeout expiry takes ~10s, an immediate SQLITE_BUSY is ms.
+                other_errors.append(
+                    f"after {_t.monotonic() - t0:.3f}s\n{_tb.format_exc()}"
+                )
+
+        threads = [threading.Thread(target=place_once) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not other_errors, (
+            f"round {i}: connection-level failure under contention: {other_errors}"
+        )
+        assert len(results) == 1, f"round {i}: exactly one placement must succeed"
+        assert len(blocked) == 1, f"round {i}: exactly one placement must be blocked"
+
+        with get_db(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        assert count == 1, f"round {i}: only one order must be in the DB"
+
+
+def test_get_db_does_not_set_journal_mode_per_connection() -> None:
+    """
+    Source-level lock: journal_mode must not be set inside get_db().
+
+    WAL is persistent in the database file and run_migrations() establishes it,
+    so re-issuing it per connection buys nothing and reintroduces a SEPARATE
+    connection-time locking risk: setting the journal mode needs a lock of its
+    own on every connection. That is distinct from the deferred TX-B promotion
+    race proven above, which is fixed by begin_immediate defaulting to True.
+    A behavioural test alone would not catch someone "restoring" the PRAGMA.
+    """
+    import inspect
+
+    from pipeline.ledger import get_db as _get_db
+
+    src = inspect.getsource(_get_db)
+    code = "\n".join(
+        ln for ln in src.splitlines() if not ln.lstrip().startswith("#")
+    )
+    # Strip the docstring so its explanatory prose does not trip the check.
+    body = code.split('"""')
+    code_only = body[0] + ("".join(body[2:]) if len(body) > 2 else "")
+    assert "journal_mode" not in code_only, (
+        "get_db() must not set journal_mode — see run_migrations()"
+    )
+
+
+def test_deferred_begin_would_fail_immediately_but_immediate_waits(tmp_path: Path) -> None:
+    """
+    Pin the SQLite behaviour that caused the live bug.
+
+    A deferred BEGIN takes SHARED on first read; promoting to RESERVED while
+    another connection holds RESERVED returns SQLITE_BUSY *immediately* — SQLite
+    deliberately skips the busy handler to avoid deadlock, so busy_timeout does
+    not apply. BEGIN IMMEDIATE takes RESERVED up-front, so the busy handler runs
+    and the writer waits its turn instead of erroring.
+
+    This is why get_db(begin_immediate=True) is the default.
+    """
+    import sqlite3 as _sq
+    import threading as _th
+    import time as _t
+
+    db = tmp_path / "lockmode.db"
+    run_migrations(db)
+    # One seeded row that every writer below UPDATEs. Using UPDATE rather than
+    # INSERT keeps the test about lock acquisition, with no UNIQUE-index noise.
+    with get_db(db) as conn:
+        insert_epoch(_EPOCH_ID, _CAPITAL, "seed", conn=conn)
+
+    HOLD_S = 1.0        # how long the holder keeps RESERVED
+    TIMEOUT_S = 10.0    # busy_timeout for the contender
+
+    def _run_holder(release: "_th.Event", ready: "_th.Event", errors: list) -> None:
+        try:
+            c = _sq.connect(str(db), isolation_level=None, timeout=TIMEOUT_S)
+            try:
+                c.execute("BEGIN IMMEDIATE")            # takes RESERVED
+                c.execute("UPDATE risk_epochs SET reason='holder' WHERE epoch_id=?",
+                          (_EPOCH_ID,))
+                ready.set()
+                release.wait(timeout=TIMEOUT_S)
+                c.execute("COMMIT")
+            finally:
+                c.close()
+        except BaseException as exc:            # noqa: BLE001
+            errors.append(exc)
+            ready.set()                          # never leave the main thread hanging
+
+    # ── Phase 1: deferred BEGIN is refused IMMEDIATELY (busy handler skipped) ──
+    ready, release, holder_errors = _th.Event(), _th.Event(), []
+    t = _th.Thread(target=_run_holder, args=(release, ready, holder_errors))
+    t.start()
+    try:
+        assert ready.wait(timeout=TIMEOUT_S), "holder never acquired RESERVED"
+        assert not holder_errors, f"holder failed: {holder_errors}"
+
+        deferred = _sq.connect(str(db), isolation_level=None, timeout=TIMEOUT_S)
+        deferred.execute("BEGIN")
+        deferred.execute("SELECT COUNT(*) FROM risk_epochs").fetchone()  # SHARED
+        t0 = _t.monotonic()
+        deferred_error = None
+        try:
+            deferred.execute(                                            # → RESERVED
+                "UPDATE risk_epochs SET reason='deferred' WHERE epoch_id=?",
+                (_EPOCH_ID,),
+            )
+        except _sq.OperationalError as exc:
+            deferred_error = (str(exc), _t.monotonic() - t0)
+        finally:
+            try:
+                deferred.execute("ROLLBACK")
+            except _sq.Error:
+                pass
+            deferred.close()
+    finally:
+        release.set()
+        t.join(timeout=TIMEOUT_S)
+    assert not t.is_alive(), "holder thread did not terminate"
+    assert not holder_errors, f"holder failed: {holder_errors}"
+
+    assert deferred_error is not None, (
+        "expected the deferred upgrade to be refused while RESERVED is held"
+    )
+    msg, waited = deferred_error
+    assert "locked" in msg
+    assert waited < 1.0, (
+        f"expected an IMMEDIATE refusal (busy handler skipped), waited {waited:.3f}s"
+    )
+
+    # ── Phase 2: BEGIN IMMEDIATE WAITS for RESERVED, then writes successfully ──
+    # Same contention, opposite outcome — this is the half that justifies the fix.
+    ready2, release2, holder2_errors = _th.Event(), _th.Event(), []
+    t2 = _th.Thread(target=_run_holder, args=(release2, ready2, holder2_errors))
+    t2.start()
+    try:
+        assert ready2.wait(timeout=TIMEOUT_S), "holder never acquired RESERVED"
+        assert not holder2_errors, f"holder failed: {holder2_errors}"
+
+        # Release the holder shortly after the contender starts waiting.
+        releaser = _th.Timer(HOLD_S, release2.set)
+        releaser.start()
+
+        t1 = _t.monotonic()
+        with get_db(db, begin_immediate=True) as conn:
+            conn.execute("UPDATE risk_epochs SET reason='immediate' WHERE epoch_id=?",
+                         (_EPOCH_ID,))
+        immediate_waited = _t.monotonic() - t1
+        releaser.cancel()
+    finally:
+        release2.set()
+        t2.join(timeout=TIMEOUT_S)
+    assert not t2.is_alive(), "holder thread did not terminate"
+    assert not holder2_errors, f"holder failed: {holder2_errors}"
+
+    # It waited for the lock rather than erroring, and did not burn the timeout.
+    assert immediate_waited >= HOLD_S * 0.5, (
+        f"expected BEGIN IMMEDIATE to wait for RESERVED, returned in {immediate_waited:.3f}s"
+    )
+    assert immediate_waited < TIMEOUT_S, (
+        f"expected the busy handler to succeed, not exhaust the timeout "
+        f"({immediate_waited:.3f}s)"
+    )
+    with get_db(db, begin_immediate=False) as conn:
+        reason = conn.execute(
+            "SELECT reason FROM risk_epochs WHERE epoch_id=?", (_EPOCH_ID,)
+        ).fetchone()[0]
+    # 'immediate' proves the waiting writer committed; it also proves the refused
+    # deferred writer did not (it would have left 'deferred').
+    assert reason == "immediate", f"expected the waiting writer to commit, got {reason!r}"
+
+
+def test_get_db_defaults_to_begin_immediate() -> None:
+    """
+    Deterministic guard on the DEFAULT, independent of platform timing.
+
+    The contention tests above only reproduce the race on Linux, and the
+    two-phase test passes begin_immediate=True explicitly — so neither of them
+    would catch someone flipping this default back to False. A deferred default
+    silently reintroduces the instant-SQLITE_BUSY failure in outbox TX-B.
+    """
+    import inspect
+
+    from pipeline.ledger import get_db as _get_db
+
+    sig = inspect.signature(_get_db.__wrapped__ if hasattr(_get_db, "__wrapped__") else _get_db)
+    default = sig.parameters["begin_immediate"].default
+    assert default is True, (
+        "get_db(begin_immediate=...) must default to True — a deferred BEGIN that "
+        "later writes gets SQLITE_BUSY immediately (busy handler skipped)"
+    )
