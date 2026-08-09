@@ -1219,7 +1219,9 @@ def _get_open_position_assets() -> list[str] | None:
     """
     from pipeline.ledger import get_db
     try:
-        with get_db() as conn:
+        # Pure SELECT — no need to take RESERVED and compete with the critical
+        # outbox TX-B writer.
+        with get_db(begin_immediate=False) as conn:
             rows = conn.execute(
                 "SELECT DISTINCT asset FROM positions WHERE status IN ('OPEN','CLOSING')"
             ).fetchall()

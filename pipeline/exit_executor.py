@@ -145,7 +145,8 @@ def run_exit_executor(
     actions: list[dict] = []
 
     try:
-        with get_db(db_path) as conn:
+        # Pure SELECT — no RESERVED lock needed.
+        with get_db(db_path, begin_immediate=False) as conn:
             positions = list(get_open_positions_for_asset(asset, conn))
     except Exception as exc:
         return [{"position_id": "UNKNOWN", "asset": asset, "exit_reason": None,
@@ -243,7 +244,10 @@ def run_exit_executor(
 
             # ── Skip if active EXIT already exists (idempotent) ───────────────────
             try:
-                with get_db(db_path) as conn:
+                # Advisory pre-check only: place_exit_outbox re-checks this
+                # authoritatively inside TX-A's BEGIN IMMEDIATE, so a read-only
+                # transaction here is sufficient and avoids competing for RESERVED.
+                with get_db(db_path, begin_immediate=False) as conn:
                     already_active = _has_active_exit(pos_id, conn)
             except Exception as exc:
                 actions.append({
