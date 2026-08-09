@@ -681,12 +681,19 @@ def test_parallel_placements_repeated_no_lock_errors(tmp_path: Path) -> None:
         other_errors: list[BaseException] = []
 
         def place_once() -> None:
+            import time as _t
+            import traceback as _tb
+            t0 = _t.monotonic()
             try:
                 results.append(place_order_outbox(**_base_kwargs(db, coinbase_fn=_accepted)))
             except PlacementBlocked as exc:
                 blocked.append(exc)
-            except BaseException as exc:      # noqa: BLE001 — the point of the test
-                other_errors.append(exc)
+            except BaseException:      # noqa: BLE001 — the point of the test
+                # Record where it was raised and how long it waited: a genuine
+                # busy_timeout expiry takes ~10s, an immediate SQLITE_BUSY is ms.
+                other_errors.append(
+                    f"after {_t.monotonic() - t0:.3f}s\n{_tb.format_exc()}"
+                )
 
         threads = [threading.Thread(target=place_once) for _ in range(2)]
         for t in threads:
