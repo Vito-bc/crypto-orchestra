@@ -53,14 +53,47 @@ def _write(record: dict) -> None:
         f.write(json.dumps(record, default=str) + "\n")
 
 
-def log_v2_signal(*, scanner_signal: dict, accepted: bool) -> str:
+def log_v2_signal(*, scanner_signal: dict, accepted: bool,
+                  disposition: str | None = None) -> str:
     """
     Log a scanner signal at fire time (before any trade is placed).
     Returns the stable signal_id.
+
+    Three DISTINCT concepts are recorded, because conflating them is what made
+    the old cohort statistics wrong:
+
+      candidate_accepted   — would V3 have let this through? (not v3_would_block)
+                             This defines the research COHORT and is independent
+                             of whether enforcement was on or a trade happened.
+      enforcement_accepted — did V3 actually let it through at runtime?
+                             (not v3_blocked). With enforcement off this is
+                             always True, which is why it must not be used as
+                             the cohort.
+      disposition          — what actually happened downstream: "traded",
+                             "blocked_elsewhere" (circuit breaker, entry filter,
+                             exposure gate...), "counterfactual", or "pending"
+                             when the signal is logged before the outcome of the
+                             execution path is known.
+
+    NOTE on "pending": this function runs at signal time, BEFORE the runner
+    decides whether to place an order, so at that moment the only honest values
+    are "counterfactual" (V3 enforcement blocked it outright) or "pending".
+    Recording "traded" here would assert a fill that may never happen. Call
+    log_disposition() once the execution path resolves.
+
+    `accepted` is retained for backward compatibility with existing rows and
+    mirrors enforcement_accepted.
     """
     asset        = scanner_signal["asset"]
     candle_close = scanner_signal["entry_time"]
     signal_id    = f"{asset}:{candle_close}:v3"
+
+    v3_would_block = bool(scanner_signal.get("v3_would_block", False))
+    v3_blocked     = bool(scanner_signal.get("v3_blocked", False))
+    if disposition is None:
+        # Honest default: V3-blocked is settled ("counterfactual"); anything else
+        # is not yet decided at signal time.
+        disposition = "pending" if accepted else "counterfactual"
 
     record: dict = {
         "type":                    "V3_SIGNAL",
@@ -80,12 +113,42 @@ def log_v2_signal(*, scanner_signal: dict, accepted: bool) -> str:
         "ema200_valid":            scanner_signal.get("ema200_valid"),
         "n_daily_bars":            scanner_signal.get("n_daily_bars"),
         "v3_candidate_threshold":  scanner_signal.get("v3_candidate_threshold"),
-        "v3_would_block":          scanner_signal.get("v3_would_block", False),
+        "v3_would_block":          v3_would_block,
         "v3_enforcement":          scanner_signal.get("v3_enforcement", False),
+        # Three separate concepts — see the docstring.
+        "candidate_accepted":      not v3_would_block,
+        "enforcement_accepted":    not v3_blocked,
+        "disposition":             disposition,
+        # Backward-compatible mirror of enforcement_accepted.
         "accepted":                accepted,
     }
     _write(record)
     return signal_id
+
+
+_VALID_DISPOSITIONS = {"traded", "blocked_elsewhere", "counterfactual", "pending"}
+
+
+def log_disposition(signal_id: str, disposition: str) -> None:
+    """
+    Record what the execution path finally did with a signal.
+
+    Append-only, like everything else here. The folded view takes the LAST
+    non-pending disposition for a signal, so a later "traded" supersedes the
+    "pending" written at signal time.
+
+    Research metadata only — this never influences an order decision.
+    """
+    if disposition not in _VALID_DISPOSITIONS:
+        raise ValueError(
+            f"disposition must be one of {sorted(_VALID_DISPOSITIONS)}, got {disposition!r}"
+        )
+    _write({
+        "type":          "V3_DISPOSITION",
+        "logged_at_utc": datetime.now(timezone.utc).isoformat(),
+        "signal_id":     signal_id,
+        "disposition":   disposition,
+    })
 
 
 def log_outcome(signal_id: str, outcome: str, pnl_pct: float, *, is_counterfactual: bool = False) -> None:
@@ -124,18 +187,25 @@ def _build_signal_view(entries: list[dict]) -> list[dict]:
     """
     signals:  dict[str, dict] = {}
     outcomes: dict[str, dict] = {}
+    dispositions: dict[str, str] = {}
     for e in entries:
         if e.get("type") == "V3_SIGNAL":
             signals[e["signal_id"]] = dict(e)
+        elif e.get("type") == "V3_DISPOSITION":
+            # Last non-pending disposition wins: the execution path resolving
+            # supersedes the "pending" written at signal time.
+            if e.get("disposition") != "pending":
+                dispositions[e["signal_id"]] = e["disposition"]
         elif e.get("type") == "V3_OUTCOME":
             sid = e["signal_id"]
-            # Last outcome wins if there are duplicates (resolver idempotency)
-            outcomes[sid] = e
+            prev = outcomes.get(sid)
+            if prev is None or _outcome_precedence(e) > _outcome_precedence(prev):
+                outcomes[sid] = e
 
     result = []
     for sid, sig in signals.items():
+        sig = dict(sig)
         if sid in outcomes:
-            sig = dict(sig)
             sig["outcome"]           = outcomes[sid]["outcome"]
             sig["pnl_pct"]           = outcomes[sid]["pnl_pct"]
             sig["is_counterfactual"] = outcomes[sid].get("is_counterfactual", False)
@@ -143,10 +213,51 @@ def _build_signal_view(entries: list[dict]) -> list[dict]:
             sig["outcome"]           = None
             sig["pnl_pct"]           = None
             sig["is_counterfactual"] = None
+
+        # ── Backward-compatible cohort derivation ────────────────────────────
+        # Rows written before the three-way split have only `accepted`. Derive
+        # the cohort from v3_would_block, which those rows do carry.
+        if "candidate_accepted" not in sig:
+            sig["candidate_accepted"] = not bool(sig.get("v3_would_block", False))
+        if "enforcement_accepted" not in sig:
+            sig["enforcement_accepted"] = bool(sig.get("accepted", True))
+        if "disposition" not in sig:
+            # Legacy rows: `accepted` was the only signal-time field.
+            sig["disposition"] = (
+                "pending" if sig.get("accepted", True) else "counterfactual"
+            )
+        # A later V3_DISPOSITION event supersedes the signal-time value.
+        if sid in dispositions:
+            sig["disposition"] = dispositions[sid]
         result.append(sig)
 
     result.sort(key=lambda s: s.get("candle_close", ""))
     return result
+
+
+def _outcome_precedence(outcome: dict) -> tuple:
+    """
+    Deterministic ordering for duplicate V3_OUTCOME events for one signal.
+
+    "Last one in the file wins" made the result depend on append order, so a
+    replayed counterfactual could silently overwrite a real fill, and two runs
+    over reordered input could disagree. Precedence is now explicit and total:
+
+      1. an ACTUAL outcome always beats a counterfactual;
+      2. within the same kind, the EARLIEST logged_at_utc wins, so re-running
+         the resolver is idempotent and never rewrites settled history.
+    """
+    is_cf = bool(outcome.get("is_counterfactual", False))
+    # Higher tuple sorts higher: actual (1) > counterfactual (0).
+    # Earlier timestamp must win, so negate by using reverse-sortable string.
+    stamp = str(outcome.get("logged_at_utc", ""))
+    return (0 if is_cf else 1, _invert_stamp(stamp))
+
+
+def _invert_stamp(stamp: str) -> tuple:
+    """Sort key that makes an EARLIER timestamp compare greater."""
+    # Compare on the negated ordinal of each char so "2026-01" > "2026-02".
+    return tuple(-ord(c) for c in stamp)
 
 
 # ── Episode grouping ──────────────────────────────────────────────────────────
@@ -181,9 +292,19 @@ def _group_episodes(signals: list[dict]) -> list[list[dict]]:
 
 def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
     """
-    Compute outcomes for blocked signals (counterfactuals) that are still PENDING.
-    Uses the Coinbase parquet cache — requires data from candle_close onwards.
+    Resolve every still-PENDING shadow signal counterfactually.
 
+    This deliberately covers ALL untraded signals, not just V3-blocked ones. The
+    old filter was `not accepted`, which left candidate-accepted signals that
+    were never traded (blocked by a circuit breaker, entry filter, or exposure
+    gate, or simply never placed) unresolved forever. Those signals are part of
+    the candidate cohort, so omitting them biased candidate statistics towards
+    whichever signals happened to reach the exchange.
+
+    Signals with a real, already-recorded outcome are never overwritten: a
+    counterfactual can never displace an actual fill (see _outcome_precedence).
+
+    Uses the Coinbase parquet cache — requires data from candle_close onwards.
     Returns the number of outcomes filled in.
     """
     from exchange.coinbase_candles import download as _cb_download
@@ -200,8 +321,10 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
     to_resolve = [
         s for s in view
         if s.get("asset") == asset
-        and not s.get("accepted", True)          # blocked signal
-        and s.get("outcome") is None             # no outcome yet
+        # Any signal with no outcome yet — blocked OR candidate-accepted but
+        # never traded. Restricting this to blocked signals is what left part of
+        # the candidate cohort permanently unresolved.
+        and s.get("outcome") is None
         and s["signal_id"] not in resolved_ids
     ]
 
@@ -272,17 +395,27 @@ def summarise_journal() -> None:
         return
 
     view = _build_signal_view(entries)
-    accepted = [s for s in view if s.get("accepted")]
-    blocked  = [s for s in view if not s.get("accepted")]
+    # COHORT = candidate_accepted (would V3 have let it through), NOT `accepted`
+    # (did a trade actually happen). With enforcement off every signal is
+    # "accepted", so the old field made the cohort meaningless.
+    accepted = [s for s in view if s.get("candidate_accepted")]
+    blocked  = [s for s in view if not s.get("candidate_accepted")]
     closed_a = [s for s in accepted if s.get("pnl_pct") is not None]
     closed_b = [s for s in blocked  if s.get("pnl_pct") is not None]
 
+    n_traded = sum(1 for s in view if s.get("disposition") == "traded")
+    n_elsewhere = sum(1 for s in view if s.get("disposition") == "blocked_elsewhere")
+
     print(f"\nV3 Forward OOS Journal — {len(view)} signals total")
-    print(f"  Accepted  : {len(accepted)} ({len(closed_a)} closed)")
-    print(f"  Blocked   : {len(blocked)} shadow ({len(closed_b)} resolved)")
+    print("  (V3 is RETIRED as an activation candidate — diagnostic only)")
+    print(f"  Candidate-accepted : {len(accepted)} ({len(closed_a)} closed)")
+    print(f"  Candidate-blocked  : {len(blocked)} shadow ({len(closed_b)} resolved)")
+    print(f"  Disposition        : {n_traded} traded, "
+          f"{n_elsewhere} blocked elsewhere, "
+          f"{len(view) - n_traded - n_elsewhere} counterfactual")
 
     if not closed_a:
-        print("\n  No closed accepted trades yet.")
+        print("\n  No closed candidate-accepted trades yet.")
         return
 
     wins   = [s for s in closed_a if s["pnl_pct"] > 0]
@@ -324,14 +457,21 @@ def summarise_journal() -> None:
         import numpy as np
         from backtesting.bootstrap_analysis import _block_bootstrap_pf
         pfs = _block_bootstrap_pf([s["pnl_pct"] for s in closed_a], block_size=4, n_iter=10_000)
-        p_above = float((pfs[np.isfinite(pfs)] > 1.0).mean() * 100)
+        # An all-win resample has PF = inf, which IS greater than 1 and must
+        # count as a hit. Filtering to isfinite() dropped those samples from the
+        # DENOMINATOR too, biasing the probability down in the favourable tail.
+        pfs = np.asarray(pfs, dtype=float)
+        valid = pfs[~np.isnan(pfs)]
+        p_above = float((valid > 1.0).mean() * 100) if valid.size else float("nan")
         c3 = p_above > 90.0
         c3_str = f"{p_above:.1f}% > 90%"
     except Exception:
         c3 = False
         c3_str = "n/a (bootstrap unavailable)"
     c4 = adj_avg > 0
-    c5 = max_ep_contribution < 0.50
+    # Boundary convention: "no single episode > 50%" means exactly 50% PASSES.
+    # oos_replay.episode_concentration uses the same <= 0.5 boundary.
+    c5 = max_ep_contribution <= 0.50
 
     for label, ok, detail in [
         ("n >= 20 closed trades",          c1, f"{len(closed_a)}"),
