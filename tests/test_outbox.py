@@ -725,7 +725,10 @@ def test_get_db_does_not_set_journal_mode_per_connection() -> None:
     Source-level lock: journal_mode must not be set inside get_db().
 
     WAL is persistent in the database file and run_migrations() establishes it,
-    so re-issuing it per connection buys nothing and reintroduces the race above.
+    so re-issuing it per connection buys nothing and reintroduces a SEPARATE
+    connection-time locking risk: setting the journal mode needs a lock of its
+    own on every connection. That is distinct from the deferred TX-B promotion
+    race proven above, which is fixed by begin_immediate defaulting to True.
     A behavioural test alone would not catch someone "restoring" the PRAGMA.
     """
     import inspect
