@@ -648,3 +648,82 @@ def test_gate_idempotent_replay_bypasses_gate(tmp_db_ep: Path) -> None:
     ))
     assert r2.status == "OPEN"
     assert r2.order_id == order_id
+
+
+# ---------------------------------------------------------------------------
+# Concurrency regression: no connection-level lock errors under contention
+# ---------------------------------------------------------------------------
+
+def test_parallel_placements_repeated_no_lock_errors(tmp_path: Path) -> None:
+    """
+    Regression for the `PRAGMA journal_mode=WAL` connection race.
+
+    get_db() used to set the journal mode on EVERY connection. Changing the
+    journal mode needs a lock that busy_timeout does not cover, so a concurrent
+    writer could make it raise OperationalError('database is locked')
+    IMMEDIATELY rather than queueing — in production that could fail an ENTRY or
+    EXIT whenever the scheduler and a manual runner overlapped.
+
+    Repeated because the race is timing-dependent: it surfaced on a Linux CI
+    runner while passing on a developer machine. Each round asserts the STRICT
+    invariant (exactly one placement, exactly one PlacementBlocked) — the guard
+    must never be weakened into "a lock error is acceptable".
+    """
+    rounds = 20
+    for i in range(rounds):
+        db = tmp_path / f"ledger_{i}.db"
+        run_migrations(db)
+        with get_db(db) as conn:
+            insert_epoch(_EPOCH_ID, _CAPITAL, "concurrency regression", conn=conn)
+
+        results: list[PlaceResult] = []
+        blocked: list[PlacementBlocked] = []
+        other_errors: list[BaseException] = []
+
+        def place_once() -> None:
+            try:
+                results.append(place_order_outbox(**_base_kwargs(db, coinbase_fn=_accepted)))
+            except PlacementBlocked as exc:
+                blocked.append(exc)
+            except BaseException as exc:      # noqa: BLE001 — the point of the test
+                other_errors.append(exc)
+
+        threads = [threading.Thread(target=place_once) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not other_errors, (
+            f"round {i}: connection-level failure under contention: {other_errors}"
+        )
+        assert len(results) == 1, f"round {i}: exactly one placement must succeed"
+        assert len(blocked) == 1, f"round {i}: exactly one placement must be blocked"
+
+        with get_db(db) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        assert count == 1, f"round {i}: only one order must be in the DB"
+
+
+def test_get_db_does_not_set_journal_mode_per_connection() -> None:
+    """
+    Source-level lock: journal_mode must not be set inside get_db().
+
+    WAL is persistent in the database file and run_migrations() establishes it,
+    so re-issuing it per connection buys nothing and reintroduces the race above.
+    A behavioural test alone would not catch someone "restoring" the PRAGMA.
+    """
+    import inspect
+
+    from pipeline.ledger import get_db as _get_db
+
+    src = inspect.getsource(_get_db)
+    code = "\n".join(
+        ln for ln in src.splitlines() if not ln.lstrip().startswith("#")
+    )
+    # Strip the docstring so its explanatory prose does not trip the check.
+    body = code.split('"""')
+    code_only = body[0] + ("".join(body[2:]) if len(body) > 2 else "")
+    assert "journal_mode" not in code_only, (
+        "get_db() must not set journal_mode — see run_migrations()"
+    )
