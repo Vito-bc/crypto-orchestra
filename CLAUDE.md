@@ -45,29 +45,25 @@ venv\Scripts\python.exe backtesting/generate_journal.py
 Sub-agents use `claude-haiku-4-5-20251001` (fast + cheap).
 Orchestrator uses `claude-sonnet-4-6` (smarter final decision).
 
-### Why Limit Orders (not market)
-Entry uses maker (0.2%). Take-profit uses maker (0.2%). Stop/hold uses taker (0.4%).
-Round-trip fee ≈ 0.5% average. Backtest uses this accurate model (`_ENTRY_FEE`, `_TP_FEE`,
-`_SL_FEE` in signal_scanner.py). Old model (0.6% per side = 1.2% total) overstated fee
-drag 3× and showed strategy as unprofitable — it was profitable all along.
+### Fees (Coinbase Advanced base tier)
+Maker 0.4%, taker 0.6% (`_ENTRY_FEE`, `_TP_FEE`, `_SL_FEE` in signal_scanner.py).
+An earlier 0.2%/0.4% model understated fees and inflated backtest P&L.
 
 ### Active Assets
-**ETH-USD and ZEC-USD only.** BTC and SOL excluded — bounce strategy has
-consistently negative edge on these (backtested over 371 signals, full year).
-
-Re-enable BTC/SOL only after developing asset-specific entry logic for them
-(e.g. trend-following for BTC instead of mean-reversion).
+**ZEC-USD only, paper/shadow mode.** ETH/BTC/SOL are `enabled: False` in
+`ASSET_CONFIG`. The frozen V2 mechanism transfers negatively to all of them
+(see `docs/trial_registry.md`, 2026-08-09 pass: BTC PF 0.38, ETH 0.50, SOL 0.72).
 
 ### Per-Asset Strategy Config (signal_scanner.py `ASSET_CONFIG`)
 | Asset | Stop | Target | R:R | Min Conds | Daily EMA | Enabled |
 |-------|------|--------|-----|-----------|-----------|---------|
 | BTC-USD | 2.0x | 3.5x | 1.75 | 4 | 50d | **No** |
-| ETH-USD | 2.5x | 4.5x | 1.80 | 4 | **50d** | Yes |
+| ETH-USD | 2.5x | 4.5x | 1.80 | 4 | **50d** | **No** |
 | SOL-USD | 2.5x | 4.5x | 1.80 | 4 | 200d | **No** |
-| ZEC-USD | 2.0x | 3.5x | 1.75 | 4 | 200d | Yes |
+| ZEC-USD | 2.0x | 3.5x | 1.75 | 4 | 200d | Yes (shadow) |
 
-ETH uses daily 50EMA (faster trend gate). ZEC uses 200EMA (slower, more stable).
-Changing these requires re-running `backtesting/signal_scanner.py full_year`.
+ZEC params are frozen (git tag `v2-adx25-frozen`). Any change creates a new
+trial — log it in `docs/trial_registry.md` first.
 
 ### Position Sizing
 `LIVE_BALANCE_USD × position_size_pct` = order size.
@@ -116,21 +112,28 @@ Auto-generated nightly from logs via `backtesting/generate_journal.py`.
 Windows Task Scheduler runs `update_obsidian.bat` every night at 23:00.
 The vault is a growing knowledge base — future goal is RAG for the orchestrator.
 
-## Backtest Results (full year, Aug 2024 – Jun 2025)
+## Validation Status — read `docs/trial_registry.md` before believing any number
 
-With ETH+ZEC only, per-asset filters, accurate fee model:
-| Asset | Signals | Win% | Avg P&L |
-|-------|---------|------|---------|
-| ETH-USD | 35 | 48.6% | +0.34% |
-| ZEC-USD | 54 | 53.7% | +0.84% |
-| Total   | 89 | 51.7% | **+0.64%** |
+Authoritative record: `docs/trial_registry.md` (+ `docs/research/2026-08-strategy-review.md`).
+Summary as of 2026-08-09:
 
-Strategy is profitable on backtested data. Ready to go live.
+- V2 momentum (ZEC): combined ~PF 1.00 on the four registry windows; **PF 0.86
+  (-0.37%/trade, n=133) on the continuous 2021→2026 window**; the never-scanned
+  2023→mid-2024 gap loses -2.35%/trade. Not profitable. Paper/shadow only.
+- V3 ER-30 filter: pre-registered OOS trial continues (enforcement OFF), but
+  integrated enforcement on the continuous window makes results worse
+  (PF 0.69). Do not activate on IS grounds.
+- Earlier "profitable, ready to go live" conclusions came from period-selected
+  windows and an obsolete fee model. They are superseded.
 
-## Pending Work (as of July 2026)
+**Do NOT switch `DRY_RUN=false` on current evidence.**
 
-1. Switch `DRY_RUN=false` — strategy validated, both assets profitable on backtests
-2. Monitor first 10 live signals → confirm fills, check actual P&L matches backtest
-3. Build test fixtures from first real signals (raw market snapshots for regression tests)
-4. Develop BTC/SOL strategies (trend-following, not mean-reversion)
-5. n8n pipeline for visual automation (good for portfolio/resume)
+## Pending Work (as of Aug 2026)
+
+1. Keep scheduler running so the V3 shadow journal accumulates forward-OOS
+   signals (it was down 2026-07-23 → 2026-08-09; use
+   `backtesting/oos_replay.py` to reconstruct missed windows deterministically)
+2. Evaluate the 5 pre-registered V3 criteria every 5 closed accepted trades
+3. If pursuing a new edge: pre-register a slow trend-following trial (the only
+   family probe that wasn't structurally negative — see registry 2026-08-09)
+4. n8n pipeline for visual automation (good for portfolio/resume)

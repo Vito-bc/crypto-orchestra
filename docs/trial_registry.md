@@ -148,3 +148,101 @@ Pending for V3 activation (check every 5 closed accepted trades):
 - [ ] Accumulate ≥20 forward OOS accepted signals (2026-07-12+)
 - [ ] All 5 activation criteria pass (see above)
 - [ ] Only then: set `v3_enforcement_enabled = True` in ASSET_CONFIG (threshold stays 0.20)
+
+## Independent research pass — 2026-08-09 (continuous-window analysis)
+
+Full write-up: `docs/research/2026-08-strategy-review.md`. All results below are
+IS unless marked OOS. Data: Coinbase parquet (ZEC/BTC/ETH/SOL, 1h+1d, through
+2026-08-09). Frozen V2 mechanism throughout — no parameter selection performed.
+
+### Harness validation
+
+Stock scanner on the four registry periods reproduces the registry exactly
+(bull_2021 n=25 PF=1.42 avg=+0.87%; bear_2022 n=12 PF=1.41 avg=+0.97%;
+mid_year n=27 PF=0.52 avg=-1.29%; recent_year n=37 PF=1.00 avg=+0.01%).
+Discrepancies below are therefore data, not harness drift.
+
+### Continuous-window results (removes period-selection bias)
+
+| Trial | n | WR | Avg P&L | PF |
+|-------|---|----|---------|----|
+| ZEC continuous 2021-03 → 2026-07-12, no filter | 133 | 42% | -0.37% | 0.86 |
+| ZEC continuous, V3 ER>=0.20 **integrated enforcement** | 80 | 39% | **-0.90%** | **0.69** |
+| ZEC gap 2023-01 → 2024-08 (never scanned before) | 24 | 17% | -2.35% | 0.23 |
+| ZEC continuous, LOEO (drop Sep–Nov 2025 episode) | 113 | 40% | -0.62% | 0.75 |
+
+Key finding: the V3 IS case (+0.31%/trade across the 4 windows) **does not
+survive removal of period windowing** — on the continuous window the filter
+makes results worse. The 4-period "cross-cycle" estimate accidentally excluded
+~2 years of data (2023 → mid-2024) in which the strategy loses -2.35%/trade.
+
+The apparent inverse cell (er<0.20: +0.43%, PF 1.22, n=53) collapses to
+PF 1.02 after removing its single best month (2022-03) — episode concentration,
+not signal. Conclusion: ER-30 carries no robust information for this entry
+mechanism in either direction.
+
+### Cross-asset transfer (frozen ZEC mechanism, zero per-asset tuning — clean)
+
+| Asset | n | Avg P&L | PF | ER>=0.20 kept |
+|-------|---|---------|----|----|
+| BTC-USD (2020-09→) | 203 | -0.91% | 0.38 | PF 0.43 |
+| ETH-USD (2020-09→) | 181 | -0.89% | 0.50 | PF 0.47 |
+| SOL-USD (2022-02→) | 97 | -0.56% | 0.72 | PF 0.74 |
+
+No asset, no ER bucket, no realized-vol tercile, no BB-width (compression)
+tercile, and no vm_30 direction produces a robustly positive cell for the
+breakout mechanism. Volatility-compression states do NOT predict profitable
+breakout entries here (compressed-BBW cells: ZEC PF 0.50, BTC 0.27, ETH 0.45).
+
+### Strategy-family probes (single pre-declared config each, no sweeps)
+
+- Mean reversion (1h RSI<30 + lower-BB, 2.0 ATR stop/target): PF 0.30–0.62 on
+  all four assets; WORSE in ER<0.20 "range" regimes. **Rejected**, including the
+  "route MR to range regimes" idea.
+- Trend following (daily 55d-high entry / 20d-low exit, taker fees): positive
+  on all four assets (pooled n=57), but profit is concentrated in 1–2 secular
+  episodes per asset (BTC +236% Oct-2020→May-2021; ZEC +610% Sep→Dec-2025;
+  without it ZEC TF is -7% total). 2022 bear: BTC TF -17% vs B&H -65%.
+  **Hypothesis-generating only** — would need its own pre-registered trial.
+
+### Other hypotheses tested and rejected
+
+- "Buy the strategy drawdown": 1–3 qualifying episodes per equity curve
+  (insufficient), and forward returns after drawdown thresholds were BELOW the
+  unconditional mean in every cell. Rejected on current evidence.
+- LLM agent votes as alpha (Apr–Jul 2026 logs, 158 daily-subsampled obs,
+  daily-block bootstrap): no agent IC90 excludes zero except one marginal cell
+  out of 14 tests (expected under pure noise; that agent's BUY votes preceded
+  negative returns). Veto-only role remains the ceiling; no weighting layer.
+
+### Forward OOS observations (deterministic replay 2026-07-12 → 2026-08-09)
+
+Scheduler was down 2026-07-23 → 2026-08-09, so the live shadow journal missed
+this window; the scanner is deterministic, so the record is reconstructed from
+exchange candles (`backtesting/oos_replay.py`):
+
+| Time (UTC) | ER-30 | v3_would_block | Outcome |
+|------------|-------|----------------|---------|
+| 2026-07-16 13:00 | 0.098 | True | STOP -4.01% |
+| 2026-07-18 12:00 | 0.160 | True | TP +2.92% |
+| 2026-07-21 00:00 | 0.230 | False | STOP -3.70% |
+| 2026-07-21 13:00 | 0.230 | False | STOP -3.61% |
+
+V3-accepted so far: n=2 (of ≥20 required), both losses. No criteria decision
+yet; threshold remains locked; enforcement remains off.
+
+### Trial count update
+
+This pass adds ~30 trials (continuous/gap windows ×2 filter states, 4 assets ×
+5 regime bucketings, 2 family probes × 4 assets, DD-buying grid, agent ICs).
+Interpret any future marginal positive accordingly.
+
+### Decisions (2026-08-09)
+
+1. V2/V3 momentum family: research artifact, not a path to live. Enforcement
+   stays off; shadow journaling continues; the pre-registered OOS trial may run
+   to completion but the continuous-window evidence predicts failure.
+2. No regime-routing layer, no agent-weighting layer, no drawdown-based
+   allocation, no compression gating — all unsupported by data.
+3. Only durable positive lead: slow long-only trend following. If pursued,
+   pre-register a single config + acceptance rule BEFORE any further scans.
