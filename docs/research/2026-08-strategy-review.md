@@ -1,5 +1,12 @@
 # Strategy Review — Independent Research Pass (2026-08-09)
 
+Professional follow-up: `docs/research/2026-08-professional-review-addendum.md`.
+The follow-up accepts the central V2/V3 falsification and the continued live
+NO-GO posture, but identifies evidence-pipeline issues that must be fixed before
+the OOS replay, V3 journal, or equity-duration metrics are treated as formal
+validation records. This research branch also predates the latest main/safety
+hardening and must not be used as a deployment base.
+
 Scope: full re-validation of the frozen V2/V3 momentum strategy, an
 asset × regime edge matrix, structural hypothesis tests (regime routing,
 strategy families, agent ensemble value, drawdown-conditional allocation,
@@ -108,8 +115,11 @@ measured alpha contribution.
 `backtesting/equity_report.py` now computes the full suite (max/avg DD,
 episode durations, time underwater, recovery factor, Calmar, Sharpe, Sortino,
 PF, expectancy, exposure, turnover). On the continuous ZEC curve: max DD −71%,
-92% of time underwater, longest episode 4.3 years — the "same max DD, very
-different duration" distinction the review asked for is now measurable.
+92% of post-trade observations underwater, longest observed episode 4.3 years.
+A boundary-aware audit in the professional addendum measures approximately
+97.15% of elapsed calendar time underwater and 1,564.3 days for the longest
+episode; the utility needs explicit evaluation boundaries before its duration
+metrics are considered final.
 
 **"Buy the strategy drawdown"**: tested at −3/−5/−8/−10% equity-ATH thresholds
 with 5/10/20-trade forward horizons on four asset curves. 1–3 qualifying
@@ -119,11 +129,16 @@ mean was *below* the unconditional mean. Rejected; no dynamic allocation.
 ## 6. Forward OOS (2026-07-12 freeze → 2026-08-09)
 
 The scheduler outage (2026-07-23 → 2026-08-09) meant the live shadow journal
-missed the window. The scanner is deterministic on closed candles, so
-`backtesting/oos_replay.py` reconstructs the record: 4 candidate signals,
+missed the window. `backtesting/oos_replay.py` provides a provisional
+counterfactual reconstruction: 4 reported shadow signals,
 2 V3-accepted (er ≥ 0.20), both stopped out (−3.70%, −3.61%); the 2 V3-blocked
 signals netted −1.09%. n = 2 of the ≥20 required — no criteria verdict, but
 nothing so far contradicts the continuous-window expectation of failure.
+
+Professional-review qualification: the tool post-filters a non-enforced scan
+rather than running a separate integrated V3 path. The two accepted losses are
+unchanged in an integrated audit of this slice, but the path/block count differs.
+Treat this output as diagnostic, not as the formal OOS journal.
 
 ## 7. Changes implemented
 
@@ -145,10 +160,12 @@ risk-engine changes.
 
 1. **No live strategy has positive expected value.** Nothing here changes
    that; the honest posture is shadow mode and research.
-2. Restart the scheduler (or schedule `oos_replay.py`) so the V3 trial
-   accumulates; at ~26 accepted signals/year, the n≥20 gate is ≥6 months out —
-   decide whether that trial is still worth its opportunity cost given the
-   falsified IS case.
+2. Do not rely on restarting the scheduler alone to complete the V3 trial. The
+   journal currently conflates enforcement acceptance with candidate acceptance
+   in shadow mode and has no working accepted-outcome chain. Fix those semantics
+   first. Given the falsified IS case, the professional recommendation is to
+   retire V3 as an activation candidate and retain only cheap diagnostic shadow
+   data if useful.
 3. If new edge is pursued, the trend-following family is the only lead with
    support in this data. Before ANY further scanning: pre-register one config,
    acceptance criteria, and cost model in the trial registry; prefer breadth

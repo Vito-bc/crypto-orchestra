@@ -63,17 +63,37 @@ Cost stress test (additional friction on top of Coinbase fees already in P&L):
 - er >= 0.20: survives +20bps of friction before avg goes negative
 - er >= 0.40: survives +100bps friction (PF=1.133, n=17 — too few)
 
-**Candidate for V3 live**: `v3_candidate_threshold = 0.20` (pre-registered, LOCKED)
-**Current config**: `v3_enforcement_enabled = False` — shadow/research mode only; `v3_would_block` logged to `logs/v3_journal.jsonl` but trades are NOT blocked until OOS criteria met.
+### STATUS: RETIRED / REJECTED FOR ACTIVATION (2026-08-09)
 
-**V3 activation criteria (pre-registered 2026-07-13, threshold LOCKED — cannot be changed after first OOS signal):**
-1. n >= 20 closed V3-accepted trades
-2. PF > 1.20 (gross wins / gross losses, from v3_journal.jsonl)
-3. P_bootstrap(PF > 1) > 90% (block bootstrap b=4, N=10,000)
-4. Avg P&L > 0% after adding +0.25% per-trade friction (stress test)
-5. No single market episode accounts for > 50% of gross profit
+V3 ER-30 is **no longer an activation candidate.** This is a terminal decision
+for this trial ID, not a pause pending more data.
 
-Check every 5 closed trades. At first check (n=5), PF can be infinite with 5 wins — criteria 1 is the binding gate. Threshold 0.20 is fixed; do NOT re-select on OOS data.
+**Reason.** On the continuous 2021→2026 window, integrated V3 enforcement makes
+results *worse*, not better: **PF 0.69 with V3 versus PF 0.86 without it.** The
+original positive case was an artifact of period-selected windows — the four
+registry windows omitted the 2023→mid-2024 stretch, and the filter's apparent
+edge did not survive evaluation on continuous data. Note that PF 0.86 is itself
+below 1.0, so the baseline this was measured against is also unprofitable.
+
+**Consequences.**
+
+- `v3_enforcement_enabled = False` and stays false. Nothing in this document
+  authorises turning it on.
+- `v3_candidate_threshold = 0.20` is retained **only as historical trial
+  metadata**, recording what was tested. It is not a pending configuration.
+- The former activation criteria (n >= 20 closed trades, PF > 1.20, bootstrap,
+  friction stress, episode concentration) are **withdrawn**. There is no trade
+  count at which V3 activates. Do not resume "check every 5 closed trades".
+- Future `v3_would_block` observations in `logs/v3_journal.jsonl` are
+  **diagnostic only**. They measure filter behaviour; they are not evidence for
+  reactivation and cannot trigger it.
+- Reactivating V3 in any form requires a **new pre-registered trial ID** with
+  its own hypothesis, data boundaries, and acceptance rule, registered before
+  any new evaluation is run. It may not inherit this trial's threshold or
+  criteria.
+
+The repaired shadow journal is retained as reusable research infrastructure and
+as an honest diagnostic record — not as an activation mechanism.
 
 ## ADX threshold
 
@@ -144,10 +164,10 @@ Infrastructure complete (all IS research done — no further parameter selection
 - `er_threshold_analysis.py`, `cost_stress_test.py`, `v3_integrated_test.py`: IS research scripts (frozen — do not re-run to select thresholds)
 - `tests/test_v3_properties.py`: 6 property tests covering look-ahead, UTC, concurrency, crash recovery, resolver idempotency, episode grouping
 
-Pending for V3 activation (check every 5 closed accepted trades):
-- [ ] Accumulate ≥20 forward OOS accepted signals (2026-07-12+)
-- [ ] All 5 activation criteria pass (see above)
-- [ ] Only then: set `v3_enforcement_enabled = True` in ASSET_CONFIG (threshold stays 0.20)
+~~Pending for V3 activation~~ — **WITHDRAWN 2026-08-09.** V3 is retired as an
+activation candidate (see STATUS above). There is no OOS trade count that
+activates it, no remaining criteria checklist, and no path from this trial ID to
+`v3_enforcement_enabled = True`. Continued logging is diagnostic only.
 
 ## Independent research pass — 2026-08-09 (continuous-window analysis)
 
@@ -246,3 +266,24 @@ Interpret any future marginal positive accordingly.
    allocation, no compression gating — all unsupported by data.
 3. Only durable positive lead: slow long-only trend following. If pursued,
    pre-register a single config + acceptance rule BEFORE any further scans.
+
+### Professional review addendum (2026-08-09)
+
+See `docs/research/2026-08-professional-review-addendum.md`.
+
+- The central continuous-window falsification is independently reproduced and
+  accepted: V2 remains negative and integrated V3 remains worse. Live stays
+  NO-GO; `DRY_RUN=true`.
+- The current `oos_replay.py` result is diagnostic rather than the formal OOS
+  record because it post-filters a non-enforced path. The V3 journal also
+  conflates shadow enforcement acceptance with candidate acceptance and does
+  not currently close the registered accepted cohort end-to-end.
+- The 92% underwater value is observation-weighted. A boundary-aware calendar
+  audit gives approximately 97.15% through 2026-07-12; max DD remains about
+  -71% for this ZEC sequence.
+- **Recommendation (not an activation decision):** retire V3 as a deployable
+  candidate, fix the research evidence pipeline, and pre-register slow trend
+  following as a separate strategy family before any new scan.
+- This research branch predates the latest main/safety hardening. Integrate the
+  research-only changes onto the current safety history; never deploy from the
+  research branch itself.

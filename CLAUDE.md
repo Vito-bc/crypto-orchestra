@@ -114,15 +114,20 @@ The vault is a growing knowledge base — future goal is RAG for the orchestrato
 
 ## Validation Status — read `docs/trial_registry.md` before believing any number
 
-Authoritative record: `docs/trial_registry.md` (+ `docs/research/2026-08-strategy-review.md`).
+Authoritative record: `docs/trial_registry.md` (+ `docs/research/2026-08-strategy-review.md`
+and `docs/research/2026-08-professional-review-addendum.md`).
 Summary as of 2026-08-09:
 
 - V2 momentum (ZEC): combined ~PF 1.00 on the four registry windows; **PF 0.86
   (-0.37%/trade, n=133) on the continuous 2021→2026 window**; the never-scanned
   2023→mid-2024 gap loses -2.35%/trade. Not profitable. Paper/shadow only.
-- V3 ER-30 filter: pre-registered OOS trial continues (enforcement OFF), but
-  integrated enforcement on the continuous window makes results worse
-  (PF 0.69). Do not activate on IS grounds.
+- V3 ER-30 filter: **RETIRED / REJECTED FOR ACTIVATION (2026-08-09)**.
+  Integrated enforcement on the continuous window makes results *worse*
+  (PF 0.69 with V3 vs PF 0.86 without). The earlier positive case came from
+  period-selected windows. Enforcement stays OFF permanently for this trial ID;
+  the former "n >= 20 closed trades" activation criteria are withdrawn. Further
+  `v3_would_block` logging is diagnostic only and cannot reactivate it —
+  that would require a new pre-registered trial ID. See `docs/trial_registry.md`.
 - Earlier "profitable, ready to go live" conclusions came from period-selected
   windows and an obsolete fee model. They are superseded.
 
@@ -130,10 +135,16 @@ Summary as of 2026-08-09:
 
 ## Pending Work (as of Aug 2026)
 
-1. Keep scheduler running so the V3 shadow journal accumulates forward-OOS
-   signals (it was down 2026-07-23 → 2026-08-09; use
-   `backtesting/oos_replay.py` to reconstruct missed windows deterministically)
-2. Evaluate the 5 pre-registered V3 criteria every 5 closed accepted trades
+Immediate implementation brief:
+`docs/tasks/2026-08-research-evidence-hardening.md`.
+
+1. V3 is retired as an activation candidate (recorded in `docs/trial_registry.md`);
+   enforcement stays off. Do not use the current replay/journal as a formal
+   activation record until integrated-path and cohort/outcome semantics are fixed.
+2. Correct equity calendar-duration accounting and commit reproducible research
+   runners plus data/result manifests.
 3. If pursuing a new edge: pre-register a slow trend-following trial (the only
    family probe that wasn't structurally negative — see registry 2026-08-09)
-4. n8n pipeline for visual automation (good for portfolio/resume)
+4. Run LLM agents on scanner events rather than hourly until an ablation shows
+   measurable incremental value.
+5. n8n pipeline for visual automation (good for portfolio/resume)

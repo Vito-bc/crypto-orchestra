@@ -178,8 +178,12 @@ ASSET_CONFIG = {
         # v3_candidate_threshold — pre-registered (2026-07-13), LOCKED at 0.20.
         #   Always computed for journaling; never changed on OOS data.
         # v3_enforcement_enabled — False = shadow/research only (log v3_would_block but
-        #   don't block trades). True = live enforcement. Activate only after 5-point OOS
-        #   criteria are met (see docs/trial_registry.md).
+        #   don't block trades).
+        #   V3 ER-30 is RETIRED as an activation candidate (2026-08-09): integrated
+        #   enforcement made the continuous window worse (PF 0.69 vs 0.86 without).
+        #   This stays False; the former activation criteria are withdrawn. Turning it
+        #   on requires a NEW pre-registered trial ID — see docs/trial_registry.md.
+        #   v3_candidate_threshold below is retained as historical trial metadata only.
         "v3_candidate_threshold": 0.20,
         "v3_enforcement_enabled": False,
         "enabled": True,
