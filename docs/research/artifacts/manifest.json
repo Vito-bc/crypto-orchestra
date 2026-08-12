@@ -1,6 +1,16 @@
 {
-  "code_commit": "ccd4a1b5cd5afe95f15f4723e22cedb351a58884",
+  "code_commit": "e42237045c7474637f7d7fe5ec91b23e1eef7392",
   "config": {
+    "accepted_gap_bars": {
+      "BTC_USD_1d.parquet": 0,
+      "BTC_USD_1h.parquet": 16,
+      "ETH_USD_1d.parquet": 0,
+      "ETH_USD_1h.parquet": 16,
+      "SOL_USD_1d.parquet": 0,
+      "SOL_USD_1h.parquet": 15,
+      "ZEC_USD_1d.parquet": 0,
+      "ZEC_USD_1h.parquet": 16
+    },
     "asset_eval_start": {
       "BTC-USD": "2021-03-01",
       "ETH-USD": "2021-03-01",
@@ -31,6 +41,7 @@
       "btc_regime_filter": false,
       "daily_ema_period": 200,
       "enabled": true,
+      "max_hold_hours": 36,
       "min_conditions": 4,
       "source": "ZEC-USD (git tag v2-adx25-frozen)",
       "v3_candidate_threshold": 0.2,
@@ -41,16 +52,28 @@
       "mean_reversion",
       "slow_trend",
       "agent_vote_ic",
-      "drawdown_buying"
+      "drawdown_buying",
+      "realised_vol_regime",
+      "bollinger_bandwidth_regime"
     ],
     "oos_freeze": "2026-07-12",
-    "primary_asset": "ZEC-USD",
-    "regime_names": [
+    "period_names": [
       "bull_2021",
       "bear_2022",
       "mid_year_holdout",
       "recent_year"
     ],
+    "primary_asset": "ZEC-USD",
+    "regime_metrics": {
+      "er_30": [
+        0.2,
+        0.35
+      ],
+      "vm_30": [
+        0.0,
+        1.0
+      ]
+    },
     "registry_window_names": [
       "bull_2021",
       "bear_2022",
