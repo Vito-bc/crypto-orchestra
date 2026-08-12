@@ -667,9 +667,15 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
         df.index = pd.to_datetime(df["time"], utc=True)
 
     config     = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
-    max_hold   = config.get("max_hold_hours", 36)
     asset_cfg  = (dict(config_override) if config_override is not None
                   else ASSET_CONFIG.get(asset, ASSET_CONFIG["ZEC-USD"]))
+    # max_hold is part of the MECHANISM, so an override must supply it too.
+    # Reading it from STRATEGY_CONFIG regardless meant a "frozen ZEC mechanism"
+    # transfer test still ran BTC at its own 48h instead of ZEC's 36h — not a
+    # zero-tuning transfer at all.
+    max_hold   = (asset_cfg.get("max_hold_hours")
+                  if config_override is not None and "max_hold_hours" in asset_cfg
+                  else config.get("max_hold_hours", 36))
     atr_stop   = asset_cfg["atr_stop"]
     atr_target = asset_cfg["atr_target"]
 
@@ -799,9 +805,12 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
         # be reported as a frozen-mechanism transfer test.
         "mechanism":        "override" if config_override is not None else f"own:{asset}",
         "mechanism_params": {
-            k: asset_cfg.get(k) for k in
-            ("atr_stop", "atr_target", "min_conditions", "vol_spike_ratio",
-             "daily_ema_period", "btc_regime_filter")
+            **{k: asset_cfg.get(k) for k in
+               ("atr_stop", "atr_target", "min_conditions", "vol_spike_ratio",
+                "daily_ema_period", "btc_regime_filter")},
+            # Recorded from the value actually used, so a transfer test that
+            # silently kept the asset's own hold window is visible in the artifact.
+            "max_hold_hours": max_hold,
         },
         "blocked_vol":      blocked_vol,
         "blocked_4h":       blocked_4h,

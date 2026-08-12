@@ -932,3 +932,77 @@ def test_persistence_failure_does_not_block_entry():
     assert any("persistence DEGRADED" in a.lower() or "DEGRADED" in a for a in alerts), (
         "a persistence-degraded operational alert must be sent"
     )
+
+
+# ---------------------------------------------------------------------------
+# 9. Research disposition must reflect the ORDER, not the returned action
+# ---------------------------------------------------------------------------
+
+def test_settle_disposition_is_first_write_wins():
+    """
+    After a successful limit order the decision is deliberately downgraded to
+    HOLD (the live action is the resting order). Inferring the disposition from
+    TradeDecision.action therefore recorded a PLACED order as blocked_elsewhere.
+    The settler must keep the first, authoritative value.
+    """
+    from unittest.mock import patch
+
+    calls: list[tuple[str, str]] = []
+
+    with patch("pipeline.v3_journal.log_disposition",
+               side_effect=lambda sid, d: calls.append((sid, d))):
+        journal = {"sid": "SIG-1", "settled": False}
+
+        def settle(disposition: str) -> None:
+            if journal["sid"] is None or journal["settled"]:
+                return
+            from pipeline.v3_journal import log_disposition
+            log_disposition(journal["sid"], disposition)
+            journal["settled"] = True
+
+        settle("traded")                 # placement branch, before downgrade
+        settle("blocked_elsewhere")      # catch-all after action became HOLD
+
+    assert calls == [("SIG-1", "traded")], (
+        f"first write must win; got {calls}"
+    )
+
+
+def test_runner_does_not_infer_disposition_from_decision_action():
+    """
+    Source-level lock. `decision.action` is not a safe proxy: a placed order is
+    reported as HOLD, and a missing-market-data path could look like a BUY.
+    """
+    import inspect
+
+    import pipeline.runner as runner
+
+    src = inspect.getsource(runner.run_pipeline)
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert 'log_disposition(\n' not in code, (
+        "run_pipeline must route disposition writes through _settle_disposition"
+    )
+    for bad in ('"traded" if decision.action', "'traded' if decision.action"):
+        assert bad not in code, (
+            "disposition must not be inferred from the returned TradeDecision"
+        )
+
+
+def test_disposition_settled_on_circuit_breaker_and_outbox_paths():
+    """Every early return that stops a trade must settle, not leave pending."""
+    import inspect
+
+    import pipeline.runner as runner
+
+    src = inspect.getsource(runner.run_pipeline)
+    # Each blocking early-return path settles before returning.
+    assert src.count("_settle_disposition(") >= 4, (
+        "expected settle calls on the circuit-breaker, outbox, placement and "
+        "catch-all paths"
+    )
+    # Whitespace-independent: the two blocking early-return paths are annotated.
+    assert "# circuit breaker" in src, "circuit-breaker path must settle"
+    assert "# outbox gate" in src, "outbox gate path must settle"
+    # And the placement branch settles from the real order status.
+    assert '"blocked_elsewhere" if _result_status == "REJECTED" else "traded"' in src

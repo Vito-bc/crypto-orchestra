@@ -53,11 +53,24 @@ Hypothesis: Kaufman Efficiency Ratio (ER-30 = |net_move_30d| / sum(|daily_moves|
 
 Combined avg per trade:
 - No filter:  -0.08% (4-period weighted, 101 signals)
-- er >= 0.20: +0.31% (68 signals) — **best stable threshold**
+- er >= 0.20: +0.31% (68 signals)
 - er >= 0.25: unstable (n=5 in bear_2022 inflates to PF=5.32)
 - er >= 0.35: recent_year drops to PF=0.99 (marginal)
 
-Key insight: the er >= 0.25+ post-hoc result was misleading. Integrated filter changes signal generation via skip_until interactions. er >= 0.20 is the most robust integrated threshold.
+> **These PF>1 results are descriptive outcomes from selected, non-independent
+> historical windows.** They omit the losing 2023–mid-2024 interval and are
+> superseded by the continuous PF 0.86 result. They provide no evidence for
+> routing, activation, or live deployment.
+
+The words "best stable threshold" and "most robust integrated threshold"
+previously appeared here. They were removed: on the continuous window integrated
+enforcement is *worse* (PF 0.69 vs 0.86), so no threshold in this table is
+"best" or "robust" in any forward sense. 0.20 is retained only as historical
+trial metadata recording what was tested.
+
+Key insight: the er >= 0.25+ post-hoc result was misleading. The integrated
+filter changes signal generation via skip_until interactions, so post-hoc
+filtering of an unfiltered run does not reproduce the enforced cohort.
 
 Cost stress test (additional friction on top of Coinbase fees already in P&L):
 - er >= 0.20: survives +20bps of friction before avg goes negative
@@ -215,6 +228,20 @@ breakout mechanism. Volatility-compression states do NOT predict profitable
 breakout entries here (compressed-BBW cells: ZEC PF 0.50, BTC 0.27, ETH 0.45).
 
 ### Strategy-family probes (single pre-declared config each, no sweeps)
+
+> ⚠️ **LEGACY / UNVERIFIED — not reproducible from committed code (2026-08-09).**
+> The implementations that produced the numbers in this section are **not in
+> this repository**. The deterministic research runner
+> (`backtesting/research_runner.py`) therefore cannot regenerate them, and they
+> are listed in `docs/research/artifacts/results.json` under
+> `non_reproducible`. Treat every figure below as an unverified historical note,
+> not as evidence. Do not cite them in a decision, and do not re-derive them from
+> memory — either recover the original implementation or run a new, explicitly
+> pre-registered replication trial with one frozen configuration.
+>
+> This applies to: mean reversion, slow/trend following, "buy the strategy
+> drawdown", LLM agent-vote IC, and the realised-vol / Bollinger-bandwidth
+> regime cells referenced above.
 
 - Mean reversion (1h RSI<30 + lower-BB, 2.0 ATR stop/target): PF 0.30–0.62 on
   all four assets; WORSE in ER<0.20 "range" regimes. **Rejected**, including the

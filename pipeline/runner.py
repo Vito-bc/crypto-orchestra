@@ -720,6 +720,34 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
     # When signal fires, agents act as veto-only (macro SELL blocks).
     _scanner_signal = scan_latest(asset)
 
+    # Research-journal disposition for this signal. Tracked EXPLICITLY at the
+    # points where the outcome is actually decided, never inferred from the
+    # returned TradeDecision: after a successful limit order the action is
+    # deliberately downgraded to HOLD (the live action is the resting order), so
+    # reading `.action` would record a placed order as "blocked_elsewhere" and,
+    # when market data is missing, could record a non-trade as "traded".
+    # Mutable holder: {"sid": str|None, "settled": bool}. A plain scalar cannot
+    # be rebound from the nested helper without `nonlocal`.
+    _journal: dict = {"sid": None, "settled": False}
+
+    def _settle_disposition(disposition: str) -> None:
+        """
+        Write the research disposition ONCE, at the first point that actually
+        knows it. First write wins: the placement branch settles "traded" before
+        the decision is downgraded to HOLD, and the catch-all at the end must not
+        then overwrite it with "blocked_elsewhere".
+
+        Never affects trading — all failures are swallowed.
+        """
+        if _journal["sid"] is None or _journal["settled"]:
+            return
+        try:
+            from pipeline.v3_journal import log_disposition
+            log_disposition(_journal["sid"], disposition)
+            _journal["settled"] = True
+        except Exception:
+            pass
+
     # Idempotency: a 30-minute scheduler may call run_pipeline() twice for the
     # same closed hourly candle. Atomically claim the signal before any processing.
     # CLAIMED → COMPLETED; crash leaves a claimed entry that auto-expires after 2h.
@@ -743,6 +771,9 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
         _v3_blocked    = _scanner_signal.get("v3_blocked", False)
         _v3_would_blk  = _scanner_signal.get("v3_would_block", False)
         log_v2_signal(scanner_signal=_scanner_signal, accepted=not _v3_blocked)
+        # From here on the signal exists in the journal and its disposition can
+        # be settled at whichever exit this pipeline takes.
+        _journal["sid"] = _sig_id
 
         # V3 enforcement blocked this signal
         if _v3_blocked:
@@ -875,6 +906,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
             )
             _log_decision(asset, signals, decision)
             _print_decision(asset, signals, decision)
+            _settle_disposition("blocked_elsewhere")   # circuit breaker
             return decision
 
         # ── Entry filters: correlation-adjusted BTC veto, funding, bounce, velocity
@@ -1015,6 +1047,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                             )
                             _log_decision(asset, signals, decision)
                             _print_decision(asset, signals, decision)
+                            _settle_disposition("blocked_elsewhere")  # outbox gate
                             return decision
                         _order_id        = _result.order_id
                         _order_stop      = _stop_price
@@ -1030,6 +1063,16 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                         _result_status   = _result.status
 
                     # ── Status-aware log + notification ───────────────────
+                    # Settle the research disposition from the ACTUAL placement
+                    # status, before the decision is downgraded to HOLD below.
+                    # OPEN  = order resting at the exchange.
+                    # SUBMITTING = durable intent recorded, exchange outcome
+                    #   unknown; the reconciler resolves it. Either way an order
+                    #   attempt exists, so it is not "blocked_elsewhere".
+                    # REJECTED = Coinbase refused; no order exists.
+                    _settle_disposition(
+                        "blocked_elsewhere" if _result_status == "REJECTED" else "traded"
+                    )
                     dist_str = f"{dist:.1f}x ATR away" if dist else "at support"
                     if _is_dry_run() or _result_status == "OPEN":
                         print(f"[LimitOrder] PLACED #{_order_id} — limit ${support:,.2f}  "
@@ -1135,23 +1178,11 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
         except Exception:
             pass  # Non-fatal; claim will auto-expire in 2h
 
-        # Research metadata ONLY — settle the shadow journal's disposition now
-        # that the pipeline's decision is known. log_v2_signal runs before any
-        # trade decision and can only record "pending"; without this the cohort
-        # never learns whether a candidate-accepted signal was actually traded
-        # or stopped by a downstream gate.
-        #
-        # This observes the decision that was already made. It does not read
-        # into, alter, or gate order placement, filters, or execution flow, and
-        # every failure is swallowed.
-        try:
-            from pipeline.v3_journal import log_disposition
-            log_disposition(
-                _sid,
-                "traded" if decision.action == TradeAction.BUY else "blocked_elsewhere",
-            )
-        except Exception:
-            pass  # Journalling must never affect trading
+        # Catch-all: any path that reached here without already settling was
+        # stopped downstream (no support level, orchestrator HOLD, missing market
+        # data...). _settle_disposition is first-write-wins, so a successful
+        # placement — which downgrades the action to HOLD — is NOT overwritten.
+        _settle_disposition("blocked_elsewhere")
 
     return decision
 

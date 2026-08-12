@@ -72,8 +72,19 @@ RESEARCH_CONFIG: dict = {
     "registry_window_names": [
         "bull_2021", "bear_2022", "mid_year_holdout", "recent_year",
     ],
-    # Regime cells for the asset x regime matrix. These ARE the named regimes.
-    "regime_names": ["bull_2021", "bear_2022", "mid_year_holdout", "recent_year"],
+    # Named CALENDAR windows. These are period cells, not regime cells — the
+    # earlier artifact labelled them "regime", which conflated "when" with
+    # "market state".
+    "period_names": ["bull_2021", "bear_2022", "mid_year_holdout", "recent_year"],
+    # True regime cells are cut on the regime METRIC measured at signal time.
+    # Only the metrics the scanner actually computes are used: er_30 (Kaufman
+    # efficiency) and vm_30 (vol-adjusted momentum). Realised-vol and Bollinger
+    # bandwidth cells are NOT produced because this scanner does not compute
+    # them — see non_reproducible_probes rather than inventing a proxy.
+    "regime_metrics": {
+        "er_30": [0.20, 0.35],     # chop | mixed | trend
+        "vm_30": [0.0, 1.0],       # negative | weak | strong momentum
+    },
     # Fee/slippage assumptions must travel with the results.
     "costs": {
         "entry_fee_pct": 0.4,
@@ -94,6 +105,9 @@ RESEARCH_CONFIG: dict = {
         "source": "ZEC-USD (git tag v2-adx25-frozen)",
         "atr_stop": 2.0,
         "atr_target": 3.5,
+        # Part of the mechanism: BTC's own config uses 48h, so omitting this
+        # made the "frozen" transfer test run BTC on a different hold window.
+        "max_hold_hours": 36,
         "min_conditions": 4,
         "vol_spike_ratio": 1.3,
         "daily_ema_period": 200,
@@ -108,7 +122,20 @@ RESEARCH_CONFIG: dict = {
     # mode this provenance work exists to prevent.
     "non_reproducible_probes": [
         "mean_reversion", "slow_trend", "agent_vote_ic", "drawdown_buying",
+        # The scanner computes er_30 / vm_30 / ema50_slope only. Realised-vol
+        # and Bollinger-bandwidth regime cuts have no implementation here, so
+        # they are declared rather than approximated with a stand-in metric.
+        "realised_vol_regime", "bollinger_bandwidth_regime",
     ],
+    # Coverage gaps that are KNOWN and accepted. Any gap not listed here fails
+    # the run: checking only the first and last timestamp let interior holes
+    # through, and a 2-5h hole silently removes signals.
+    "accepted_gap_bars": {
+        "BTC_USD_1h.parquet": 16, "ETH_USD_1h.parquet": 16,
+        "SOL_USD_1h.parquet": 15, "ZEC_USD_1h.parquet": 15,
+        "BTC_USD_1d.parquet": 0, "ETH_USD_1d.parquet": 0,
+        "SOL_USD_1d.parquet": 0, "ZEC_USD_1d.parquet": 0,
+    },
 }
 
 # Any hourly gap strictly larger than one bar is a real gap. The previous 6h
@@ -129,12 +156,32 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+# Files whose content determines the results. The recorded commit is the last
+# one that touched THESE, not HEAD.
+_CODE_PATHS = [
+    "backtesting/research_runner.py",
+    "backtesting/signal_scanner.py",
+    "backtesting/equity_report.py",
+    "backtesting/oos_replay.py",
+]
+
+
 def _git_commit() -> str:
-    """Code commit the artifact was produced from; 'unknown' outside a repo."""
+    """
+    Commit of the CODE that produced these results.
+
+    Deliberately NOT `rev-parse HEAD`. Artifacts are committed after the code,
+    so a HEAD-based stamp is stale the moment the artifact commit lands: the
+    committed manifest said ccd4a1b while regenerating produced 089ca43, which
+    made the artifact impossible to verify from the final branch state. Pinning
+    to the last commit that touched the result-determining code makes the stamp
+    stable across artifact-only commits, so regeneration from the tip is
+    byte-identical.
+    """
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=str(ROOT),
-            capture_output=True, text=True, timeout=30, check=False,
+            ["git", "log", "-1", "--format=%H", "--", *_CODE_PATHS],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=30, check=False,
         )
         return out.stdout.strip() or "unknown"
     except Exception:
@@ -209,6 +256,22 @@ def assert_covers(inputs: list[dict], asset: str, interval: str,
             "window is not fully covered"
         )
 
+    # Endpoints alone are not coverage: interior holes remove signals while both
+    # boundaries still look correct. Any gap beyond the declared budget fails.
+    allowed = RESEARCH_CONFIG["accepted_gap_bars"].get(fname)
+    if allowed is None:
+        raise ProvenanceError(
+            f"{fname} has no declared gap budget — refusing to run with "
+            "undeclared coverage"
+        )
+    missing = rec.get("missing_bars_est", 0)
+    if missing > allowed:
+        raise ProvenanceError(
+            f"{fname} is missing ~{missing} bars, above the declared budget of "
+            f"{allowed}. Interior coverage changed; re-declare it deliberately "
+            "instead of letting the run absorb it."
+        )
+
 
 def build_manifest(assets: Optional[list[str]] = None) -> dict:
     """Manifest of every input the registered run depends on."""
@@ -274,6 +337,57 @@ def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool,
     }
 
 
+def _bucket(value: Optional[float], edges: list[float]) -> str:
+    """Label a regime metric by fixed, frozen bin edges."""
+    if value is None:
+        return "unknown"
+    for i, e in enumerate(edges):
+        if value < e:
+            return f"b{i}_lt_{e}"
+    return f"b{len(edges)}_ge_{edges[-1]}"
+
+
+def _regime_cells(asset: str, start: str, end: str) -> list[dict]:
+    """
+    TRUE regime cells: signals cut by the regime METRIC measured at signal time,
+    not by calendar window. Uses the frozen ZEC mechanism so cells are
+    comparable across assets.
+    """
+    from backtesting.equity_report import summary
+    from backtesting.signal_scanner import scan_asset
+
+    cfg = RESEARCH_CONFIG
+    warmup = (pd.Timestamp(start) - pd.Timedelta(days=120)).date().isoformat()
+    period = {"label": f"{asset} regimes", "btc_move": "",
+              "warmup": warmup, "start": start, "end": end}
+    res = scan_asset(asset, period, v3_enforcement=False,
+                     config_override=cfg["frozen_mechanism"])
+    closed = [s for s in res.get("signals", [])
+              if s["trade"].get("resolved", True)]
+
+    out: list[dict] = []
+    for metric, edges in sorted(cfg["regime_metrics"].items()):
+        buckets: dict[str, list] = {}
+        for s in closed:
+            label = _bucket(s.get("regime", {}).get(metric), edges)
+            buckets.setdefault(label, []).append(s)
+        for label in sorted(buckets):
+            group = buckets[label]
+            trades = [{"ts": s["timestamp"], "pnl_pct": s["trade"]["pnl_pct"],
+                       "hold_h": s["trade"]["hold_h"]} for s in group]
+            m = summary(trades, start=start, end=end)
+            out.append({
+                "trial": f"regime:{asset}:{metric}:{label}",
+                "asset": asset, "start": start, "end": end,
+                "regime_metric": metric, "regime_bucket": label,
+                "n_closed": len(group),
+                "pf": _round(m.get("pf")),
+                "expectancy_pct": _round(m.get("expectancy")),
+                "win_rate": _round(m.get("win_rate")),
+            })
+    return out
+
+
 def run_results(manifest: Optional[dict] = None) -> dict:
     """
     Produce every registered result row. Deterministic, no wall-clock.
@@ -312,6 +426,7 @@ def run_results(manifest: Optional[dict] = None) -> dict:
             rows.append({"trial": f"V2-registry:{name}", **_scan_window(
                 asset, p["start"], p["end"], v3_enforcement=False,
                 warmup=p["warmup"])})
+            _ = name
 
         # 3. Integrated V3 comparison on the continuous window.
         rows.append({"trial": "V3-ER30-integrated", **_scan_window(
@@ -325,13 +440,21 @@ def run_results(manifest: Optional[dict] = None) -> dict:
                 a, cfg["asset_eval_start"][a], cw["end"], v3_enforcement=False,
                 config_override=frozen)})
 
-        # 5. Asset x REGIME matrix — actual regime cells, not a single aggregate.
+        # 5. Asset x CALENDAR PERIOD cells (named "period", not "regime" — these
+        #    are windows in time, not market states).
         for a in cfg["assets"]:
-            for name in cfg["regime_names"]:
+            for name in cfg["period_names"]:
                 p = PERIODS[name]
-                rows.append({"trial": f"regime:{a}:{name}", **_scan_window(
-                    a, p["start"], p["end"], v3_enforcement=False,
+                a_start = max(p["start"], cfg["asset_eval_start"][a])
+                if a_start >= p["end"]:
+                    continue   # asset had not listed during this window
+                rows.append({"trial": f"period:{a}:{name}", **_scan_window(
+                    a, a_start, p["end"], v3_enforcement=False,
                     warmup=p["warmup"], config_override=frozen)})
+
+        # 6. Asset x REGIME cells — cut on the regime metric at signal time.
+        for a in cfg["assets"]:
+            rows.extend(_regime_cells(a, cfg["asset_eval_start"][a], cw["end"]))
     finally:
         scanner.STRICT_COINBASE_ONLY = prev_strict
 
@@ -366,14 +489,44 @@ def write_artifacts(out_dir: Optional[Path] = None) -> tuple[Path, Path]:
     return m_path, r_path
 
 
+def verify_artifacts() -> bool:
+    """
+    Self-verification: regenerate in memory and compare byte-for-byte with the
+    committed artifacts. Exercised from the FINAL branch state, so it proves the
+    committed files can actually be reproduced from the committed code.
+    """
+    m_path = ARTIFACT_DIR / "manifest.json"
+    r_path = ARTIFACT_DIR / "results.json"
+    if not m_path.exists() or not r_path.exists():
+        raise ProvenanceError("artifacts are not committed — nothing to verify")
+
+    manifest = build_manifest()
+    results = run_results(manifest)
+    fresh_m = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    fresh_r = json.dumps(results, indent=2, sort_keys=True) + "\n"
+
+    ok = True
+    if fresh_m != m_path.read_text(encoding="utf-8"):
+        print("MISMATCH: manifest.json differs from a fresh run", file=sys.stderr)
+        ok = False
+    if fresh_r != r_path.read_text(encoding="utf-8"):
+        print("MISMATCH: results.json differs from a fresh run", file=sys.stderr)
+        ok = False
+    return ok
+
+
 def _cli() -> None:
-    check_only = "--check" in sys.argv
     try:
-        if check_only:
+        if "--check" in sys.argv:
             manifest = build_manifest()
             print(json.dumps(manifest, indent=2, sort_keys=True))
             print(f"\nOK: {len(manifest['inputs'])} input datasets hashed.")
             return
+        if "--verify" in sys.argv:
+            if verify_artifacts():
+                print("OK: committed artifacts reproduce byte-for-byte.")
+                return
+            sys.exit(1)
         m_path, r_path = write_artifacts()
         print(f"wrote {m_path.relative_to(ROOT)}")
         print(f"wrote {r_path.relative_to(ROOT)}")

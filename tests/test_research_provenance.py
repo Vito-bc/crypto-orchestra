@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "docs" / "research" / "artifacts"
 MANIFEST = ARTIFACTS / "manifest.json"
 RESULTS = ARTIFACTS / "results.json"
+RESEARCH_END = "2026-07-12"
 
 
 def _load(path: Path) -> dict:
@@ -172,32 +173,93 @@ def test_registry_window_trade_counts_are_the_registered_ones() -> None:
     assert got == expected, f"registry window counts changed: {got}"
 
 
-def test_regime_matrix_has_real_cells() -> None:
-    """An asset aggregate is not a regime matrix — there must be per-regime cells."""
+def test_calendar_cells_are_named_period_not_regime() -> None:
+    """
+    Calendar windows are PERIOD cells. Labelling them "regime" conflated when a
+    trade happened with what the market was doing.
+    """
+    r = _load(RESULTS)
+    period_cells = [x for x in r["rows"] if x["trial"].startswith("period:")]
+    assert period_cells, "no period cells in the artifact"
+    assets = {x["asset"] for x in period_cells}
+    assert len(assets) >= 4
+
+
+def test_regime_cells_are_cut_on_a_regime_metric() -> None:
+    """
+    A true regime cell is cut on the regime METRIC at signal time, not on a date
+    range. Each must name the metric and bucket it belongs to.
+    """
     r = _load(RESULTS)
     cells = [x for x in r["rows"] if x["trial"].startswith("regime:")]
-    assets = {x["asset"] for x in cells}
-    regimes = {x["trial"].split(":")[2] for x in cells}
-    assert len(assets) >= 4 and len(regimes) >= 4, (
-        f"expected an asset x regime grid, got {len(assets)} assets x {len(regimes)} regimes"
-    )
-    assert len(cells) == len(assets) * len(regimes), "grid is incomplete"
+    assert cells, "no regime cells in the artifact"
+    for c in cells:
+        assert c.get("regime_metric") in {"er_30", "vm_30"}, (
+            f"{c['trial']} is not cut on a regime metric"
+        )
+        assert c.get("regime_bucket"), "regime cell must record its bucket"
+        # A regime cell spans the whole window; it is not a calendar slice.
+        assert c["end"] == RESEARCH_END, f"{c['trial']} is date-sliced"
+
+
+def test_unimplemented_regime_cuts_are_declared() -> None:
+    """RV and Bollinger-bandwidth cuts have no implementation — declare, not fake."""
+    r = _load(RESULTS)
+    declared = {p["probe"] for p in r.get("non_reproducible", [])}
+    assert {"realised_vol_regime", "bollinger_bandwidth_regime"} <= declared
+    metrics = {x.get("regime_metric") for x in r["rows"]
+               if x["trial"].startswith("regime:")}
+    assert "realised_vol" not in metrics and "bbw" not in metrics
+
+
+def test_frozen_mechanism_includes_max_hold() -> None:
+    """
+    max_hold is part of the mechanism. BTC's own config uses 48h, so omitting it
+    meant the "frozen ZEC mechanism" transfer test still ran BTC on 48h.
+    """
+    m = _load(MANIFEST)
+    assert m["config"]["frozen_mechanism"]["max_hold_hours"] == 36
 
 
 def test_period_selection_artifact_is_visible() -> None:
     """
-    The documented story: individual registry windows can look fine while the
+    The documented story: individual calendar windows can look fine while the
     continuous window does not. If that ever stops holding, the 'period-selected
     windows' explanation in trial_registry.md is stale.
     """
     r = _load(RESULTS)
     zec_cells = [x for x in r["rows"]
-                 if x["trial"].startswith("regime:ZEC-USD:") and x["pf"] is not None]
+                 if x["trial"].startswith("period:ZEC-USD:") and x["pf"] is not None]
+    assert zec_cells, "no ZEC period cells"
     assert any(c["pf"] > 1.0 for c in zec_cells), (
-        "no ZEC regime window shows PF > 1 — the period-selection explanation "
+        "no ZEC calendar window shows PF > 1 — the period-selection explanation "
         "for the earlier positive case no longer holds"
     )
     assert _row(r, "V2-continuous")["pf"] < 1.0
+
+
+def test_code_commit_is_stable_across_artifact_commits() -> None:
+    """
+    code_commit must pin the CODE, not HEAD. A HEAD-based stamp goes stale the
+    moment the artifact commit lands, which made the committed manifest
+    unverifiable from the final branch state.
+    """
+    import subprocess
+
+    from backtesting.research_runner import _CODE_PATHS
+
+    m = _load(MANIFEST)
+    out = subprocess.run(
+        ["git", "log", "-1", "--format=%H", "--", *_CODE_PATHS],
+        cwd=str(ROOT), capture_output=True, text=True, check=False,
+    )
+    expected = out.stdout.strip()
+    if not expected:
+        pytest.skip("not a git checkout")
+    assert m["code_commit"] == expected, (
+        "manifest code_commit does not match the last commit touching the "
+        "result-determining code — the artifact cannot be reproduced from here"
+    )
 
 
 def test_non_reproducible_probes_are_declared_not_invented() -> None:
