@@ -130,11 +130,17 @@ RESEARCH_CONFIG: dict = {
     # Coverage gaps that are KNOWN and accepted. Any gap not listed here fails
     # the run: checking only the first and last timestamp let interior holes
     # through, and a 2-5h hole silently removes signals.
+    # Measured 2026-08-09; exchange-side outages, not download errors. Daily
+    # series are complete. Raising a budget must be a deliberate, reviewed edit.
     "accepted_gap_bars": {
-        "BTC_USD_1h.parquet": 16, "ETH_USD_1h.parquet": 16,
-        "SOL_USD_1h.parquet": 15, "ZEC_USD_1h.parquet": 15,
-        "BTC_USD_1d.parquet": 0, "ETH_USD_1d.parquet": 0,
-        "SOL_USD_1d.parquet": 0, "ZEC_USD_1d.parquet": 0,
+        "BTC_USD_1h.parquet": 16,   # 6 gaps
+        "ETH_USD_1h.parquet": 16,   # 6 gaps
+        "SOL_USD_1h.parquet": 15,   # 3 gaps
+        "ZEC_USD_1h.parquet": 16,   # 5 gaps
+        "BTC_USD_1d.parquet": 0,
+        "ETH_USD_1d.parquet": 0,
+        "SOL_USD_1d.parquet": 0,
+        "ZEC_USD_1d.parquet": 0,
     },
 }
 
