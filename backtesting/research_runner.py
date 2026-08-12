@@ -53,13 +53,27 @@ RESEARCH_CONFIG: dict = {
     "primary_asset": "ZEC-USD",
     "assets": ["ZEC-USD", "BTC-USD", "ETH-USD", "SOL-USD"],
     "continuous_window": {"start": "2021-03-01", "end": "2026-07-12"},
+    # Per-asset evaluation starts, declared explicitly because listing dates
+    # differ. SOL-USD has no Coinbase candles before 2021-06-17, so a row
+    # labelled "2021-03-01" for SOL would misstate its own window — the earlier
+    # artifact did exactly that. Declaring the boundary here keeps it frozen and
+    # visible instead of silently truncated at scan time.
+    "asset_eval_start": {
+        "ZEC-USD": "2021-03-01",
+        "BTC-USD": "2021-03-01",
+        "ETH-USD": "2021-03-01",
+        "SOL-USD": "2021-06-17",   # first Coinbase candle
+    },
     "oos_freeze": "2026-07-12",
-    "registry_windows": [
-        {"label": "2021_bull",      "start": "2021-03-01", "end": "2021-11-30"},
-        {"label": "2022_bear",      "start": "2022-01-01", "end": "2022-12-31"},
-        {"label": "2024_recovery",  "start": "2024-07-01", "end": "2025-03-31"},
-        {"label": "2025_full_year", "start": "2025-04-01", "end": "2026-06-30"},
+    # Referenced BY NAME from signal_scanner.PERIODS so the dates cannot drift
+    # from the registry. Hardcoding them here previously produced three wrong
+    # windows (bull_2021 ended 11-30 not 11-10; mid_year_holdout and recent_year
+    # were both wrong), which silently changed the reported trade counts.
+    "registry_window_names": [
+        "bull_2021", "bear_2022", "mid_year_holdout", "recent_year",
     ],
+    # Regime cells for the asset x regime matrix. These ARE the named regimes.
+    "regime_names": ["bull_2021", "bear_2022", "mid_year_holdout", "recent_year"],
     # Fee/slippage assumptions must travel with the results.
     "costs": {
         "entry_fee_pct": 0.4,
@@ -73,10 +87,34 @@ RESEARCH_CONFIG: dict = {
         "threshold_historical_only": 0.20,
         "enforcement_enabled": False,
     },
+    # The frozen ZEC mechanism, applied UNCHANGED to every asset for the
+    # transfer test. Using each asset's own ASSET_CONFIG would measure
+    # "per-asset tuned strategies", not "does the ZEC mechanism transfer".
+    "frozen_mechanism": {
+        "source": "ZEC-USD (git tag v2-adx25-frozen)",
+        "atr_stop": 2.0,
+        "atr_target": 3.5,
+        "min_conditions": 4,
+        "vol_spike_ratio": 1.3,
+        "daily_ema_period": 200,
+        "btc_regime_filter": False,
+        "v3_candidate_threshold": 0.20,
+        "v3_enforcement_enabled": False,
+        "enabled": True,
+    },
+    # Probes named in the task whose original implementations are NOT in this
+    # repository. They are recorded as non-reproducible rather than recreated
+    # from memory — inventing numbers to fill a manifest is the exact failure
+    # mode this provenance work exists to prevent.
+    "non_reproducible_probes": [
+        "mean_reversion", "slow_trend", "agent_vote_ic", "drawdown_buying",
+    ],
 }
 
-# A gap larger than this in an hourly series is reported as a coverage gap.
-_GAP_THRESHOLD_H = 6
+# Any hourly gap strictly larger than one bar is a real gap. The previous 6h
+# threshold hid 2-5h holes entirely, which is exactly the size of gap that
+# silently removes signals without looking like missing data.
+_GAP_THRESHOLD_H = 1
 
 
 class ProvenanceError(RuntimeError):
@@ -113,15 +151,18 @@ def describe_dataset(path: Path) -> dict:
     if "time" not in df.columns:
         raise ProvenanceError(f"input dataset has no 'time' column: {path}")
 
-    ts = pd.to_datetime(df["time"], utc=True).sort_values()
+    ts = pd.to_datetime(df["time"], utc=True).sort_values().reset_index(drop=True)
     gaps: list[dict] = []
+    total_missing_h = 0.0
     if len(ts) > 1 and path.stem.endswith("_1h"):
         deltas = ts.diff().dropna()
         big = deltas[deltas > pd.Timedelta(hours=_GAP_THRESHOLD_H)]
         for idx, delta in big.items():
+            gap_h = delta.total_seconds() / 3600
+            total_missing_h += gap_h - 1          # one bar is the normal step
             gaps.append({
-                "after": ts.loc[idx - 1].isoformat() if (idx - 1) in ts.index else None,
-                "gap_hours": round(delta.total_seconds() / 3600, 2),
+                "after": ts.iloc[idx - 1].isoformat(),
+                "gap_hours": round(gap_h, 2),
             })
     return {
         "file": path.name,
@@ -129,10 +170,44 @@ def describe_dataset(path: Path) -> dict:
         "rows": int(len(df)),
         "min_ts": ts.iloc[0].isoformat(),
         "max_ts": ts.iloc[-1].isoformat(),
-        "n_gaps_over_%dh" % _GAP_THRESHOLD_H: len(gaps),
+        "gap_threshold_hours": _GAP_THRESHOLD_H,
+        "n_gaps": len(gaps),
+        "missing_bars_est": int(round(total_missing_h)),
         # Cap the listing so the artifact stays diffable.
         "gaps_sample": gaps[:10],
     }
+
+
+def assert_covers(inputs: list[dict], asset: str, interval: str,
+                  start: str, end: str) -> None:
+    """
+    Fail closed when a requested evaluation window is not fully covered.
+
+    Without this, a window extending past the cache silently produced a shorter
+    scan and the artifact reported it as a complete result.
+    """
+    stem = asset.replace("-", "_")
+    fname = f"{stem}_{interval}.parquet"
+    rec = next((i for i in inputs if i["file"] == fname), None)
+    if rec is None:
+        raise ProvenanceError(f"no manifest entry for {fname}")
+    # Compare calendar dates: the first candle of a day carries a time-of-day
+    # component (e.g. 17:00 on a listing day), which must not read as "starts
+    # after" a midnight boundary on that same date.
+    lo = pd.Timestamp(rec["min_ts"]).normalize()
+    hi = pd.Timestamp(rec["max_ts"]).normalize()
+    want_lo = pd.Timestamp(start, tz="UTC").normalize()
+    want_hi = pd.Timestamp(end, tz="UTC").normalize()
+    if lo > want_lo:
+        raise ProvenanceError(
+            f"{fname} starts {lo.date()}, after requested {want_lo.date()} — "
+            "window is not fully covered"
+        )
+    if hi < want_hi:
+        raise ProvenanceError(
+            f"{fname} ends {hi.date()}, before requested {want_hi.date()} — "
+            "window is not fully covered"
+        )
 
 
 def build_manifest(assets: Optional[list[str]] = None) -> dict:
@@ -164,14 +239,17 @@ def _round(value, digits: int = 6):
     return value
 
 
-def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool) -> dict:
+def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool,
+                 warmup: Optional[str] = None,
+                 config_override: Optional[dict] = None) -> dict:
     from backtesting.equity_report import summary
     from backtesting.signal_scanner import scan_asset
 
-    warmup = (pd.Timestamp(start) - pd.Timedelta(days=120)).date().isoformat()
+    warmup = warmup or (pd.Timestamp(start) - pd.Timedelta(days=120)).date().isoformat()
     period = {"label": f"{asset} {start}->{end}", "btc_move": "",
               "warmup": warmup, "start": start, "end": end}
-    res = scan_asset(asset, period, v3_enforcement=v3_enforcement)
+    res = scan_asset(asset, period, v3_enforcement=v3_enforcement,
+                     config_override=config_override)
     sigs = res.get("signals", [])
     # Right-censored trades carry no realised outcome (Phase 2).
     closed = [s for s in sigs if s["trade"].get("resolved", True)]
@@ -181,6 +259,7 @@ def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool) -> d
     return {
         "asset": asset, "start": start, "end": end,
         "v3_enforcement": v3_enforcement,
+        "mechanism": res.get("mechanism"),
         "n_signals": len(sigs),
         "n_closed": len(closed),
         "n_pending": len(sigs) - len(closed),
@@ -195,39 +274,88 @@ def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool) -> d
     }
 
 
-def run_results() -> dict:
-    """Produce every registered result row. Deterministic, no wall-clock."""
+def run_results(manifest: Optional[dict] = None) -> dict:
+    """
+    Produce every registered result row. Deterministic, no wall-clock.
+
+    Runs with STRICT_COINBASE_ONLY so a cache miss raises instead of silently
+    switching provider — the manifest hashes must describe the data actually used.
+    """
+    import backtesting.signal_scanner as scanner
+    from backtesting.signal_scanner import PERIODS
+
     cfg = RESEARCH_CONFIG
     asset = cfg["primary_asset"]
     cw = cfg["continuous_window"]
+    frozen = cfg["frozen_mechanism"]
+    inputs = (manifest or build_manifest())["inputs"]
     rows: list[dict] = []
 
-    # 1. Continuous-window ZEC (the falsification result).
-    rows.append({"trial": "V2-continuous", **_scan_window(
-        asset, cw["start"], cw["end"], v3_enforcement=False)})
-
-    # 2. Registry windows — the period-selected view, for contrast.
-    for w in cfg["registry_windows"]:
-        rows.append({"trial": f"V2-registry:{w['label']}", **_scan_window(
-            asset, w["start"], w["end"], v3_enforcement=False)})
-
-    # 3. Integrated V3 comparison on the continuous window.
-    rows.append({"trial": "V3-ER30-integrated", **_scan_window(
-        asset, cw["start"], cw["end"], v3_enforcement=True)})
-
-    # 4. Asset-by-regime matrix on the continuous window.
+    # Coverage must be proven BEFORE any scan runs, against each asset's
+    # DECLARED evaluation start (see asset_eval_start).
     for a in cfg["assets"]:
-        rows.append({"trial": f"V2-asset:{a}", **_scan_window(
-            a, cw["start"], cw["end"], v3_enforcement=False)})
+        a_start = cfg["asset_eval_start"][a]
+        for interval in ("1h", "1d"):
+            assert_covers(inputs, a, interval, a_start, cw["end"])
 
-    return {"config_id": cfg["config_id"], "rows": rows}
+    prev_strict = scanner.STRICT_COINBASE_ONLY
+    scanner.STRICT_COINBASE_ONLY = True
+    try:
+        # 1. Continuous-window ZEC (the falsification result), own mechanism.
+        rows.append({"trial": "V2-continuous", **_scan_window(
+            asset, cw["start"], cw["end"], v3_enforcement=False)})
+
+        # 2. Registry windows — the period-selected view, for contrast.
+        #    Dates and warmups come from PERIODS so they cannot drift.
+        for name in cfg["registry_window_names"]:
+            p = PERIODS[name]
+            rows.append({"trial": f"V2-registry:{name}", **_scan_window(
+                asset, p["start"], p["end"], v3_enforcement=False,
+                warmup=p["warmup"])})
+
+        # 3. Integrated V3 comparison on the continuous window.
+        rows.append({"trial": "V3-ER30-integrated", **_scan_window(
+            asset, cw["start"], cw["end"], v3_enforcement=True)})
+
+        # 4. Zero-tuning transfer: the FROZEN ZEC mechanism applied unchanged to
+        #    every asset. Using each asset's own tuned config would answer a
+        #    different question.
+        for a in cfg["assets"]:
+            rows.append({"trial": f"transfer-frozen-zec:{a}", **_scan_window(
+                a, cfg["asset_eval_start"][a], cw["end"], v3_enforcement=False,
+                config_override=frozen)})
+
+        # 5. Asset x REGIME matrix — actual regime cells, not a single aggregate.
+        for a in cfg["assets"]:
+            for name in cfg["regime_names"]:
+                p = PERIODS[name]
+                rows.append({"trial": f"regime:{a}:{name}", **_scan_window(
+                    a, p["start"], p["end"], v3_enforcement=False,
+                    warmup=p["warmup"], config_override=frozen)})
+    finally:
+        scanner.STRICT_COINBASE_ONLY = prev_strict
+
+    return {
+        "config_id": cfg["config_id"],
+        "rows": rows,
+        # Recorded explicitly so the artifact states what it does NOT cover.
+        "non_reproducible": [
+            {
+                "probe": name,
+                "reason": "no implementation found in this repository; the "
+                          "published figures cannot be regenerated from "
+                          "committed code and are NOT reproduced here",
+            }
+            for name in cfg["non_reproducible_probes"]
+        ],
+    }
 
 
 def write_artifacts(out_dir: Optional[Path] = None) -> tuple[Path, Path]:
     out_dir = out_dir or ARTIFACT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = build_manifest()
-    results = run_results()
+    results = run_results(manifest)
     m_path = out_dir / "manifest.json"
     r_path = out_dir / "results.json"
     # sort_keys + fixed indent + trailing newline => byte-stable output.

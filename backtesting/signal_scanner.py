@@ -433,9 +433,26 @@ def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
 
 # ── Per-asset scanner ─────────────────────────────────────────────────────────
 
+class StrictSourceError(RuntimeError):
+    """Coinbase cache was unusable while STRICT_COINBASE_ONLY was set."""
+
+
+# When True, _fetch_ohlcv refuses to fall back to yfinance and raises instead.
+# A registered research run sets this: silently swapping the data provider
+# mid-run would make the manifest's SHA-256 hashes describe inputs that were not
+# actually used, which is worse than failing.
+STRICT_COINBASE_ONLY = False
+
+
 def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFrame | None:
-    """Fetch OHLCV from Coinbase (preferred) with yfinance as fallback."""
+    """
+    Fetch OHLCV from Coinbase (preferred) with yfinance as fallback.
+
+    Under STRICT_COINBASE_ONLY the fallback is disabled and a Coinbase failure
+    raises StrictSourceError.
+    """
     # ── Coinbase path ──────────────────────────────────────────────────────────
+    cb_error: Exception | None = None
     try:
         from exchange.coinbase_candles import download as _cb_download
         gran_map = {"1h": "1h", "4h": "4h", "1d": "1d"}
@@ -447,8 +464,15 @@ def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFram
                 df.index = pd.to_datetime(df.index, utc=True)
                 df.index.name = None  # avoid "time is both index and column" ambiguity
                 return df.dropna(subset=["close", "open", "high", "low", "volume"])
-    except Exception:
-        pass  # fall through to yfinance
+    except Exception as exc:
+        cb_error = exc      # fall through to yfinance unless strict
+
+    if STRICT_COINBASE_ONLY:
+        raise StrictSourceError(
+            f"Coinbase cache unusable for {asset} {interval} {start}->{end} "
+            f"({cb_error or 'insufficient rows'}) and STRICT_COINBASE_ONLY is set. "
+            "Refusing to fall back to yfinance during a registered run."
+        )
 
     # ── yfinance fallback ──────────────────────────────────────────────────────
     try:
@@ -596,9 +620,17 @@ def _compute_regime_metrics(daily_df: pd.DataFrame | None, as_of_ts: pd.Timestam
     return result
 
 
-def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None) -> dict:
+def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
+               config_override: dict | None = None) -> dict:
     """
     Scan one asset over `period`.
+
+    config_override:
+      None — use the asset's own ASSET_CONFIG entry (normal behaviour).
+      dict — use these parameters INSTEAD. This is what makes a zero-tuning
+             transfer test honest: applying each asset's own tuned stop/target/
+             EMA settings measures "per-asset tuned strategies", not "does the
+             ZEC mechanism transfer". The override is copied, never mutated.
 
     v3_enforcement:
       None  — use the asset's configured `v3_enforcement_enabled` (default False).
@@ -636,7 +668,8 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None) 
 
     config     = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
     max_hold   = config.get("max_hold_hours", 36)
-    asset_cfg  = ASSET_CONFIG.get(asset, ASSET_CONFIG["ZEC-USD"])
+    asset_cfg  = (dict(config_override) if config_override is not None
+                  else ASSET_CONFIG.get(asset, ASSET_CONFIG["ZEC-USD"]))
     atr_stop   = asset_cfg["atr_stop"]
     atr_target = asset_cfg["atr_target"]
 
@@ -762,6 +795,14 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None) 
         # Authoritative label for this result set. Consumers must check it rather
         # than assuming which path they were handed.
         "v3_enforcement":   v3_enforcement,
+        # Which parameter set actually ran — so a per-asset-tuned scan can never
+        # be reported as a frozen-mechanism transfer test.
+        "mechanism":        "override" if config_override is not None else f"own:{asset}",
+        "mechanism_params": {
+            k: asset_cfg.get(k) for k in
+            ("atr_stop", "atr_target", "min_conditions", "vol_spike_ratio",
+             "daily_ema_period", "btc_regime_filter")
+        },
         "blocked_vol":      blocked_vol,
         "blocked_4h":       blocked_4h,
         "blocked_daily":    blocked_daily,

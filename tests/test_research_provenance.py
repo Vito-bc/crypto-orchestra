@@ -116,12 +116,127 @@ def test_no_asset_is_profitable_on_the_continuous_window() -> None:
     reasoning in CLAUDE.md needs re-examination rather than quiet contradiction.
     """
     r = _load(RESULTS)
-    asset_rows = [x for x in r["rows"] if x["trial"].startswith("V2-asset:")]
-    assert asset_rows, "no per-asset rows in the artifact"
+    asset_rows = [x for x in r["rows"] if x["trial"].startswith("transfer-frozen-zec:")]
+    assert asset_rows, "no transfer rows in the artifact"
     for row in asset_rows:
         assert row["pf"] < 1.0, (
             f"{row['trial']} now shows PF {row['pf']} >= 1.0 — the documented "
             "'no positive edge' verdict must be revisited"
+        )
+
+
+def test_transfer_test_uses_the_frozen_mechanism() -> None:
+    """
+    The zero-tuning transfer claim requires the SAME mechanism on every asset.
+    Using each asset's own tuned ASSET_CONFIG would measure per-asset tuned
+    strategies and could not support "the ZEC mechanism does not transfer".
+    """
+    r = _load(RESULTS)
+    rows = [x for x in r["rows"] if x["trial"].startswith("transfer-frozen-zec:")]
+    assert len(rows) >= 4
+    for row in rows:
+        assert row["mechanism"] == "override", (
+            f"{row['trial']} ran with its own config, not the frozen mechanism"
+        )
+
+
+def test_registry_windows_match_registered_dates() -> None:
+    """
+    Window dates come from signal_scanner.PERIODS, not hardcoded copies. Three
+    of four were previously wrong, which silently changed the trade counts.
+    """
+    from backtesting.signal_scanner import PERIODS
+
+    r = _load(RESULTS)
+    seen = 0
+    for row in r["rows"]:
+        if not row["trial"].startswith("V2-registry:"):
+            continue
+        name = row["trial"].split(":", 1)[1]
+        assert name in PERIODS, f"unknown period {name}"
+        assert row["start"] == PERIODS[name]["start"], f"{name} start drifted"
+        assert row["end"] == PERIODS[name]["end"], f"{name} end drifted"
+        seen += 1
+    assert seen == 4, f"expected 4 registry windows, found {seen}"
+
+
+def test_registry_window_trade_counts_are_the_registered_ones() -> None:
+    """Documented per-window closed-trade counts: 25 / 12 / 27 / 37."""
+    r = _load(RESULTS)
+    expected = {
+        "bull_2021": 25, "bear_2022": 12,
+        "mid_year_holdout": 27, "recent_year": 37,
+    }
+    got = {row["trial"].split(":", 1)[1]: row["n_closed"]
+           for row in r["rows"] if row["trial"].startswith("V2-registry:")}
+    assert got == expected, f"registry window counts changed: {got}"
+
+
+def test_regime_matrix_has_real_cells() -> None:
+    """An asset aggregate is not a regime matrix — there must be per-regime cells."""
+    r = _load(RESULTS)
+    cells = [x for x in r["rows"] if x["trial"].startswith("regime:")]
+    assets = {x["asset"] for x in cells}
+    regimes = {x["trial"].split(":")[2] for x in cells}
+    assert len(assets) >= 4 and len(regimes) >= 4, (
+        f"expected an asset x regime grid, got {len(assets)} assets x {len(regimes)} regimes"
+    )
+    assert len(cells) == len(assets) * len(regimes), "grid is incomplete"
+
+
+def test_period_selection_artifact_is_visible() -> None:
+    """
+    The documented story: individual registry windows can look fine while the
+    continuous window does not. If that ever stops holding, the 'period-selected
+    windows' explanation in trial_registry.md is stale.
+    """
+    r = _load(RESULTS)
+    zec_cells = [x for x in r["rows"]
+                 if x["trial"].startswith("regime:ZEC-USD:") and x["pf"] is not None]
+    assert any(c["pf"] > 1.0 for c in zec_cells), (
+        "no ZEC regime window shows PF > 1 — the period-selection explanation "
+        "for the earlier positive case no longer holds"
+    )
+    assert _row(r, "V2-continuous")["pf"] < 1.0
+
+
+def test_non_reproducible_probes_are_declared_not_invented() -> None:
+    """
+    Four probes named in the review have no implementation in this repo. They
+    must be recorded as non-reproducible; regenerating their numbers from memory
+    is exactly what this provenance work exists to prevent.
+    """
+    r = _load(RESULTS)
+    declared = {p["probe"] for p in r.get("non_reproducible", [])}
+    assert {"mean_reversion", "slow_trend", "agent_vote_ic",
+            "drawdown_buying"} <= declared
+    # And they must NOT appear as if they had been reproduced.
+    trials = {row["trial"] for row in r["rows"]}
+    for probe in declared:
+        assert not any(probe in t for t in trials), (
+            f"{probe} is declared non-reproducible but a result row claims it"
+        )
+
+
+def test_manifest_records_per_asset_evaluation_starts() -> None:
+    """
+    SOL has no Coinbase candles before 2021-06-17. A row labelled 2021-03-01
+    for SOL would misstate its own window, so the boundary is declared.
+    """
+    m = _load(MANIFEST)
+    starts = m["config"]["asset_eval_start"]
+    assert starts["SOL-USD"] == "2021-06-17"
+    r = _load(RESULTS)
+    sol = next(x for x in r["rows"] if x["trial"] == "transfer-frozen-zec:SOL-USD")
+    assert sol["start"] == "2021-06-17", "SOL row must state its real window"
+
+
+def test_gap_detection_is_not_blind_to_short_holes() -> None:
+    """A 6h threshold hid 2-5h holes — the size that silently drops signals."""
+    m = _load(MANIFEST)
+    for inp in m["inputs"]:
+        assert inp["gap_threshold_hours"] == 1, (
+            "hourly gap detection must flag anything longer than one bar"
         )
 
 

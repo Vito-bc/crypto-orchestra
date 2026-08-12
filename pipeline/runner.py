@@ -1129,10 +1129,29 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
 
     # Mark this signal as fully processed (claim → complete)
     if _scanner_signal is not None:
+        _sid = _make_signal_id(asset, _scanner_signal["entry_time"])
         try:
-            _complete_signal(_make_signal_id(asset, _scanner_signal["entry_time"]))
+            _complete_signal(_sid)
         except Exception:
             pass  # Non-fatal; claim will auto-expire in 2h
+
+        # Research metadata ONLY — settle the shadow journal's disposition now
+        # that the pipeline's decision is known. log_v2_signal runs before any
+        # trade decision and can only record "pending"; without this the cohort
+        # never learns whether a candidate-accepted signal was actually traded
+        # or stopped by a downstream gate.
+        #
+        # This observes the decision that was already made. It does not read
+        # into, alter, or gate order placement, filters, or execution flow, and
+        # every failure is swallowed.
+        try:
+            from pipeline.v3_journal import log_disposition
+            log_disposition(
+                _sid,
+                "traded" if decision.action == TradeAction.BUY else "blocked_elsewhere",
+            )
+        except Exception:
+            pass  # Journalling must never affect trading
 
     return decision
 

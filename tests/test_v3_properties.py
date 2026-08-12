@@ -365,3 +365,96 @@ def test_end_to_end_only_candidate_accepted_enters_stats(tmp_path, monkeypatch) 
     again = vj._build_signal_view(vj.read_journal())
     assert [s["pnl_pct"] for s in again] == [s["pnl_pct"] for s in view]
     assert [s["disposition"] for s in again] == [s["disposition"] for s in view]
+
+
+# ── 8: Phase 3 correctives ────────────────────────────────────────────────────
+
+def test_summary_never_announces_activation(tmp_path, monkeypatch, capsys) -> None:
+    """
+    V3 is retired: the journal must not evaluate activation criteria, and must
+    never be able to print "V3 activation warranted".
+    """
+    vj = _journal_env(tmp_path, monkeypatch)
+    sid = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True,
+    )
+    vj.log_outcome(sid, "WIN", 9.0, is_counterfactual=False)
+    vj.summarise_journal()
+
+    out = capsys.readouterr().out
+    assert "activation warranted" not in out.lower()
+    assert "criteria met" not in out.lower()
+    assert "RETIRED" in out
+    for withdrawn in ("n >= 20", "PF > 1.20", "P_bootstrap(PF>1) > 90%"):
+        assert withdrawn not in out, f"withdrawn criterion still evaluated: {withdrawn}"
+
+
+def test_summary_source_has_no_pass_fail_criteria() -> None:
+    """Source-level lock: the five-point checklist must be gone, not just quiet."""
+    import inspect
+
+    import pipeline.v3_journal as vj
+
+    src = inspect.getsource(vj.summarise_journal)
+    # Strip comments: the block that explains WHAT WAS REMOVED legitimately
+    # names the old strings, and must not trip this check.
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert "activation warranted" not in code
+    assert "5-point" not in code
+    assert "[PASS]" not in code and "[FAIL]" not in code
+    # The withdrawn thresholds must not be computed at all.
+    for expr in ("1.20", ">= 20", "p_above > 90"):
+        assert expr not in code, f"withdrawn criterion still computed: {expr}"
+
+
+def test_resolver_leaves_partial_horizon_pending(tmp_path, monkeypatch) -> None:
+    """
+    reconcile_pending must not invent MAX_HOLD when only part of the hold
+    horizon is observable — the same right-censoring defect fixed in the
+    scanner. With 5 of 36 candles and no stop/target touched, nothing is written.
+    """
+    import pandas as pd
+
+    vj = _journal_env(tmp_path, monkeypatch)
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=True),
+        accepted=False,
+    )
+
+    # 5 flat candles: neither the stop nor the target is reached.
+    idx = pd.date_range("2026-07-13T01:00:00Z", periods=5, freq="h")
+    flat = pd.DataFrame(
+        {"time": idx, "open": 100.0, "high": 100.5, "low": 99.5,
+         "close": 100.0, "volume": 1.0}
+    )
+    monkeypatch.setattr("exchange.coinbase_candles.download",
+                        lambda *a, **k: flat)
+
+    n = vj.reconcile_pending(asset="ZEC-USD", max_hold_hours=36)
+    assert n == 0, "a partially observed horizon must stay pending"
+    view = vj._build_signal_view(vj.read_journal())
+    assert view[0]["outcome"] is None
+
+
+def test_resolver_still_resolves_a_touched_stop(tmp_path, monkeypatch) -> None:
+    """Censoring must not suppress an outcome that genuinely occurred."""
+    import pandas as pd
+
+    vj = _journal_env(tmp_path, monkeypatch)
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=True),
+        accepted=False,
+    )
+    # entry 100, atr 2, atr_stop 2.0 -> stop at 96. Bar 2 trades to 95.
+    idx = pd.date_range("2026-07-13T01:00:00Z", periods=3, freq="h")
+    hit = pd.DataFrame(
+        {"time": idx, "open": 100.0, "high": [100.5, 100.5, 100.5],
+         "low": [99.5, 95.0, 99.0], "close": 100.0, "volume": 1.0}
+    )
+    monkeypatch.setattr("exchange.coinbase_candles.download", lambda *a, **k: hit)
+
+    n = vj.reconcile_pending(asset="ZEC-USD", max_hold_hours=36)
+    assert n == 1
+    assert vj._build_signal_view(vj.read_journal())[0]["outcome"] == "LOSS"

@@ -355,7 +355,7 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
         target_price = entry_price + atr_target * float(atr_val)
 
         # Simulate: scan bars sequentially, check stop and target
-        outcome = "MAX_HOLD"
+        outcome = None
         exit_price = float(after.iloc[-1]["close"])
         for _, bar in after.iterrows():
             lo = float(bar["low"])
@@ -368,6 +368,17 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
                 outcome    = "WIN"
                 exit_price = target_price
                 break
+
+        if outcome is None:
+            # Neither stop nor target was touched. Only call it MAX_HOLD if the
+            # FULL horizon was observed. With 1..max_hold-1 candles available the
+            # outcome is right-censored and still unknown — writing MAX_HOLD here
+            # would invent a settled result at the right edge of the data, the
+            # same defect that was fixed in _simulate_trade (Phase 2). Leave it
+            # pending; a later run resolves it once the candles exist.
+            if len(after) < max_hold_hours:
+                continue
+            outcome = "MAX_HOLD"
 
         # Same fee model as historical backtest
         _ENTRY_FEE = 0.004
@@ -386,8 +397,11 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
 
 def summarise_journal() -> None:
     """
-    Print forward OOS statistics. Folds events into per-signal outcomes,
-    groups by episode, and checks the 5-point activation criteria.
+    Print forward OOS statistics for the candidate cohort.
+
+    Folds events into per-signal outcomes and groups by episode. It reports
+    DESCRIPTIVE diagnostics only — it does not evaluate activation criteria and
+    cannot recommend enabling V3, which is retired (docs/trial_registry.md).
     """
     entries = read_journal()
     if not entries:
@@ -449,10 +463,15 @@ def summarise_journal() -> None:
     print(f"\n  Episodes ({_EPISODE_GAP_DAYS}d gap rule): {len(episodes)}")
     print(f"    Largest episode's share of gross profit: {max_ep_contribution:.0%}")
 
-    # 5-point activation criteria
-    print("\n  5-point OOS activation criteria (threshold 0.20 locked):")
-    c1 = len(closed_a) >= 20
-    c2 = pf > 1.20
+    # ── Diagnostics only — NOT activation criteria ───────────────────────────
+    # V3 ER-30 is RETIRED as an activation candidate (docs/trial_registry.md,
+    # 2026-08-09). This block used to evaluate the five pre-registered criteria
+    # and could print "ALL CRITERIA MET — V3 activation warranted", which is now
+    # a decision this journal has no authority to make. The withdrawn criteria
+    # (n>=20, PF>1.20, bootstrap>90%, friction, episode concentration) are gone;
+    # the underlying descriptive statistics remain because they are useful for
+    # understanding filter behaviour.
+    print("\n  Diagnostics (V3 is RETIRED — these cannot trigger activation):")
     try:
         import numpy as np
         from backtesting.bootstrap_analysis import _block_bootstrap_pf
@@ -463,28 +482,16 @@ def summarise_journal() -> None:
         pfs = np.asarray(pfs, dtype=float)
         valid = pfs[~np.isnan(pfs)]
         p_above = float((valid > 1.0).mean() * 100) if valid.size else float("nan")
-        c3 = p_above > 90.0
-        c3_str = f"{p_above:.1f}% > 90%"
+        p_str = f"{p_above:.1f}%"
     except Exception:
-        c3 = False
-        c3_str = "n/a (bootstrap unavailable)"
-    c4 = adj_avg > 0
-    # Boundary convention: "no single episode > 50%" means exactly 50% PASSES.
-    # oos_replay.episode_concentration uses the same <= 0.5 boundary.
-    c5 = max_ep_contribution <= 0.50
+        p_str = "n/a (bootstrap unavailable)"
 
-    for label, ok, detail in [
-        ("n >= 20 closed trades",          c1, f"{len(closed_a)}"),
-        ("PF > 1.20",                      c2, f"{pf:.3f}"),
-        ("P_bootstrap(PF>1) > 90%",       c3, c3_str),
-        ("Avg > 0% after +0.25% friction", c4, f"{adj_avg:+.2f}%"),
-        ("No episode > 50% gross profit",  c5, f"{max_ep_contribution:.0%}"),
-    ]:
-        status = "PASS" if ok else "FAIL"
-        print(f"    [{status}] {label}: {detail}")
-
-    all_pass = all([c1, c2, c3, c4, c5])
-    print(f"\n  {'=== ALL CRITERIA MET — V3 activation warranted ===' if all_pass else '--- Criteria not yet met --- keep accumulating OOS data'}")
+    print(f"    closed candidate trades : {len(closed_a)}")
+    print(f"    P_bootstrap(PF>1)       : {p_str}")
+    print(f"    avg after +0.25% friction: {adj_avg:+.2f}%")
+    print(f"    largest episode share    : {max_ep_contribution:.0%}")
+    print("\n  Reactivating V3 would require a NEW pre-registered trial ID;")
+    print("  no number printed above can authorise it.")
     print()
 
 
