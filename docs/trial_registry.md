@@ -216,11 +216,21 @@ mechanism in either direction.
 
 ### Cross-asset transfer (frozen ZEC mechanism, zero per-asset tuning — clean)
 
-| Asset | n | Avg P&L | PF | ER>=0.20 kept |
-|-------|---|---------|----|----|
-| BTC-USD (2020-09→) | 203 | -0.91% | 0.38 | PF 0.43 |
-| ETH-USD (2020-09→) | 181 | -0.89% | 0.50 | PF 0.47 |
-| SOL-USD (2022-02→) | 97 | -0.56% | 0.72 | PF 0.74 |
+> Superseded by the 2026-08-13 warm-up correction below. The figures that stood
+> here (BTC n=203 PF 0.38 from 2020-09; ETH n=181 PF 0.50; SOL n=97 PF 0.72 from
+> 2022-02) came from an un-provenanced run whose windows do not match any
+> committed artifact. Current values are in
+> `docs/research/artifacts/results.json` and are reproduced in the table below.
+
+| Asset | n | Avg P&L | PF | Window |
+|-------|---|---------|----|--------|
+| BTC-USD | 174 | -0.90% | 0.359 | 2021-03-01 → 2026-07-12 |
+| ETH-USD | 150 | -0.92% | 0.476 | 2021-03-01 → 2026-07-12 |
+| SOL-USD | 97 | -0.56% | 0.718 | 2022-01-03 → 2026-07-12 |
+| ZEC-USD | 114 | -0.62% | 0.761 | 2021-06-26 → 2026-07-12 |
+
+The "ER>=0.20 kept" column is removed: those figures have no counterpart in any
+committed artifact and cannot be regenerated from this repository.
 
 No asset, no ER bucket, no realized-vol tercile, no BB-width (compression)
 tercile, and no vm_30 direction produces a robustly positive cell for the
@@ -275,8 +285,11 @@ exchange candles (`backtesting/oos_replay.py`):
 | 2026-07-21 00:00 | 0.230 | False | STOP -3.70% |
 | 2026-07-21 13:00 | 0.230 | False | STOP -3.61% |
 
-V3-accepted so far: n=2 (of ≥20 required), both losses. No criteria decision
-yet; threshold remains locked; enforcement remains off.
+V3-accepted so far: n=2, both losses. **Diagnostic only.** There is no trade
+count that activates V3 — the "≥20 required" target and the criteria checklist
+were withdrawn on 2026-08-09 (see STATUS above). Threshold remains locked;
+enforcement remains off; no criteria decision is pending because there are no
+criteria.
 
 ### Trial count update
 
@@ -291,8 +304,104 @@ Interpret any future marginal positive accordingly.
    to completion but the continuous-window evidence predicts failure.
 2. No regime-routing layer, no agent-weighting layer, no drawdown-based
    allocation, no compression gating — all unsupported by data.
-3. Only durable positive lead: slow long-only trend following. If pursued,
-   pre-register a single config + acceptance rule BEFORE any further scans.
+3. Slow long-only trend following is **LEGACY / UNVERIFIED**, not a lead. Its
+   implementation is not in this repository, it is recorded under
+   `non_reproducible` in `docs/research/artifacts/results.json`, and its own
+   write-up notes that the profit is concentrated in 1–2 secular episodes per
+   asset — the single-episode dependence that killed V2. Pursuing it means
+   pre-registering a *replication* trial with a single frozen config, an
+   acceptance rule, and leave-one-episode-out as a primary criterion, BEFORE
+   any further scans. It is not evidence of an edge.
+
+## Trial `2026-08-warmup-semantics.v1` — warm-up correction (2026-08-13)
+
+Supersedes `2026-08-evidence-hardening.v1`. Not a new strategy and not a
+parameter change: a defect correction in how the *existing* mechanism was
+evaluated. Superseded artifacts are kept at
+`docs/research/artifacts/superseded/2026-08-evidence-hardening.v1/`.
+
+### The defect
+
+`_detect_breakout_signal` failed **open** on a missing indicator. A hard gate
+whose operand was NaN was skipped (`x is not None and x < y`), and scored inputs
+were coerced to neutral defaults (`_safe(col) or 1.0`). While an indicator was
+warming up, the bar was therefore judged by a **weaker mechanism than the config
+declares**, and no counter recorded it. The previous config compounded this by
+starting each asset's evaluation at its first candle — months before the frozen
+mechanism's 200-day daily EMA exists for ZEC and SOL.
+
+### Registered boundaries
+
+Effective start = first bar on the merged 1h grid at which every declared gate
+is evaluable. Declared in `RESEARCH_CONFIG["asset_effective_start"]` and
+drift-checked each run; ~1 day later than the daily frame's own first-valid bar
+because daily stamps are shifted +1d against look-ahead.
+
+| Asset | First cached candle | Effective start | Binding gate |
+|-------|--------------------|-----------------|--------------|
+| ZEC-USD | 2020-12-08 | **2021-06-26** | daily EMA200 |
+| BTC-USD | 2020-01-02 | 2020-07-20 | daily EMA200 (predates window) |
+| ETH-USD | 2020-01-02 | 2020-07-20 | daily EMA200 (predates window) |
+| SOL-USD | 2021-06-17 | **2022-01-03** | daily EMA200 |
+
+Excluded warm-up: ZEC 2,809 candles / 327 signals refused; SOL 4,736 / 534.
+BTC and ETH are unaffected.
+
+### Effect on headline results
+
+| Trial | Superseded | Corrected |
+|-------|-----------|-----------|
+| ZEC continuous, no filter | n=133, PF 0.855, −0.366%/trade | **n=114, PF 0.761, −0.623%/trade** |
+| ZEC continuous, integrated V3 | n=80, PF 0.691, −0.895% | **n=71, PF 0.706, −0.832%** |
+| bull_2021 | n=25, PF 1.419, +0.871% | **n=6, PF 0.960, −0.083%** |
+| bear_2022 | n=12, PF 1.413 | unchanged |
+| mid_year_holdout | n=27, PF 0.523 | unchanged |
+| recent_year | n=37, PF 1.004 | unchanged |
+| Transfer BTC / ETH | n=174 PF 0.359 / n=150 PF 0.476 | unchanged |
+| Transfer SOL | n=118, PF 0.698 | **n=97, PF 0.718, −0.564%** |
+| ZEC max DD / longest DD | −71.04% / 1564.3 d | −71.04% / 1564.3 d (unchanged) |
+
+The 19 excluded ZEC trades contributed **+22.28%** between them. The 6 trades in
+bull_2021 that the declared mechanism actually judges are net negative — **the
+entire apparent 2021 bull-window edge was produced by a span in which the
+declared daily-EMA veto could not be computed.** The "period selection"
+explanation for that window is therefore incomplete: the more direct cause is
+instrumental.
+
+SOL's corrected row (n=97, −0.56%) reproduces the pre-hardening registry figure
+exactly, confirming that the original 2026-08 pass had effectively started SOL
+after its warm-up and that the evidence-hardening config regressed this.
+
+### Conclusions — unchanged in direction, stronger in degree
+
+- V2 momentum remains unprofitable; the correction makes it **worse**
+  (−0.62%/trade vs −0.37%).
+- Integrated V3 (PF 0.706) remains worse than no filter (PF 0.761). Retirement
+  stands.
+- No asset reaches PF 1.0 under the frozen mechanism.
+- `DRY_RUN=true`, `v3_enforcement_enabled=False`, LIVE **NO-GO**.
+
+### Live-path change (deliberate)
+
+`scan_latest()` shares `_detect_breakout_signal` with the research scanner, so
+fail-closed applies live. A failed daily-candle download previously dropped the
+daily trend veto and could emit a BUY during a data outage; it now refuses and
+logs the missing inputs. Covered by `tests/test_gate_availability.py`.
+
+### Recorded, not fixed in this trial
+
+1. **`backtesting/walk_forward.py` never attached the daily frame at all**, so
+   the declared daily-EMA gate was absent for every signal on every asset — it
+   has always validated a weaker mechanism than it reports. Its loop also
+   enumerated only three blocked reasons, so `daily_trend` and `btc_regime`
+   blocks fell through and were traded. It now raises rather than reporting a
+   meaningless result. Any previously recorded walk-forward number is void.
+2. **`agents/breakout_agent.py`** carries the same `or 1.0` / `or 0.0` fallback
+   idiom. It feeds an advisory vote, not the entry gate, so it is out of scope
+   here.
+3. `requirements.txt` pins no versions, so `ta`/`pandas`/`numpy` upgrades can
+   move every number above with no artifact change.
+4. `research_runner.py --verify` is not run in CI.
 
 ### Professional review addendum (2026-08-09)
 
@@ -301,10 +410,14 @@ See `docs/research/2026-08-professional-review-addendum.md`.
 - The central continuous-window falsification is independently reproduced and
   accepted: V2 remains negative and integrated V3 remains worse. Live stays
   NO-GO; `DRY_RUN=true`.
-- The current `oos_replay.py` result is diagnostic rather than the formal OOS
+- ~~The current `oos_replay.py` result is diagnostic rather than the formal OOS
   record because it post-filters a non-enforced path. The V3 journal also
   conflates shadow enforcement acceptance with candidate acceptance and does
-  not currently close the registered accepted cohort end-to-end.
+  not currently close the registered accepted cohort end-to-end.~~
+  **RESOLVED 2026-08-09** (PR #4): `oos_replay.py` runs a real integrated path
+  with right-censoring, and `v3_journal.py` separates `candidate_accepted`,
+  `enforcement_accepted` and disposition. Recorded here as a review finding
+  that was acted on, not as a live defect.
 - The 92% underwater value is observation-weighted. A boundary-aware calendar
   audit gives approximately 97.15% through 2026-07-12; max DD remains about
   -71% for this ZEC sequence.
