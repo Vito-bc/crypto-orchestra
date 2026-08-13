@@ -318,13 +318,25 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
     view       = _build_signal_view(entries)
     resolved_ids = {e["signal_id"] for e in entries if e.get("type") == "V3_OUTCOME"}
 
+    # Only signals KNOWN not to have executed may be simulated.
+    #
+    #   blocked_elsewhere / counterfactual -> no order exists, so a simulated
+    #       outcome is the only outcome available and is honestly labelled
+    #       is_counterfactual=True.
+    #   traded  -> a real order exists; its outcome must come from actual fills.
+    #       Simulating one would fabricate P&L for a live position.
+    #   pending -> the exchange result is still unknown (e.g. SUBMITTING awaiting
+    #       reconciliation). Simulating it would settle a question the system has
+    #       not answered yet.
+    #
+    # The previous filter took every signal without an outcome, which swept in
+    # both of the latter cases.
+    _SIMULATABLE = {"blocked_elsewhere", "counterfactual"}
     to_resolve = [
         s for s in view
         if s.get("asset") == asset
-        # Any signal with no outcome yet — blocked OR candidate-accepted but
-        # never traded. Restricting this to blocked signals is what left part of
-        # the candidate cohort permanently unresolved.
         and s.get("outcome") is None
+        and s.get("disposition") in _SIMULATABLE
         and s["signal_id"] not in resolved_ids
     ]
 

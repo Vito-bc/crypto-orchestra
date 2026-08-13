@@ -938,34 +938,27 @@ def test_persistence_failure_does_not_block_entry():
 # 9. Research disposition must reflect the ORDER, not the returned action
 # ---------------------------------------------------------------------------
 
-def test_settle_disposition_is_first_write_wins():
+def test_first_write_wins_is_covered_by_integration_not_reimplementation():
     """
-    After a successful limit order the decision is deliberately downgraded to
-    HOLD (the live action is the resting order). Inferring the disposition from
-    TradeDecision.action therefore recorded a PLACED order as blocked_elsewhere.
-    The settler must keep the first, authoritative value.
+    The first-write-wins behaviour is asserted END TO END in
+    tests/test_disposition_integration.py, which drives the real run_pipeline.
+
+    An earlier version of this test re-implemented the settler inside the test
+    body and asserted against its own copy. That proves nothing about
+    production: it passed while the real DRY_RUN path was raising
+    UnboundLocalError. This placeholder documents where the real coverage lives
+    so the reimplementation is not reintroduced.
     """
-    from unittest.mock import patch
+    from pathlib import Path
 
-    calls: list[tuple[str, str]] = []
-
-    with patch("pipeline.v3_journal.log_disposition",
-               side_effect=lambda sid, d: calls.append((sid, d))):
-        journal = {"sid": "SIG-1", "settled": False}
-
-        def settle(disposition: str) -> None:
-            if journal["sid"] is None or journal["settled"]:
-                return
-            from pipeline.v3_journal import log_disposition
-            log_disposition(journal["sid"], disposition)
-            journal["settled"] = True
-
-        settle("traded")                 # placement branch, before downgrade
-        settle("blocked_elsewhere")      # catch-all after action became HOLD
-
-    assert calls == [("SIG-1", "traded")], (
-        f"first write must win; got {calls}"
+    integration = Path(__file__).parent / "test_disposition_integration.py"
+    assert integration.exists(), "the integration coverage must exist"
+    body = integration.read_text(encoding="utf-8")
+    assert "runner.run_pipeline(" in body, (
+        "disposition coverage must exercise the real pipeline, not a copy"
     )
+    assert "test_dry_run_successful_placement_does_not_raise" in body
+    assert "test_submitting_stays_pending" in body
 
 
 def test_runner_does_not_infer_disposition_from_decision_action():

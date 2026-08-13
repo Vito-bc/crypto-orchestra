@@ -7,6 +7,30 @@ the OOS replay, V3 journal, or equity-duration metrics are treated as formal
 validation records. This research branch also predates the latest main/safety
 hardening and must not be used as a deployment base.
 
+> ## ⚠️ Reproducibility status (added 2026-08-09)
+>
+> Only part of this document can be regenerated from committed code. The
+> deterministic runner `backtesting/research_runner.py` reproduces, and pins in
+> `docs/research/artifacts/results.json`:
+>
+> - the continuous-window ZEC result (PF 0.86) and the integrated V3 comparison
+>   (PF 0.69);
+> - the four registry windows (25 / 12 / 27 / 37 closed trades);
+> - the zero-tuning transfer test under the frozen ZEC mechanism;
+> - ER-30 and VM-30 regime cells;
+> - the equity/drawdown metrics.
+>
+> **LEGACY / UNVERIFIED — no implementation exists in this repository:**
+> mean reversion, slow/trend following, LLM agent-vote IC, drawdown-conditional
+> allocation, and the realised-vol / Bollinger-bandwidth regime cells. Their
+> numbers below cannot be regenerated, are recorded under `non_reproducible` in
+> the artifact, and **must not be cited in a decision**. Do not re-derive them
+> from memory — recover the original implementation or run a new, explicitly
+> pre-registered replication trial with one frozen configuration.
+>
+> Where this document calls a probe "positive" (e.g. slow trend following), read
+> that as an unverified historical note, not as evidence of an edge.
+
 Scope: full re-validation of the frozen V2/V3 momentum strategy, an
 asset × regime edge matrix, structural hypothesis tests (regime routing,
 strategy families, agent ensemble value, drawdown-conditional allocation,

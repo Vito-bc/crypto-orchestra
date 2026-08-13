@@ -744,9 +744,15 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
         try:
             from pipeline.v3_journal import log_disposition
             log_disposition(_journal["sid"], disposition)
-            _journal["settled"] = True
         except Exception:
             pass
+        finally:
+            # Mark settled even on failure. A later call would be the CATCH-ALL,
+            # which knows less: retrying it after a failed "traded" write would
+            # record a placed order as blocked_elsewhere. Losing the disposition
+            # (it stays pending, and the resolver leaves pending alone) is honest;
+            # replacing it with a wrong value is not.
+            _journal["settled"] = True
 
     # Idempotency: a 30-minute scheduler may call run_pipeline() twice for the
     # same closed hourly candle. Atomically claim the signal before any processing.
@@ -1017,6 +1023,10 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                         _order_target   = order.target_price
                         _order_reasoning = order.reasoning
                         _notify_order   = order  # PendingOrder for Telegram formatter
+                        # A simulated placement succeeded. This MUST be set: the
+                        # status is read below, and the pre-existing reader only
+                        # survived because `_is_dry_run() or ...` short-circuits.
+                        _result_status  = "OPEN"
                     else:
                         from pipeline.outbox import place_order_outbox, PlacementBlocked
                         from types import SimpleNamespace as _NS
@@ -1065,14 +1075,21 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                     # ── Status-aware log + notification ───────────────────
                     # Settle the research disposition from the ACTUAL placement
                     # status, before the decision is downgraded to HOLD below.
-                    # OPEN  = order resting at the exchange.
-                    # SUBMITTING = durable intent recorded, exchange outcome
-                    #   unknown; the reconciler resolves it. Either way an order
-                    #   attempt exists, so it is not "blocked_elsewhere".
-                    # REJECTED = Coinbase refused; no order exists.
-                    _settle_disposition(
-                        "blocked_elsewhere" if _result_status == "REJECTED" else "traded"
-                    )
+                    #   OPEN       -> traded. The order is resting at the exchange.
+                    #   REJECTED   -> blocked_elsewhere. Coinbase refused; no order.
+                    #   SUBMITTING -> stays PENDING. The exchange outcome is
+                    #                 genuinely unknown — TX-A committed but TX-B
+                    #                 did not — and the startup reconciler decides
+                    #                 it later. Calling it "traded" would assert a
+                    #                 live order that may not exist. It is marked
+                    #                 handled so the catch-all cannot downgrade it
+                    #                 to blocked_elsewhere either.
+                    if _result_status == "SUBMITTING":
+                        _journal["settled"] = True      # leave the journal pending
+                    else:
+                        _settle_disposition(
+                            "blocked_elsewhere" if _result_status == "REJECTED" else "traded"
+                        )
                     dist_str = f"{dist:.1f}x ATR away" if dist else "at support"
                     if _is_dry_run() or _result_status == "OPEN":
                         print(f"[LimitOrder] PLACED #{_order_id} — limit ${support:,.2f}  "

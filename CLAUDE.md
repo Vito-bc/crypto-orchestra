@@ -143,8 +143,12 @@ Immediate implementation brief:
    activation record until integrated-path and cohort/outcome semantics are fixed.
 2. Correct equity calendar-duration accounting and commit reproducible research
    runners plus data/result manifests.
-3. If pursuing a new edge: pre-register a slow trend-following trial (the only
-   family probe that wasn't structurally negative — see registry 2026-08-09)
+3. If pursuing a new edge: a slow trend-following trial would have to be
+   pre-registered from scratch. The earlier "positive on all four assets"
+   result is **LEGACY / UNVERIFIED** — its implementation is not in this
+   repository, so it cannot be regenerated and is recorded under
+   `non_reproducible` in `docs/research/artifacts/results.json`. It is not
+   evidence that this family is promising; it is an unverified note.
 4. Run LLM agents on scanner events rather than hourly until an ablation shows
    measurable incremental value.
 5. n8n pipeline for visual automation (good for portfolio/resume)

@@ -169,6 +169,11 @@ _CODE_PATHS = [
     "backtesting/signal_scanner.py",
     "backtesting/equity_report.py",
     "backtesting/oos_replay.py",
+    # The scanner executes these too, so a change in either can move results
+    # without moving the stamp. Indicator construction and the candle loader are
+    # as much a part of the computation as the scan loop itself.
+    "backtesting/backtest.py",
+    "exchange/coinbase_candles.py",
 ]
 
 
@@ -329,6 +334,10 @@ def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool,
         "asset": asset, "start": start, "end": end,
         "v3_enforcement": v3_enforcement,
         "mechanism": res.get("mechanism"),
+        # The parameters ACTUALLY used. Dropping these hid the max_hold leak:
+        # a row could claim mechanism="override" while still running the asset's
+        # own hold window.
+        "mechanism_params": res.get("mechanism_params"),
         "n_signals": len(sigs),
         "n_closed": len(closed),
         "n_pending": len(sigs) - len(closed),
