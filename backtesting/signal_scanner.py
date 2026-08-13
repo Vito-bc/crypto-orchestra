@@ -186,7 +186,10 @@ ASSET_CONFIG = {
         # v3_enforcement_enabled — False = shadow/research only (log v3_would_block but
         #   don't block trades).
         #   V3 ER-30 is RETIRED as an activation candidate (2026-08-09): integrated
-        #   enforcement made the continuous window worse (PF 0.69 vs 0.86 without).
+        #   enforcement makes the continuous window worse — PF 0.706 with V3 vs
+        #   0.761 without (trial 2026-08-warmup-semantics.v1). The earlier
+        #   0.69-vs-0.86 pair measured a different mechanism and lives only in
+        #   docs/research/artifacts/superseded/.
         #   This stays False; the former activation criteria are withdrawn. Turning it
         #   on requires a NEW pre-registered trial ID — see docs/trial_registry.md.
         #   v3_candidate_threshold below is retained as historical trial metadata only.

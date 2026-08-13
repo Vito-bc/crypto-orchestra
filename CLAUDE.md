@@ -4,9 +4,16 @@ Project context for AI assistants. Read this before touching any file.
 
 ## What This Is
 
-A multi-agent AI trading system running live on Coinbase Advanced Trade.
-Seven Claude sub-agents analyze BTC, ETH, SOL, ZEC every 60 minutes and place
-limit orders at support levels. Real money is live ($100 allocated).
+A multi-agent AI trading system **designed for** Coinbase Advanced Trade live
+trading, but **currently restricted to `DRY_RUN` / paper-shadow mode. No
+real-money trading is authorized.** Seven Claude sub-agents analyze BTC, ETH,
+SOL, ZEC every 60 minutes and produce limit-order decisions; in the current mode
+those orders are simulated, not placed.
+
+`LIVE_BALANCE_USD=100` is the *cap* that would apply if live trading were ever
+authorized — it is not evidence that money is at risk today. Going live requires
+an explicit decision that the research does not currently support: see
+"Validation Status" below, where the verdict is **LIVE NO-GO**.
 
 **Owner:** NYC-based, Coinbase Advanced Trade account.
 

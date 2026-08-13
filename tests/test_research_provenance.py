@@ -66,7 +66,7 @@ def test_manifest_hashes_every_input() -> None:
     for inp in m["inputs"]:
         assert len(inp["sha256"]) == 64, f"{inp['file']}: not a SHA-256"
         assert inp["rows"] > 0
-        assert inp["min_ts"] < inp["max_ts"]
+        assert _utc(inp["min_ts"]) < _utc(inp["max_ts"])
 
 
 def test_manifest_records_evaluation_boundaries() -> None:
@@ -241,14 +241,14 @@ def test_warmup_exclusion_window_is_half_open() -> None:
             assert e["excluded_candles"] == 0
             continue
         eff = declared[e["asset"]]
-        assert e["window"]["end"] < eff, (
+        assert _utc(e["window"]["end"]) < _utc(eff), (
             f"{e['asset']} warm-up ends at {e['window']['end']}, not strictly "
             f"before the effective start {eff}"
         )
         assert e["window"]["interval"] == "[requested_start, effective_start)"
         last = e.get("last_excluded_signal_ts")
         if last is not None:
-            assert last < eff, (
+            assert _utc(last) < _utc(eff), (
                 f"{e['asset']} excluded a signal at {last}, at or past {eff}"
             )
 
@@ -281,13 +281,14 @@ def test_effective_boundaries_are_registered_and_explain_the_clipping() -> None:
         assert by_asset[asset]["per_gate_first_valid"]["daily_trend"]
 
     # ZEC and SOL are the two assets whose daily EMA200 postdates their listing.
-    assert declared["ZEC-USD"] > m["config"]["asset_listing_start"]["ZEC-USD"]
-    assert declared["SOL-USD"] > m["config"]["asset_listing_start"]["SOL-USD"]
+    listing = m["config"]["asset_listing_start"]
+    assert _utc(declared["ZEC-USD"]) > _utc(listing["ZEC-USD"])
+    assert _utc(declared["SOL-USD"]) > _utc(listing["SOL-USD"])
 
     for row in r["rows"]:
         if "effective_start" not in row:
             continue
-        assert row["start"] >= declared[row["asset"]], (
+        assert _utc(row["start"]) >= _utc(declared[row["asset"]]), (
             f"{row['trial']} starts before its registered boundary"
         )
 

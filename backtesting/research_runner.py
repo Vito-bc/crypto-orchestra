@@ -602,7 +602,11 @@ def run_results(manifest: Optional[dict] = None) -> dict:
         for a in cfg["assets"]:
             for name in cfg["period_names"]:
                 p = PERIODS[name]
-                if effective_start(a, p["start"]) >= p["end"]:
+                # Instants, not strings: effective_start() returns a full ISO
+                # stamp and p["end"] is a bare date, so text comparison is the
+                # same defect class that mis-set the clip flag. Correct on
+                # today's dates, wrong the moment a boundary carries a time.
+                if _as_utc(effective_start(a, p["start"])) >= _as_utc(p["end"]):
                     # The mechanism is not evaluable anywhere inside this window
                     # for this asset — emit nothing rather than a cell whose
                     # label promises a window it never scanned. The clip is only
