@@ -317,6 +317,81 @@ def gate_input_columns(cfg: dict, *, btc_regime_applicable: bool) -> dict[str, l
     return cols
 
 
+def build_merged_frame(asset: str, warmup: str, end: str, asset_cfg: dict, *,
+                       btc_regime_applicable: bool
+                       ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """
+    Assemble the 1h frame with 4h and daily context merged on, exactly as the
+    scanner evaluates it. Extracted so that gate availability is measured on the
+    same frame the gates are read from — measuring it anywhere else answers a
+    different question.
+
+    Returns (merged_1h, daily) — the daily frame is handed back because the
+    regime metrics are computed from it directly, not from the merged columns.
+    """
+    sig_df   = _download_and_compute(asset, warmup, end, "1h")
+    trend_df = _download_and_compute(asset, warmup, end, "4h")
+    # Daily data reaches back to _DAILY_HISTORY_START, but only as far as the
+    # asset's listing date, so for a recently listed asset the daily EMA is still
+    # NaN for its first ~200 days. That is precisely why the gates fail closed
+    # and why a registered run declares an effective_start.
+    daily_df = _download_and_compute(asset, _DAILY_HISTORY_START, end, "1d")
+    if sig_df is None or trend_df is None:
+        return None, daily_df
+
+    df = attach_higher_timeframe_context(sig_df, trend_df)
+    if daily_df is not None:
+        df = _attach_daily_context(df, daily_df)
+    # merge_asof returns integer index — restore DatetimeIndex from the "time" column
+    if "time" in df.columns:
+        df.index = pd.to_datetime(df["time"], utc=True)
+
+    if btc_regime_applicable:
+        # Same daily history start as the asset's own daily frame. This used to
+        # be hardcoded to "2022-01-01", which left the column NaN for every
+        # pre-2022 bar. Under the old fail-open rule that silently dropped the
+        # gate; under fail-closed it would refuse every pre-2022 signal instead.
+        # Neither is the declared mechanism — so make the input actually cover
+        # the window rather than choosing which wrong answer to give.
+        btc_daily = _download_and_compute("BTC-USD", _DAILY_HISTORY_START, end, "1d")
+        if btc_daily is not None:
+            btc_regime_cols = btc_daily[["time", "close", "ema50"]].copy()
+            btc_regime_cols = btc_regime_cols.rename(
+                columns={"close": "btc_close_1d", "ema50": "btc_ema50_1d"}
+            )
+            _bt_dtype = btc_regime_cols["time"].dtype
+            btc_regime_cols["time"] = (
+                btc_regime_cols["time"] + pd.Timedelta(days=1)
+            ).astype(_bt_dtype)
+            # reset_index so "time" is unambiguously a column (not also the index)
+            df = pd.merge_asof(
+                df.reset_index(drop=True).sort_values("time"),
+                btc_regime_cols.sort_values("time"),
+                on="time",
+                direction="backward",
+            )
+            df.index = pd.to_datetime(df["time"], utc=True)
+    return df, daily_df
+
+
+def asset_gate_availability(asset: str, asset_cfg: dict, end: str) -> dict:
+    """
+    Canonical, warmup-independent gate availability for one asset+mechanism.
+
+    Built over the asset's FULL history, so the answer does not move when a
+    caller happens to pass a later warmup. This is the value a research run
+    registers and drift-checks; measuring it off a short-warmup frame would make
+    the declared boundary a function of the caller.
+    """
+    btc_applicable = (asset != "BTC-USD"
+                      and bool(asset_cfg.get("btc_regime_filter", False)))
+    df, _ = build_merged_frame(asset, _DAILY_HISTORY_START, end, asset_cfg,
+                               btc_regime_applicable=btc_applicable)
+    if df is None:
+        raise StrictSourceError(f"cannot build merged frame for {asset}")
+    return gate_availability(df, asset_cfg, btc_regime_applicable=btc_applicable)
+
+
 def gate_availability(df: pd.DataFrame, cfg: dict, *,
                       btc_regime_applicable: bool) -> dict:
     """
@@ -770,26 +845,6 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
     """
     print(f"\n  Downloading {asset} data (warmup from {period['warmup']})...")
 
-    sig_df   = _download_and_compute(asset, period["warmup"], period["end"], "1h")
-    trend_df = _download_and_compute(asset, period["warmup"], period["end"], "4h")
-    # Daily data: extend warmup far back so EMA200 (200 trading days ≈ 10 months)
-    # is valid. This only reaches as far back as the asset's listing date, so for
-    # an asset listed close to the window start the daily EMA is still NaN for
-    # its first ~200 days — that is exactly why the gates fail closed and why the
-    # runner registers an effective_start. See gate_availability().
-    daily_df = _download_and_compute(asset, _DAILY_HISTORY_START, period["end"], "1d")
-
-    if sig_df is None or trend_df is None:
-        print(f"  {asset}: no data")
-        return {}
-
-    df       = attach_higher_timeframe_context(sig_df, trend_df)
-    if daily_df is not None:
-        df = _attach_daily_context(df, daily_df)
-    # merge_asof returns integer index — restore DatetimeIndex from the "time" column
-    if "time" in df.columns:
-        df.index = pd.to_datetime(df["time"], utc=True)
-
     config     = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
     asset_cfg  = (dict(config_override) if config_override is not None
                   else ASSET_CONFIG.get(asset, ASSET_CONFIG["ZEC-USD"]))
@@ -810,32 +865,12 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
     # missing column refuses a signal.
     btc_regime_applicable = (asset != "BTC-USD"
                              and bool(asset_cfg.get("btc_regime_filter", False)))
-    if btc_regime_applicable:
-        # Same daily history start as the asset's own daily frame. This used to
-        # be hardcoded to "2022-01-01", which left the column NaN for every
-        # pre-2022 bar. Under the old fail-open rule that silently dropped the
-        # gate; under fail-closed it would refuse every pre-2022 signal instead.
-        # Neither is the declared mechanism — so make the input actually cover
-        # the window rather than choosing which wrong answer to give.
-        btc_daily = _download_and_compute("BTC-USD", _DAILY_HISTORY_START,
-                                          period["end"], "1d")
-        if btc_daily is not None:
-            btc_regime_cols = btc_daily[["time", "close", "ema50"]].copy()
-            btc_regime_cols = btc_regime_cols.rename(
-                columns={"close": "btc_close_1d", "ema50": "btc_ema50_1d"}
-            )
-            _bt_dtype = btc_regime_cols["time"].dtype
-            btc_regime_cols["time"] = (
-                btc_regime_cols["time"] + pd.Timedelta(days=1)
-            ).astype(_bt_dtype)
-            # reset_index so "time" is unambiguously a column (not also the index)
-            df = pd.merge_asof(
-                df.reset_index(drop=True).sort_values("time"),
-                btc_regime_cols.sort_values("time"),
-                on="time",
-                direction="backward",
-            )
-            df.index = pd.to_datetime(df["time"], utc=True)
+    df, daily_df = build_merged_frame(
+        asset, period["warmup"], period["end"], asset_cfg,
+        btc_regime_applicable=btc_regime_applicable)
+    if df is None:
+        print(f"  {asset}: no data")
+        return {}
 
     # Slice to the actual replay window (after warmup)
     start_ts  = pd.Timestamp(period["start"], tz="UTC")
