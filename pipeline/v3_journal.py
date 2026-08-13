@@ -53,14 +53,47 @@ def _write(record: dict) -> None:
         f.write(json.dumps(record, default=str) + "\n")
 
 
-def log_v2_signal(*, scanner_signal: dict, accepted: bool) -> str:
+def log_v2_signal(*, scanner_signal: dict, accepted: bool,
+                  disposition: str | None = None) -> str:
     """
     Log a scanner signal at fire time (before any trade is placed).
     Returns the stable signal_id.
+
+    Three DISTINCT concepts are recorded, because conflating them is what made
+    the old cohort statistics wrong:
+
+      candidate_accepted   — would V3 have let this through? (not v3_would_block)
+                             This defines the research COHORT and is independent
+                             of whether enforcement was on or a trade happened.
+      enforcement_accepted — did V3 actually let it through at runtime?
+                             (not v3_blocked). With enforcement off this is
+                             always True, which is why it must not be used as
+                             the cohort.
+      disposition          — what actually happened downstream: "traded",
+                             "blocked_elsewhere" (circuit breaker, entry filter,
+                             exposure gate...), "counterfactual", or "pending"
+                             when the signal is logged before the outcome of the
+                             execution path is known.
+
+    NOTE on "pending": this function runs at signal time, BEFORE the runner
+    decides whether to place an order, so at that moment the only honest values
+    are "counterfactual" (V3 enforcement blocked it outright) or "pending".
+    Recording "traded" here would assert a fill that may never happen. Call
+    log_disposition() once the execution path resolves.
+
+    `accepted` is retained for backward compatibility with existing rows and
+    mirrors enforcement_accepted.
     """
     asset        = scanner_signal["asset"]
     candle_close = scanner_signal["entry_time"]
     signal_id    = f"{asset}:{candle_close}:v3"
+
+    v3_would_block = bool(scanner_signal.get("v3_would_block", False))
+    v3_blocked     = bool(scanner_signal.get("v3_blocked", False))
+    if disposition is None:
+        # Honest default: V3-blocked is settled ("counterfactual"); anything else
+        # is not yet decided at signal time.
+        disposition = "pending" if accepted else "counterfactual"
 
     record: dict = {
         "type":                    "V3_SIGNAL",
@@ -80,12 +113,42 @@ def log_v2_signal(*, scanner_signal: dict, accepted: bool) -> str:
         "ema200_valid":            scanner_signal.get("ema200_valid"),
         "n_daily_bars":            scanner_signal.get("n_daily_bars"),
         "v3_candidate_threshold":  scanner_signal.get("v3_candidate_threshold"),
-        "v3_would_block":          scanner_signal.get("v3_would_block", False),
+        "v3_would_block":          v3_would_block,
         "v3_enforcement":          scanner_signal.get("v3_enforcement", False),
+        # Three separate concepts — see the docstring.
+        "candidate_accepted":      not v3_would_block,
+        "enforcement_accepted":    not v3_blocked,
+        "disposition":             disposition,
+        # Backward-compatible mirror of enforcement_accepted.
         "accepted":                accepted,
     }
     _write(record)
     return signal_id
+
+
+_VALID_DISPOSITIONS = {"traded", "blocked_elsewhere", "counterfactual", "pending"}
+
+
+def log_disposition(signal_id: str, disposition: str) -> None:
+    """
+    Record what the execution path finally did with a signal.
+
+    Append-only, like everything else here. The folded view takes the LAST
+    non-pending disposition for a signal, so a later "traded" supersedes the
+    "pending" written at signal time.
+
+    Research metadata only — this never influences an order decision.
+    """
+    if disposition not in _VALID_DISPOSITIONS:
+        raise ValueError(
+            f"disposition must be one of {sorted(_VALID_DISPOSITIONS)}, got {disposition!r}"
+        )
+    _write({
+        "type":          "V3_DISPOSITION",
+        "logged_at_utc": datetime.now(timezone.utc).isoformat(),
+        "signal_id":     signal_id,
+        "disposition":   disposition,
+    })
 
 
 def log_outcome(signal_id: str, outcome: str, pnl_pct: float, *, is_counterfactual: bool = False) -> None:
@@ -124,18 +187,25 @@ def _build_signal_view(entries: list[dict]) -> list[dict]:
     """
     signals:  dict[str, dict] = {}
     outcomes: dict[str, dict] = {}
+    dispositions: dict[str, str] = {}
     for e in entries:
         if e.get("type") == "V3_SIGNAL":
             signals[e["signal_id"]] = dict(e)
+        elif e.get("type") == "V3_DISPOSITION":
+            # Last non-pending disposition wins: the execution path resolving
+            # supersedes the "pending" written at signal time.
+            if e.get("disposition") != "pending":
+                dispositions[e["signal_id"]] = e["disposition"]
         elif e.get("type") == "V3_OUTCOME":
             sid = e["signal_id"]
-            # Last outcome wins if there are duplicates (resolver idempotency)
-            outcomes[sid] = e
+            prev = outcomes.get(sid)
+            if prev is None or _outcome_precedence(e) > _outcome_precedence(prev):
+                outcomes[sid] = e
 
     result = []
     for sid, sig in signals.items():
+        sig = dict(sig)
         if sid in outcomes:
-            sig = dict(sig)
             sig["outcome"]           = outcomes[sid]["outcome"]
             sig["pnl_pct"]           = outcomes[sid]["pnl_pct"]
             sig["is_counterfactual"] = outcomes[sid].get("is_counterfactual", False)
@@ -143,10 +213,51 @@ def _build_signal_view(entries: list[dict]) -> list[dict]:
             sig["outcome"]           = None
             sig["pnl_pct"]           = None
             sig["is_counterfactual"] = None
+
+        # ── Backward-compatible cohort derivation ────────────────────────────
+        # Rows written before the three-way split have only `accepted`. Derive
+        # the cohort from v3_would_block, which those rows do carry.
+        if "candidate_accepted" not in sig:
+            sig["candidate_accepted"] = not bool(sig.get("v3_would_block", False))
+        if "enforcement_accepted" not in sig:
+            sig["enforcement_accepted"] = bool(sig.get("accepted", True))
+        if "disposition" not in sig:
+            # Legacy rows: `accepted` was the only signal-time field.
+            sig["disposition"] = (
+                "pending" if sig.get("accepted", True) else "counterfactual"
+            )
+        # A later V3_DISPOSITION event supersedes the signal-time value.
+        if sid in dispositions:
+            sig["disposition"] = dispositions[sid]
         result.append(sig)
 
     result.sort(key=lambda s: s.get("candle_close", ""))
     return result
+
+
+def _outcome_precedence(outcome: dict) -> tuple:
+    """
+    Deterministic ordering for duplicate V3_OUTCOME events for one signal.
+
+    "Last one in the file wins" made the result depend on append order, so a
+    replayed counterfactual could silently overwrite a real fill, and two runs
+    over reordered input could disagree. Precedence is now explicit and total:
+
+      1. an ACTUAL outcome always beats a counterfactual;
+      2. within the same kind, the EARLIEST logged_at_utc wins, so re-running
+         the resolver is idempotent and never rewrites settled history.
+    """
+    is_cf = bool(outcome.get("is_counterfactual", False))
+    # Higher tuple sorts higher: actual (1) > counterfactual (0).
+    # Earlier timestamp must win, so negate by using reverse-sortable string.
+    stamp = str(outcome.get("logged_at_utc", ""))
+    return (0 if is_cf else 1, _invert_stamp(stamp))
+
+
+def _invert_stamp(stamp: str) -> tuple:
+    """Sort key that makes an EARLIER timestamp compare greater."""
+    # Compare on the negated ordinal of each char so "2026-01" > "2026-02".
+    return tuple(-ord(c) for c in stamp)
 
 
 # ── Episode grouping ──────────────────────────────────────────────────────────
@@ -181,9 +292,19 @@ def _group_episodes(signals: list[dict]) -> list[list[dict]]:
 
 def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
     """
-    Compute outcomes for blocked signals (counterfactuals) that are still PENDING.
-    Uses the Coinbase parquet cache — requires data from candle_close onwards.
+    Resolve every still-PENDING shadow signal counterfactually.
 
+    This deliberately covers ALL untraded signals, not just V3-blocked ones. The
+    old filter was `not accepted`, which left candidate-accepted signals that
+    were never traded (blocked by a circuit breaker, entry filter, or exposure
+    gate, or simply never placed) unresolved forever. Those signals are part of
+    the candidate cohort, so omitting them biased candidate statistics towards
+    whichever signals happened to reach the exchange.
+
+    Signals with a real, already-recorded outcome are never overwritten: a
+    counterfactual can never displace an actual fill (see _outcome_precedence).
+
+    Uses the Coinbase parquet cache — requires data from candle_close onwards.
     Returns the number of outcomes filled in.
     """
     from exchange.coinbase_candles import download as _cb_download
@@ -197,11 +318,25 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
     view       = _build_signal_view(entries)
     resolved_ids = {e["signal_id"] for e in entries if e.get("type") == "V3_OUTCOME"}
 
+    # Only signals KNOWN not to have executed may be simulated.
+    #
+    #   blocked_elsewhere / counterfactual -> no order exists, so a simulated
+    #       outcome is the only outcome available and is honestly labelled
+    #       is_counterfactual=True.
+    #   traded  -> a real order exists; its outcome must come from actual fills.
+    #       Simulating one would fabricate P&L for a live position.
+    #   pending -> the exchange result is still unknown (e.g. SUBMITTING awaiting
+    #       reconciliation). Simulating it would settle a question the system has
+    #       not answered yet.
+    #
+    # The previous filter took every signal without an outcome, which swept in
+    # both of the latter cases.
+    _SIMULATABLE = {"blocked_elsewhere", "counterfactual"}
     to_resolve = [
         s for s in view
         if s.get("asset") == asset
-        and not s.get("accepted", True)          # blocked signal
-        and s.get("outcome") is None             # no outcome yet
+        and s.get("outcome") is None
+        and s.get("disposition") in _SIMULATABLE
         and s["signal_id"] not in resolved_ids
     ]
 
@@ -232,7 +367,7 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
         target_price = entry_price + atr_target * float(atr_val)
 
         # Simulate: scan bars sequentially, check stop and target
-        outcome = "MAX_HOLD"
+        outcome = None
         exit_price = float(after.iloc[-1]["close"])
         for _, bar in after.iterrows():
             lo = float(bar["low"])
@@ -245,6 +380,17 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
                 outcome    = "WIN"
                 exit_price = target_price
                 break
+
+        if outcome is None:
+            # Neither stop nor target was touched. Only call it MAX_HOLD if the
+            # FULL horizon was observed. With 1..max_hold-1 candles available the
+            # outcome is right-censored and still unknown — writing MAX_HOLD here
+            # would invent a settled result at the right edge of the data, the
+            # same defect that was fixed in _simulate_trade (Phase 2). Leave it
+            # pending; a later run resolves it once the candles exist.
+            if len(after) < max_hold_hours:
+                continue
+            outcome = "MAX_HOLD"
 
         # Same fee model as historical backtest
         _ENTRY_FEE = 0.004
@@ -263,8 +409,11 @@ def reconcile_pending(asset: str = "ZEC-USD", max_hold_hours: int = 36) -> int:
 
 def summarise_journal() -> None:
     """
-    Print forward OOS statistics. Folds events into per-signal outcomes,
-    groups by episode, and checks the 5-point activation criteria.
+    Print forward OOS statistics for the candidate cohort.
+
+    Folds events into per-signal outcomes and groups by episode. It reports
+    DESCRIPTIVE diagnostics only — it does not evaluate activation criteria and
+    cannot recommend enabling V3, which is retired (docs/trial_registry.md).
     """
     entries = read_journal()
     if not entries:
@@ -272,17 +421,41 @@ def summarise_journal() -> None:
         return
 
     view = _build_signal_view(entries)
-    accepted = [s for s in view if s.get("accepted")]
-    blocked  = [s for s in view if not s.get("accepted")]
+    # COHORT = candidate_accepted (would V3 have let it through), NOT `accepted`
+    # (did a trade actually happen). With enforcement off every signal is
+    # "accepted", so the old field made the cohort meaningless.
+    accepted = [s for s in view if s.get("candidate_accepted")]
+    blocked  = [s for s in view if not s.get("candidate_accepted")]
     closed_a = [s for s in accepted if s.get("pnl_pct") is not None]
     closed_b = [s for s in blocked  if s.get("pnl_pct") is not None]
 
+    # Four SEPARATE counters. Reporting "everything that is not traded or
+    # blocked_elsewhere" as counterfactual silently turned PENDING back into a
+    # settled state — the exact conflation the disposition split exists to end.
+    # counterfactual = V3 blocked it, outcome simulated.
+    # pending        = outcome genuinely unknown (e.g. SUBMITTING awaiting
+    #                  reconciliation). It is NOT a counterfactual.
+    n_by = {"traded": 0, "blocked_elsewhere": 0, "counterfactual": 0, "pending": 0}
+    n_other = 0
+    for s in view:
+        d = s.get("disposition")
+        if d in n_by:
+            n_by[d] += 1
+        else:
+            n_other += 1
+
     print(f"\nV3 Forward OOS Journal — {len(view)} signals total")
-    print(f"  Accepted  : {len(accepted)} ({len(closed_a)} closed)")
-    print(f"  Blocked   : {len(blocked)} shadow ({len(closed_b)} resolved)")
+    print("  (V3 is RETIRED as an activation candidate — diagnostic only)")
+    print(f"  Candidate-accepted : {len(accepted)} ({len(closed_a)} closed)")
+    print(f"  Candidate-blocked  : {len(blocked)} shadow ({len(closed_b)} resolved)")
+    print(f"  Disposition        : {n_by['traded']} traded, "
+          f"{n_by['blocked_elsewhere']} blocked elsewhere, "
+          f"{n_by['counterfactual']} counterfactual, "
+          f"{n_by['pending']} pending"
+          + (f", {n_other} unknown" if n_other else ""))
 
     if not closed_a:
-        print("\n  No closed accepted trades yet.")
+        print("\n  No closed candidate-accepted trades yet.")
         return
 
     wins   = [s for s in closed_a if s["pnl_pct"] > 0]
@@ -316,35 +489,35 @@ def summarise_journal() -> None:
     print(f"\n  Episodes ({_EPISODE_GAP_DAYS}d gap rule): {len(episodes)}")
     print(f"    Largest episode's share of gross profit: {max_ep_contribution:.0%}")
 
-    # 5-point activation criteria
-    print("\n  5-point OOS activation criteria (threshold 0.20 locked):")
-    c1 = len(closed_a) >= 20
-    c2 = pf > 1.20
+    # ── Diagnostics only — NOT activation criteria ───────────────────────────
+    # V3 ER-30 is RETIRED as an activation candidate (docs/trial_registry.md,
+    # 2026-08-09). This block used to evaluate the five pre-registered criteria
+    # and could print "ALL CRITERIA MET — V3 activation warranted", which is now
+    # a decision this journal has no authority to make. The withdrawn criteria
+    # (n>=20, PF>1.20, bootstrap>90%, friction, episode concentration) are gone;
+    # the underlying descriptive statistics remain because they are useful for
+    # understanding filter behaviour.
+    print("\n  Diagnostics (V3 is RETIRED — these cannot trigger activation):")
     try:
         import numpy as np
         from backtesting.bootstrap_analysis import _block_bootstrap_pf
         pfs = _block_bootstrap_pf([s["pnl_pct"] for s in closed_a], block_size=4, n_iter=10_000)
-        p_above = float((pfs[np.isfinite(pfs)] > 1.0).mean() * 100)
-        c3 = p_above > 90.0
-        c3_str = f"{p_above:.1f}% > 90%"
+        # An all-win resample has PF = inf, which IS greater than 1 and must
+        # count as a hit. Filtering to isfinite() dropped those samples from the
+        # DENOMINATOR too, biasing the probability down in the favourable tail.
+        pfs = np.asarray(pfs, dtype=float)
+        valid = pfs[~np.isnan(pfs)]
+        p_above = float((valid > 1.0).mean() * 100) if valid.size else float("nan")
+        p_str = f"{p_above:.1f}%"
     except Exception:
-        c3 = False
-        c3_str = "n/a (bootstrap unavailable)"
-    c4 = adj_avg > 0
-    c5 = max_ep_contribution < 0.50
+        p_str = "n/a (bootstrap unavailable)"
 
-    for label, ok, detail in [
-        ("n >= 20 closed trades",          c1, f"{len(closed_a)}"),
-        ("PF > 1.20",                      c2, f"{pf:.3f}"),
-        ("P_bootstrap(PF>1) > 90%",       c3, c3_str),
-        ("Avg > 0% after +0.25% friction", c4, f"{adj_avg:+.2f}%"),
-        ("No episode > 50% gross profit",  c5, f"{max_ep_contribution:.0%}"),
-    ]:
-        status = "PASS" if ok else "FAIL"
-        print(f"    [{status}] {label}: {detail}")
-
-    all_pass = all([c1, c2, c3, c4, c5])
-    print(f"\n  {'=== ALL CRITERIA MET — V3 activation warranted ===' if all_pass else '--- Criteria not yet met --- keep accumulating OOS data'}")
+    print(f"    closed candidate trades : {len(closed_a)}")
+    print(f"    P_bootstrap(PF>1)       : {p_str}")
+    print(f"    avg after +0.25% friction: {adj_avg:+.2f}%")
+    print(f"    largest episode share    : {max_ep_contribution:.0%}")
+    print("\n  Reactivating V3 would require a NEW pre-registered trial ID;")
+    print("  no number printed above can authorise it.")
     print()
 
 

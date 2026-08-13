@@ -191,3 +191,321 @@ def test_episode_grouping_30d_gap():
     assert len(episodes) == 2, f"Expected 2 episodes, got {len(episodes)}"
     assert len(episodes[0]) == 2
     assert len(episodes[1]) == 2
+
+
+# ── 7: Cohort / outcome semantics (Phase 3) ───────────────────────────────────
+
+def _journal_env(tmp_path, monkeypatch):
+    """Point the journal at a temp file and return the module."""
+    import pipeline.v3_journal as vj
+    monkeypatch.setattr(vj, "_JOURNAL", tmp_path / "v3_journal.jsonl")
+    return vj
+
+
+def _scanner_sig(entry_time: str, *, would_block: bool, blocked: bool = False) -> dict:
+    return {
+        "asset": "ZEC-USD",
+        "entry_time": entry_time,
+        "entry_price": 100.0,
+        "atr": 2.0,
+        "er_30": 0.10 if would_block else 0.30,
+        "v3_candidate_threshold": 0.20,
+        "v3_would_block": would_block,
+        "v3_blocked": blocked,
+        "v3_enforcement": blocked,
+    }
+
+
+def test_candidate_cohort_is_independent_of_enforcement(tmp_path, monkeypatch) -> None:
+    """
+    candidate_accepted must come from v3_would_block, not from `accepted`.
+    With enforcement OFF every signal is "accepted", so using that field as the
+    cohort silently puts V3-blocked signals into candidate statistics.
+    """
+    vj = _journal_env(tmp_path, monkeypatch)
+
+    # Enforcement OFF: both are `accepted`, but only one is candidate-accepted.
+    vj.log_v2_signal(scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00",
+                                                 would_block=False), accepted=True)
+    vj.log_v2_signal(scanner_signal=_scanner_sig("2026-07-14T00:00:00+00:00",
+                                                 would_block=True), accepted=True)
+
+    view = vj._build_signal_view(vj.read_journal())
+    assert len(view) == 2
+    assert all(s["accepted"] for s in view), "both are accepted with enforcement off"
+
+    cohort = [s for s in view if s["candidate_accepted"]]
+    assert len(cohort) == 1, "only the non-blocked signal is in the candidate cohort"
+    assert cohort[0]["candle_close"].startswith("2026-07-13")
+
+
+def test_three_concepts_are_stored_separately(tmp_path, monkeypatch) -> None:
+    vj = _journal_env(tmp_path, monkeypatch)
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00",
+                                    would_block=True, blocked=True),
+        accepted=False,
+    )
+    s = vj._build_signal_view(vj.read_journal())[0]
+    assert s["candidate_accepted"] is False      # V3 would block it
+    assert s["enforcement_accepted"] is False    # V3 did block it
+    assert s["disposition"] == "counterfactual"  # so no trade happened
+
+
+def test_disposition_is_pending_until_execution_resolves(tmp_path, monkeypatch) -> None:
+    """Signal-time logging must not claim a fill that has not happened."""
+    vj = _journal_env(tmp_path, monkeypatch)
+    sid = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True,
+    )
+    assert vj._build_signal_view(vj.read_journal())[0]["disposition"] == "pending"
+
+    vj.log_disposition(sid, "blocked_elsewhere")
+    assert vj._build_signal_view(vj.read_journal())[0]["disposition"] == "blocked_elsewhere"
+
+
+def test_legacy_rows_without_new_fields_still_read(tmp_path, monkeypatch) -> None:
+    """Backward compatibility: pre-split rows have only `accepted`."""
+    import json
+    vj = _journal_env(tmp_path, monkeypatch)
+    legacy = {
+        "type": "V3_SIGNAL", "signal_id": "ZEC-USD:2026-07-13T00:00:00+00:00:v3",
+        "asset": "ZEC-USD", "candle_close": "2026-07-13T00:00:00+00:00",
+        "entry_price": 100.0, "v3_would_block": True, "accepted": True,
+    }
+    vj._JOURNAL.parent.mkdir(parents=True, exist_ok=True)
+    vj._JOURNAL.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+
+    s = vj._build_signal_view(vj.read_journal())[0]
+    assert s["candidate_accepted"] is False, "derived from v3_would_block"
+    assert s["enforcement_accepted"] is True, "derived from legacy `accepted`"
+
+
+def test_actual_outcome_beats_counterfactual_regardless_of_order(tmp_path, monkeypatch) -> None:
+    """A replayed counterfactual must never overwrite a real fill."""
+    vj = _journal_env(tmp_path, monkeypatch)
+    sid = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True,
+    )
+    vj.log_outcome(sid, "WIN", 5.0, is_counterfactual=False)   # real fill
+    vj.log_outcome(sid, "LOSS", -9.0, is_counterfactual=True)  # later replay
+
+    s = vj._build_signal_view(vj.read_journal())[0]
+    assert s["pnl_pct"] == 5.0, "the actual outcome must win"
+    assert s["is_counterfactual"] is False
+
+
+def test_duplicate_outcomes_are_order_independent(tmp_path, monkeypatch) -> None:
+    """Folding must not depend on the order events happen to appear in."""
+    vj = _journal_env(tmp_path, monkeypatch)
+    sid = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=True),
+        accepted=False,
+    )
+    vj.log_outcome(sid, "LOSS", -3.0, is_counterfactual=True)
+    vj.log_outcome(sid, "LOSS", -3.0, is_counterfactual=True)   # duplicate replay
+
+    entries = vj.read_journal()
+    forward = vj._build_signal_view(entries)[0]
+    reversed_ = vj._build_signal_view(list(reversed(entries)))[0]
+    assert forward["pnl_pct"] == reversed_["pnl_pct"]
+    assert forward["outcome"] == reversed_["outcome"]
+
+
+def test_candidate_accepted_untraded_signal_is_resolvable(tmp_path, monkeypatch) -> None:
+    """
+    The old resolver only picked up `not accepted` rows, so a candidate-accepted
+    signal that never traded stayed pending forever and silently dropped out of
+    the candidate cohort. It must now be eligible for resolution.
+    """
+    vj = _journal_env(tmp_path, monkeypatch)
+    sid = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True,
+    )
+    vj.log_disposition(sid, "blocked_elsewhere")
+
+    view = vj._build_signal_view(vj.read_journal())
+    pending = [s for s in view if s.get("outcome") is None]
+    assert len(pending) == 1
+    assert pending[0]["candidate_accepted"] is True
+    assert pending[0]["disposition"] == "blocked_elsewhere"
+    # This row is exactly what the widened resolver filter now selects.
+
+
+def test_end_to_end_only_candidate_accepted_enters_stats(tmp_path, monkeypatch) -> None:
+    """
+    Task-mandated end-to-end: one candidate-accepted and one candidate-blocked
+    signal, both resolved; only the accepted one may enter candidate PF and
+    expectancy; re-folding is idempotent.
+    """
+    vj = _journal_env(tmp_path, monkeypatch)
+    sid_ok = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True,
+    )
+    sid_blk = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-20T00:00:00+00:00", would_block=True),
+        accepted=True,
+    )
+    vj.log_outcome(sid_ok, "WIN", 4.0, is_counterfactual=False)
+    vj.log_outcome(sid_blk, "WIN", 50.0, is_counterfactual=True)   # must NOT count
+
+    view = vj._build_signal_view(vj.read_journal())
+    cohort = [s for s in view if s["candidate_accepted"] and s["pnl_pct"] is not None]
+    assert len(cohort) == 1
+    assert cohort[0]["pnl_pct"] == 4.0
+
+    expectancy = sum(s["pnl_pct"] for s in cohort) / len(cohort)
+    assert expectancy == 4.0, "the blocked signal's +50% must be excluded"
+
+    # Idempotent: re-reading and re-folding changes nothing.
+    again = vj._build_signal_view(vj.read_journal())
+    assert [s["pnl_pct"] for s in again] == [s["pnl_pct"] for s in view]
+    assert [s["disposition"] for s in again] == [s["disposition"] for s in view]
+
+
+# ── 8: Phase 3 correctives ────────────────────────────────────────────────────
+
+def test_summary_never_announces_activation(tmp_path, monkeypatch, capsys) -> None:
+    """
+    V3 is retired: the journal must not evaluate activation criteria, and must
+    never be able to print "V3 activation warranted".
+    """
+    vj = _journal_env(tmp_path, monkeypatch)
+    sid = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True,
+    )
+    vj.log_outcome(sid, "WIN", 9.0, is_counterfactual=False)
+    vj.summarise_journal()
+
+    out = capsys.readouterr().out
+    assert "activation warranted" not in out.lower()
+    assert "criteria met" not in out.lower()
+    assert "RETIRED" in out
+    for withdrawn in ("n >= 20", "PF > 1.20", "P_bootstrap(PF>1) > 90%"):
+        assert withdrawn not in out, f"withdrawn criterion still evaluated: {withdrawn}"
+
+
+def test_summary_source_has_no_pass_fail_criteria() -> None:
+    """Source-level lock: the five-point checklist must be gone, not just quiet."""
+    import inspect
+
+    import pipeline.v3_journal as vj
+
+    src = inspect.getsource(vj.summarise_journal)
+    # Strip comments: the block that explains WHAT WAS REMOVED legitimately
+    # names the old strings, and must not trip this check.
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert "activation warranted" not in code
+    assert "5-point" not in code
+    assert "[PASS]" not in code and "[FAIL]" not in code
+    # The withdrawn thresholds must not be computed at all.
+    for expr in ("1.20", ">= 20", "p_above > 90"):
+        assert expr not in code, f"withdrawn criterion still computed: {expr}"
+
+
+def test_resolver_leaves_partial_horizon_pending(tmp_path, monkeypatch) -> None:
+    """
+    reconcile_pending must not invent MAX_HOLD when only part of the hold
+    horizon is observable — the same right-censoring defect fixed in the
+    scanner. With 5 of 36 candles and no stop/target touched, nothing is written.
+    """
+    import pandas as pd
+
+    vj = _journal_env(tmp_path, monkeypatch)
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=True),
+        accepted=False,
+    )
+
+    # 5 flat candles: neither the stop nor the target is reached.
+    idx = pd.date_range("2026-07-13T01:00:00Z", periods=5, freq="h")
+    flat = pd.DataFrame(
+        {"time": idx, "open": 100.0, "high": 100.5, "low": 99.5,
+         "close": 100.0, "volume": 1.0}
+    )
+    monkeypatch.setattr("exchange.coinbase_candles.download",
+                        lambda *a, **k: flat)
+
+    n = vj.reconcile_pending(asset="ZEC-USD", max_hold_hours=36)
+    assert n == 0, "a partially observed horizon must stay pending"
+    view = vj._build_signal_view(vj.read_journal())
+    assert view[0]["outcome"] is None
+
+
+def test_resolver_still_resolves_a_touched_stop(tmp_path, monkeypatch) -> None:
+    """Censoring must not suppress an outcome that genuinely occurred."""
+    import pandas as pd
+
+    vj = _journal_env(tmp_path, monkeypatch)
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=True),
+        accepted=False,
+    )
+    # entry 100, atr 2, atr_stop 2.0 -> stop at 96. Bar 2 trades to 95.
+    idx = pd.date_range("2026-07-13T01:00:00Z", periods=3, freq="h")
+    hit = pd.DataFrame(
+        {"time": idx, "open": 100.0, "high": [100.5, 100.5, 100.5],
+         "low": [99.5, 95.0, 99.0], "close": 100.0, "volume": 1.0}
+    )
+    monkeypatch.setattr("exchange.coinbase_candles.download", lambda *a, **k: hit)
+
+    n = vj.reconcile_pending(asset="ZEC-USD", max_hold_hours=36)
+    assert n == 1
+    assert vj._build_signal_view(vj.read_journal())[0]["outcome"] == "LOSS"
+
+
+def test_summary_reports_pending_separately_from_counterfactual(tmp_path, monkeypatch, capsys) -> None:
+    """
+    A pending signal must NOT be counted as counterfactual. Pending means the
+    outcome is unknown (e.g. SUBMITTING awaiting reconciliation); counterfactual
+    means V3 blocked it and the outcome was simulated.
+    """
+    vj = _journal_env(tmp_path, monkeypatch)
+
+    # 1 traded, 1 blocked_elsewhere, 1 counterfactual (V3-blocked), 1 pending.
+    sid_t = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True)
+    vj.log_disposition(sid_t, "traded")
+    vj.log_outcome(sid_t, "WIN", 3.0, is_counterfactual=False)
+
+    sid_b = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-14T00:00:00+00:00", would_block=False),
+        accepted=True)
+    vj.log_disposition(sid_b, "blocked_elsewhere")
+
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-15T00:00:00+00:00",
+                                    would_block=True, blocked=True),
+        accepted=False)                       # -> counterfactual
+
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-16T00:00:00+00:00", would_block=False),
+        accepted=True)                        # -> stays pending (SUBMITTING-like)
+
+    vj.summarise_journal()
+    out = capsys.readouterr().out
+
+    assert "1 traded" in out
+    assert "1 blocked elsewhere" in out
+    assert "1 counterfactual" in out
+    assert "1 pending" in out, "pending must be its own counter, not folded in"
+
+
+def test_summary_pending_is_not_absorbed_into_counterfactual(tmp_path, monkeypatch, capsys) -> None:
+    """With ONLY a pending signal, counterfactual must read zero."""
+    vj = _journal_env(tmp_path, monkeypatch)
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True)
+
+    vj.summarise_journal()
+    out = capsys.readouterr().out
+    assert "0 counterfactual" in out
+    assert "1 pending" in out

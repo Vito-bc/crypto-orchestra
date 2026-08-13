@@ -53,27 +53,60 @@ Hypothesis: Kaufman Efficiency Ratio (ER-30 = |net_move_30d| / sum(|daily_moves|
 
 Combined avg per trade:
 - No filter:  -0.08% (4-period weighted, 101 signals)
-- er >= 0.20: +0.31% (68 signals) — **best stable threshold**
+- er >= 0.20: +0.31% (68 signals)
 - er >= 0.25: unstable (n=5 in bear_2022 inflates to PF=5.32)
 - er >= 0.35: recent_year drops to PF=0.99 (marginal)
 
-Key insight: the er >= 0.25+ post-hoc result was misleading. Integrated filter changes signal generation via skip_until interactions. er >= 0.20 is the most robust integrated threshold.
+> **These PF>1 results are descriptive outcomes from selected, non-independent
+> historical windows.** They omit the losing 2023–mid-2024 interval and are
+> superseded by the continuous PF 0.86 result. They provide no evidence for
+> routing, activation, or live deployment.
+
+The words "best stable threshold" and "most robust integrated threshold"
+previously appeared here. They were removed: on the continuous window integrated
+enforcement is *worse* (PF 0.69 vs 0.86), so no threshold in this table is
+"best" or "robust" in any forward sense. 0.20 is retained only as historical
+trial metadata recording what was tested.
+
+Key insight: the er >= 0.25+ post-hoc result was misleading. The integrated
+filter changes signal generation via skip_until interactions, so post-hoc
+filtering of an unfiltered run does not reproduce the enforced cohort.
 
 Cost stress test (additional friction on top of Coinbase fees already in P&L):
 - er >= 0.20: survives +20bps of friction before avg goes negative
 - er >= 0.40: survives +100bps friction (PF=1.133, n=17 — too few)
 
-**Candidate for V3 live**: `v3_candidate_threshold = 0.20` (pre-registered, LOCKED)
-**Current config**: `v3_enforcement_enabled = False` — shadow/research mode only; `v3_would_block` logged to `logs/v3_journal.jsonl` but trades are NOT blocked until OOS criteria met.
+### STATUS: RETIRED / REJECTED FOR ACTIVATION (2026-08-09)
 
-**V3 activation criteria (pre-registered 2026-07-13, threshold LOCKED — cannot be changed after first OOS signal):**
-1. n >= 20 closed V3-accepted trades
-2. PF > 1.20 (gross wins / gross losses, from v3_journal.jsonl)
-3. P_bootstrap(PF > 1) > 90% (block bootstrap b=4, N=10,000)
-4. Avg P&L > 0% after adding +0.25% per-trade friction (stress test)
-5. No single market episode accounts for > 50% of gross profit
+V3 ER-30 is **no longer an activation candidate.** This is a terminal decision
+for this trial ID, not a pause pending more data.
 
-Check every 5 closed trades. At first check (n=5), PF can be infinite with 5 wins — criteria 1 is the binding gate. Threshold 0.20 is fixed; do NOT re-select on OOS data.
+**Reason.** On the continuous 2021→2026 window, integrated V3 enforcement makes
+results *worse*, not better: **PF 0.69 with V3 versus PF 0.86 without it.** The
+original positive case was an artifact of period-selected windows — the four
+registry windows omitted the 2023→mid-2024 stretch, and the filter's apparent
+edge did not survive evaluation on continuous data. Note that PF 0.86 is itself
+below 1.0, so the baseline this was measured against is also unprofitable.
+
+**Consequences.**
+
+- `v3_enforcement_enabled = False` and stays false. Nothing in this document
+  authorises turning it on.
+- `v3_candidate_threshold = 0.20` is retained **only as historical trial
+  metadata**, recording what was tested. It is not a pending configuration.
+- The former activation criteria (n >= 20 closed trades, PF > 1.20, bootstrap,
+  friction stress, episode concentration) are **withdrawn**. There is no trade
+  count at which V3 activates. Do not resume "check every 5 closed trades".
+- Future `v3_would_block` observations in `logs/v3_journal.jsonl` are
+  **diagnostic only**. They measure filter behaviour; they are not evidence for
+  reactivation and cannot trigger it.
+- Reactivating V3 in any form requires a **new pre-registered trial ID** with
+  its own hypothesis, data boundaries, and acceptance rule, registered before
+  any new evaluation is run. It may not inherit this trial's threshold or
+  criteria.
+
+The repaired shadow journal is retained as reusable research infrastructure and
+as an honest diagnostic record — not as an activation mechanism.
 
 ## ADX threshold
 
@@ -144,7 +177,140 @@ Infrastructure complete (all IS research done — no further parameter selection
 - `er_threshold_analysis.py`, `cost_stress_test.py`, `v3_integrated_test.py`: IS research scripts (frozen — do not re-run to select thresholds)
 - `tests/test_v3_properties.py`: 6 property tests covering look-ahead, UTC, concurrency, crash recovery, resolver idempotency, episode grouping
 
-Pending for V3 activation (check every 5 closed accepted trades):
-- [ ] Accumulate ≥20 forward OOS accepted signals (2026-07-12+)
-- [ ] All 5 activation criteria pass (see above)
-- [ ] Only then: set `v3_enforcement_enabled = True` in ASSET_CONFIG (threshold stays 0.20)
+~~Pending for V3 activation~~ — **WITHDRAWN 2026-08-09.** V3 is retired as an
+activation candidate (see STATUS above). There is no OOS trade count that
+activates it, no remaining criteria checklist, and no path from this trial ID to
+`v3_enforcement_enabled = True`. Continued logging is diagnostic only.
+
+## Independent research pass — 2026-08-09 (continuous-window analysis)
+
+Full write-up: `docs/research/2026-08-strategy-review.md`. All results below are
+IS unless marked OOS. Data: Coinbase parquet (ZEC/BTC/ETH/SOL, 1h+1d, through
+2026-08-09). Frozen V2 mechanism throughout — no parameter selection performed.
+
+### Harness validation
+
+Stock scanner on the four registry periods reproduces the registry exactly
+(bull_2021 n=25 PF=1.42 avg=+0.87%; bear_2022 n=12 PF=1.41 avg=+0.97%;
+mid_year n=27 PF=0.52 avg=-1.29%; recent_year n=37 PF=1.00 avg=+0.01%).
+Discrepancies below are therefore data, not harness drift.
+
+### Continuous-window results (removes period-selection bias)
+
+| Trial | n | WR | Avg P&L | PF |
+|-------|---|----|---------|----|
+| ZEC continuous 2021-03 → 2026-07-12, no filter | 133 | 42% | -0.37% | 0.86 |
+| ZEC continuous, V3 ER>=0.20 **integrated enforcement** | 80 | 39% | **-0.90%** | **0.69** |
+| ZEC gap 2023-01 → 2024-08 (never scanned before) | 24 | 17% | -2.35% | 0.23 |
+| ZEC continuous, LOEO (drop Sep–Nov 2025 episode) | 113 | 40% | -0.62% | 0.75 |
+
+Key finding: the V3 IS case (+0.31%/trade across the 4 windows) **does not
+survive removal of period windowing** — on the continuous window the filter
+makes results worse. The 4-period "cross-cycle" estimate accidentally excluded
+~2 years of data (2023 → mid-2024) in which the strategy loses -2.35%/trade.
+
+The apparent inverse cell (er<0.20: +0.43%, PF 1.22, n=53) collapses to
+PF 1.02 after removing its single best month (2022-03) — episode concentration,
+not signal. Conclusion: ER-30 carries no robust information for this entry
+mechanism in either direction.
+
+### Cross-asset transfer (frozen ZEC mechanism, zero per-asset tuning — clean)
+
+| Asset | n | Avg P&L | PF | ER>=0.20 kept |
+|-------|---|---------|----|----|
+| BTC-USD (2020-09→) | 203 | -0.91% | 0.38 | PF 0.43 |
+| ETH-USD (2020-09→) | 181 | -0.89% | 0.50 | PF 0.47 |
+| SOL-USD (2022-02→) | 97 | -0.56% | 0.72 | PF 0.74 |
+
+No asset, no ER bucket, no realized-vol tercile, no BB-width (compression)
+tercile, and no vm_30 direction produces a robustly positive cell for the
+breakout mechanism. Volatility-compression states do NOT predict profitable
+breakout entries here (compressed-BBW cells: ZEC PF 0.50, BTC 0.27, ETH 0.45).
+
+### Strategy-family probes (single pre-declared config each, no sweeps)
+
+> ⚠️ **LEGACY / UNVERIFIED — not reproducible from committed code (2026-08-09).**
+> The implementations that produced the numbers in this section are **not in
+> this repository**. The deterministic research runner
+> (`backtesting/research_runner.py`) therefore cannot regenerate them, and they
+> are listed in `docs/research/artifacts/results.json` under
+> `non_reproducible`. Treat every figure below as an unverified historical note,
+> not as evidence. Do not cite them in a decision, and do not re-derive them from
+> memory — either recover the original implementation or run a new, explicitly
+> pre-registered replication trial with one frozen configuration.
+>
+> This applies to: mean reversion, slow/trend following, "buy the strategy
+> drawdown", LLM agent-vote IC, and the realised-vol / Bollinger-bandwidth
+> regime cells referenced above.
+
+- Mean reversion (1h RSI<30 + lower-BB, 2.0 ATR stop/target): PF 0.30–0.62 on
+  all four assets; WORSE in ER<0.20 "range" regimes. **Rejected**, including the
+  "route MR to range regimes" idea.
+- Trend following (daily 55d-high entry / 20d-low exit, taker fees): positive
+  on all four assets (pooled n=57), but profit is concentrated in 1–2 secular
+  episodes per asset (BTC +236% Oct-2020→May-2021; ZEC +610% Sep→Dec-2025;
+  without it ZEC TF is -7% total). 2022 bear: BTC TF -17% vs B&H -65%.
+  **Hypothesis-generating only** — would need its own pre-registered trial.
+
+### Other hypotheses tested and rejected
+
+- "Buy the strategy drawdown": 1–3 qualifying episodes per equity curve
+  (insufficient), and forward returns after drawdown thresholds were BELOW the
+  unconditional mean in every cell. Rejected on current evidence.
+- LLM agent votes as alpha (Apr–Jul 2026 logs, 158 daily-subsampled obs,
+  daily-block bootstrap): no agent IC90 excludes zero except one marginal cell
+  out of 14 tests (expected under pure noise; that agent's BUY votes preceded
+  negative returns). Veto-only role remains the ceiling; no weighting layer.
+
+### Forward OOS observations (deterministic replay 2026-07-12 → 2026-08-09)
+
+Scheduler was down 2026-07-23 → 2026-08-09, so the live shadow journal missed
+this window; the scanner is deterministic, so the record is reconstructed from
+exchange candles (`backtesting/oos_replay.py`):
+
+| Time (UTC) | ER-30 | v3_would_block | Outcome |
+|------------|-------|----------------|---------|
+| 2026-07-16 13:00 | 0.098 | True | STOP -4.01% |
+| 2026-07-18 12:00 | 0.160 | True | TP +2.92% |
+| 2026-07-21 00:00 | 0.230 | False | STOP -3.70% |
+| 2026-07-21 13:00 | 0.230 | False | STOP -3.61% |
+
+V3-accepted so far: n=2 (of ≥20 required), both losses. No criteria decision
+yet; threshold remains locked; enforcement remains off.
+
+### Trial count update
+
+This pass adds ~30 trials (continuous/gap windows ×2 filter states, 4 assets ×
+5 regime bucketings, 2 family probes × 4 assets, DD-buying grid, agent ICs).
+Interpret any future marginal positive accordingly.
+
+### Decisions (2026-08-09)
+
+1. V2/V3 momentum family: research artifact, not a path to live. Enforcement
+   stays off; shadow journaling continues; the pre-registered OOS trial may run
+   to completion but the continuous-window evidence predicts failure.
+2. No regime-routing layer, no agent-weighting layer, no drawdown-based
+   allocation, no compression gating — all unsupported by data.
+3. Only durable positive lead: slow long-only trend following. If pursued,
+   pre-register a single config + acceptance rule BEFORE any further scans.
+
+### Professional review addendum (2026-08-09)
+
+See `docs/research/2026-08-professional-review-addendum.md`.
+
+- The central continuous-window falsification is independently reproduced and
+  accepted: V2 remains negative and integrated V3 remains worse. Live stays
+  NO-GO; `DRY_RUN=true`.
+- The current `oos_replay.py` result is diagnostic rather than the formal OOS
+  record because it post-filters a non-enforced path. The V3 journal also
+  conflates shadow enforcement acceptance with candidate acceptance and does
+  not currently close the registered accepted cohort end-to-end.
+- The 92% underwater value is observation-weighted. A boundary-aware calendar
+  audit gives approximately 97.15% through 2026-07-12; max DD remains about
+  -71% for this ZEC sequence.
+- **Recommendation (not an activation decision):** retire V3 as a deployable
+  candidate, fix the research evidence pipeline, and pre-register slow trend
+  following as a separate strategy family before any new scan.
+- This research branch predates the latest main/safety hardening. Integrate the
+  research-only changes onto the current safety history; never deploy from the
+  research branch itself.

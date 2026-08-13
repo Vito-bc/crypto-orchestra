@@ -932,3 +932,70 @@ def test_persistence_failure_does_not_block_entry():
     assert any("persistence DEGRADED" in a.lower() or "DEGRADED" in a for a in alerts), (
         "a persistence-degraded operational alert must be sent"
     )
+
+
+# ---------------------------------------------------------------------------
+# 9. Research disposition must reflect the ORDER, not the returned action
+# ---------------------------------------------------------------------------
+
+def test_first_write_wins_is_covered_by_integration_not_reimplementation():
+    """
+    The first-write-wins behaviour is asserted END TO END in
+    tests/test_disposition_integration.py, which drives the real run_pipeline.
+
+    An earlier version of this test re-implemented the settler inside the test
+    body and asserted against its own copy. That proves nothing about
+    production: it passed while the real DRY_RUN path was raising
+    UnboundLocalError. This placeholder documents where the real coverage lives
+    so the reimplementation is not reintroduced.
+    """
+    from pathlib import Path
+
+    integration = Path(__file__).parent / "test_disposition_integration.py"
+    assert integration.exists(), "the integration coverage must exist"
+    body = integration.read_text(encoding="utf-8")
+    assert "runner.run_pipeline(" in body, (
+        "disposition coverage must exercise the real pipeline, not a copy"
+    )
+    assert "test_dry_run_successful_placement_does_not_raise" in body
+    assert "test_submitting_stays_pending" in body
+
+
+def test_runner_does_not_infer_disposition_from_decision_action():
+    """
+    Source-level lock. `decision.action` is not a safe proxy: a placed order is
+    reported as HOLD, and a missing-market-data path could look like a BUY.
+    """
+    import inspect
+
+    import pipeline.runner as runner
+
+    src = inspect.getsource(runner.run_pipeline)
+    code = "\n".join(ln for ln in src.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert 'log_disposition(\n' not in code, (
+        "run_pipeline must route disposition writes through _settle_disposition"
+    )
+    for bad in ('"traded" if decision.action', "'traded' if decision.action"):
+        assert bad not in code, (
+            "disposition must not be inferred from the returned TradeDecision"
+        )
+
+
+def test_disposition_settled_on_circuit_breaker_and_outbox_paths():
+    """Every early return that stops a trade must settle, not leave pending."""
+    import inspect
+
+    import pipeline.runner as runner
+
+    src = inspect.getsource(runner.run_pipeline)
+    # Each blocking early-return path settles before returning.
+    assert src.count("_settle_disposition(") >= 4, (
+        "expected settle calls on the circuit-breaker, outbox, placement and "
+        "catch-all paths"
+    )
+    # Whitespace-independent: the two blocking early-return paths are annotated.
+    assert "# circuit breaker" in src, "circuit-breaker path must settle"
+    assert "# outbox gate" in src, "outbox gate path must settle"
+    # And the placement branch settles from the real order status.
+    assert '"blocked_elsewhere" if _result_status == "REJECTED" else "traded"' in src

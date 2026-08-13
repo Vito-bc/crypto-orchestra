@@ -178,8 +178,12 @@ ASSET_CONFIG = {
         # v3_candidate_threshold — pre-registered (2026-07-13), LOCKED at 0.20.
         #   Always computed for journaling; never changed on OOS data.
         # v3_enforcement_enabled — False = shadow/research only (log v3_would_block but
-        #   don't block trades). True = live enforcement. Activate only after 5-point OOS
-        #   criteria are met (see docs/trial_registry.md).
+        #   don't block trades).
+        #   V3 ER-30 is RETIRED as an activation candidate (2026-08-09): integrated
+        #   enforcement made the continuous window worse (PF 0.69 vs 0.86 without).
+        #   This stays False; the former activation criteria are withdrawn. Turning it
+        #   on requires a NEW pre-registered trial ID — see docs/trial_registry.md.
+        #   v3_candidate_threshold below is retained as historical trial metadata only.
         "v3_candidate_threshold": 0.20,
         "v3_enforcement_enabled": False,
         "enabled": True,
@@ -376,6 +380,18 @@ def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
     """
     Simulate what would have happened if we entered at entry_i.
     Uses ATR-based stop/target and max_hold.
+
+    Every returned dict carries `resolved`:
+      True  — a stop, target, or a FULLY OBSERVED max-hold decided the outcome.
+      False — the data ended before the max-hold horizon elapsed and neither the
+              stop nor the target was touched, so the outcome is right-censored
+              and unknown.
+
+    A censored trade still reports the mark-to-market pnl at the last candle for
+    display, but `resolved=False` means that number is NOT a realised outcome and
+    must be excluded from PF, expectancy, bootstrap, episode concentration, and
+    closed-trade counts. Callers that ignore `resolved` keep the previous
+    behaviour exactly, so historical backtest figures are unchanged.
     """
     atr          = float(df.iloc[entry_i]["atr"])
     stop_price   = round(entry_price - atr_stop * atr, 2)
@@ -390,27 +406,53 @@ def _simulate_trade(df: pd.DataFrame, entry_i: int, entry_price: float,
             gross   = stop_price * (1 - _SL_FEE)
             net_pnl = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
             return {"reason": "STOP_LOSS", "exit_price": stop_price,
-                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
+                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2),
+                    "resolved": True}
 
         if high >= target_price:
             gross   = target_price * (1 - _TP_FEE)
             net_pnl = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
             return {"reason": "TAKE_PROFIT", "exit_price": target_price,
-                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2)}
+                    "hold_h": j - entry_i, "pnl_pct": round(net_pnl, 2),
+                    "resolved": True}
 
-    # Max hold — market close, taker fee
-    exit_price = float(df.iloc[min(entry_i + max_hold_hours, len(df) - 1)]["close"])
+    # Neither stop nor target hit. Did we actually observe the whole max-hold
+    # horizon, or did the data simply run out?
+    last_i    = min(entry_i + max_hold_hours, len(df) - 1)
+    fully_obs = (entry_i + max_hold_hours) <= (len(df) - 1)
+
+    exit_price = float(df.iloc[last_i]["close"])
     gross      = exit_price * (1 - _SL_FEE)
     net_pnl    = (gross - entry_price * (1 + _ENTRY_FEE)) / entry_price * 100
-    return {"reason": "MAX_HOLD", "exit_price": round(exit_price, 2),
-            "hold_h": max_hold_hours, "pnl_pct": round(net_pnl, 2)}
+    return {"reason": "MAX_HOLD" if fully_obs else "PENDING",
+            "exit_price": round(exit_price, 2),
+            "hold_h": max_hold_hours if fully_obs else (last_i - entry_i),
+            "pnl_pct": round(net_pnl, 2),
+            "resolved": fully_obs}
 
 
 # ── Per-asset scanner ─────────────────────────────────────────────────────────
 
+class StrictSourceError(RuntimeError):
+    """Coinbase cache was unusable while STRICT_COINBASE_ONLY was set."""
+
+
+# When True, _fetch_ohlcv refuses to fall back to yfinance and raises instead.
+# A registered research run sets this: silently swapping the data provider
+# mid-run would make the manifest's SHA-256 hashes describe inputs that were not
+# actually used, which is worse than failing.
+STRICT_COINBASE_ONLY = False
+
+
 def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFrame | None:
-    """Fetch OHLCV from Coinbase (preferred) with yfinance as fallback."""
+    """
+    Fetch OHLCV from Coinbase (preferred) with yfinance as fallback.
+
+    Under STRICT_COINBASE_ONLY the fallback is disabled and a Coinbase failure
+    raises StrictSourceError.
+    """
     # ── Coinbase path ──────────────────────────────────────────────────────────
+    cb_error: Exception | None = None
     try:
         from exchange.coinbase_candles import download as _cb_download
         gran_map = {"1h": "1h", "4h": "4h", "1d": "1d"}
@@ -422,8 +464,15 @@ def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFram
                 df.index = pd.to_datetime(df.index, utc=True)
                 df.index.name = None  # avoid "time is both index and column" ambiguity
                 return df.dropna(subset=["close", "open", "high", "low", "volume"])
-    except Exception:
-        pass  # fall through to yfinance
+    except Exception as exc:
+        cb_error = exc      # fall through to yfinance unless strict
+
+    if STRICT_COINBASE_ONLY:
+        raise StrictSourceError(
+            f"Coinbase cache unusable for {asset} {interval} {start}->{end} "
+            f"({cb_error or 'insufficient rows'}) and STRICT_COINBASE_ONLY is set. "
+            "Refusing to fall back to yfinance during a registered run."
+        )
 
     # ── yfinance fallback ──────────────────────────────────────────────────────
     try:
@@ -571,7 +620,31 @@ def _compute_regime_metrics(daily_df: pd.DataFrame | None, as_of_ts: pd.Timestam
     return result
 
 
-def scan_asset(asset: str, period: dict) -> dict:
+def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
+               config_override: dict | None = None) -> dict:
+    """
+    Scan one asset over `period`.
+
+    config_override:
+      None — use the asset's own ASSET_CONFIG entry (normal behaviour).
+      dict — use these parameters INSTEAD. This is what makes a zero-tuning
+             transfer test honest: applying each asset's own tuned stop/target/
+             EMA settings measures "per-asset tuned strategies", not "does the
+             ZEC mechanism transfer". The override is copied, never mutated.
+
+    v3_enforcement:
+      None  — use the asset's configured `v3_enforcement_enabled` (default False).
+      True  — run the INTEGRATED path: a V3-blocked signal is skipped before the
+              trade is simulated, so it does not advance `skip_until` and does not
+              contribute to stop history. Later signals therefore differ from the
+              unfiltered path — this is what live enforcement would actually do.
+      False — run the UNFILTERED path: every signal is simulated and
+              `v3_would_block` is recorded for shadow accounting only.
+
+    This is an explicit, per-call argument precisely so that research code never
+    mutates the ASSET_CONFIG global to switch modes: a mutated global leaks into
+    every later scan in the same process and silently corrupts comparisons.
+    """
     print(f"\n  Downloading {asset} data (warmup from {period['warmup']})...")
 
     sig_df   = _download_and_compute(asset, period["warmup"], period["end"], "1h")
@@ -594,8 +667,15 @@ def scan_asset(asset: str, period: dict) -> dict:
         df.index = pd.to_datetime(df["time"], utc=True)
 
     config     = STRATEGY_CONFIG.get(asset, STRATEGY_CONFIG["ETH-USD"])
-    max_hold   = config.get("max_hold_hours", 36)
-    asset_cfg  = ASSET_CONFIG.get(asset, ASSET_CONFIG["ZEC-USD"])
+    asset_cfg  = (dict(config_override) if config_override is not None
+                  else ASSET_CONFIG.get(asset, ASSET_CONFIG["ZEC-USD"]))
+    # max_hold is part of the MECHANISM, so an override must supply it too.
+    # Reading it from STRATEGY_CONFIG regardless meant a "frozen ZEC mechanism"
+    # transfer test still ran BTC at its own 48h instead of ZEC's 36h — not a
+    # zero-tuning transfer at all.
+    max_hold   = (asset_cfg.get("max_hold_hours")
+                  if config_override is not None and "max_hold_hours" in asset_cfg
+                  else config.get("max_hold_hours", 36))
     atr_stop   = asset_cfg["atr_stop"]
     atr_target = asset_cfg["atr_target"]
 
@@ -642,7 +722,12 @@ def scan_asset(asset: str, period: dict) -> dict:
     skip_until        = -1   # don't double-enter
     recent_stop_ts: list[pd.Timestamp] = []
     v3_threshold      = asset_cfg.get("v3_candidate_threshold")
-    v3_enforcement    = asset_cfg.get("v3_enforcement_enabled", False)
+    # Explicit per-call override wins; otherwise fall back to the asset config.
+    # Read once into a local so the value is immutable for this scan.
+    v3_enforcement    = (
+        asset_cfg.get("v3_enforcement_enabled", False)
+        if v3_enforcement is None else bool(v3_enforcement)
+    )
 
     # We need to operate on the full df (for lookback), but filter output to period
     full_len   = len(df)
@@ -702,6 +787,9 @@ def scan_asset(asset: str, period: dict) -> dict:
             "trade":        trade,
             "regime":       regime,
             "v3_would_block": v3_would_block,
+            # Which path produced this record. Stamped per-signal so an
+            # unfiltered cohort can never be passed off as an integrated one.
+            "v3_enforcement": v3_enforcement,
         }
         signals.append(record)
         skip_until = i + trade["hold_h"] + 1   # don't re-enter mid-hold
@@ -710,6 +798,20 @@ def scan_asset(asset: str, period: dict) -> dict:
         "asset":            asset,
         "candles":          len(df_period),
         "signals":          signals,
+        # Authoritative label for this result set. Consumers must check it rather
+        # than assuming which path they were handed.
+        "v3_enforcement":   v3_enforcement,
+        # Which parameter set actually ran — so a per-asset-tuned scan can never
+        # be reported as a frozen-mechanism transfer test.
+        "mechanism":        "override" if config_override is not None else f"own:{asset}",
+        "mechanism_params": {
+            **{k: asset_cfg.get(k) for k in
+               ("atr_stop", "atr_target", "min_conditions", "vol_spike_ratio",
+                "daily_ema_period", "btc_regime_filter")},
+            # Recorded from the value actually used, so a transfer test that
+            # silently kept the asset's own hold window is visible in the artifact.
+            "max_hold_hours": max_hold,
+        },
         "blocked_vol":      blocked_vol,
         "blocked_4h":       blocked_4h,
         "blocked_daily":    blocked_daily,

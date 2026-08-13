@@ -45,29 +45,25 @@ venv\Scripts\python.exe backtesting/generate_journal.py
 Sub-agents use `claude-haiku-4-5-20251001` (fast + cheap).
 Orchestrator uses `claude-sonnet-4-6` (smarter final decision).
 
-### Why Limit Orders (not market)
-Entry uses maker (0.2%). Take-profit uses maker (0.2%). Stop/hold uses taker (0.4%).
-Round-trip fee ≈ 0.5% average. Backtest uses this accurate model (`_ENTRY_FEE`, `_TP_FEE`,
-`_SL_FEE` in signal_scanner.py). Old model (0.6% per side = 1.2% total) overstated fee
-drag 3× and showed strategy as unprofitable — it was profitable all along.
+### Fees (Coinbase Advanced base tier)
+Maker 0.4%, taker 0.6% (`_ENTRY_FEE`, `_TP_FEE`, `_SL_FEE` in signal_scanner.py).
+An earlier 0.2%/0.4% model understated fees and inflated backtest P&L.
 
 ### Active Assets
-**ETH-USD and ZEC-USD only.** BTC and SOL excluded — bounce strategy has
-consistently negative edge on these (backtested over 371 signals, full year).
-
-Re-enable BTC/SOL only after developing asset-specific entry logic for them
-(e.g. trend-following for BTC instead of mean-reversion).
+**ZEC-USD only, paper/shadow mode.** ETH/BTC/SOL are `enabled: False` in
+`ASSET_CONFIG`. The frozen V2 mechanism transfers negatively to all of them
+(see `docs/trial_registry.md`, 2026-08-09 pass: BTC PF 0.38, ETH 0.50, SOL 0.72).
 
 ### Per-Asset Strategy Config (signal_scanner.py `ASSET_CONFIG`)
 | Asset | Stop | Target | R:R | Min Conds | Daily EMA | Enabled |
 |-------|------|--------|-----|-----------|-----------|---------|
 | BTC-USD | 2.0x | 3.5x | 1.75 | 4 | 50d | **No** |
-| ETH-USD | 2.5x | 4.5x | 1.80 | 4 | **50d** | Yes |
+| ETH-USD | 2.5x | 4.5x | 1.80 | 4 | **50d** | **No** |
 | SOL-USD | 2.5x | 4.5x | 1.80 | 4 | 200d | **No** |
-| ZEC-USD | 2.0x | 3.5x | 1.75 | 4 | 200d | Yes |
+| ZEC-USD | 2.0x | 3.5x | 1.75 | 4 | 200d | Yes (shadow) |
 
-ETH uses daily 50EMA (faster trend gate). ZEC uses 200EMA (slower, more stable).
-Changing these requires re-running `backtesting/signal_scanner.py full_year`.
+ZEC params are frozen (git tag `v2-adx25-frozen`). Any change creates a new
+trial — log it in `docs/trial_registry.md` first.
 
 ### Position Sizing
 `LIVE_BALANCE_USD × position_size_pct` = order size.
@@ -116,21 +112,43 @@ Auto-generated nightly from logs via `backtesting/generate_journal.py`.
 Windows Task Scheduler runs `update_obsidian.bat` every night at 23:00.
 The vault is a growing knowledge base — future goal is RAG for the orchestrator.
 
-## Backtest Results (full year, Aug 2024 – Jun 2025)
+## Validation Status — read `docs/trial_registry.md` before believing any number
 
-With ETH+ZEC only, per-asset filters, accurate fee model:
-| Asset | Signals | Win% | Avg P&L |
-|-------|---------|------|---------|
-| ETH-USD | 35 | 48.6% | +0.34% |
-| ZEC-USD | 54 | 53.7% | +0.84% |
-| Total   | 89 | 51.7% | **+0.64%** |
+Authoritative record: `docs/trial_registry.md` (+ `docs/research/2026-08-strategy-review.md`
+and `docs/research/2026-08-professional-review-addendum.md`).
+Summary as of 2026-08-09:
 
-Strategy is profitable on backtested data. Ready to go live.
+- V2 momentum (ZEC): combined ~PF 1.00 on the four registry windows; **PF 0.86
+  (-0.37%/trade, n=133) on the continuous 2021→2026 window**; the never-scanned
+  2023→mid-2024 gap loses -2.35%/trade. Not profitable. Paper/shadow only.
+- V3 ER-30 filter: **RETIRED / REJECTED FOR ACTIVATION (2026-08-09)**.
+  Integrated enforcement on the continuous window makes results *worse*
+  (PF 0.69 with V3 vs PF 0.86 without). The earlier positive case came from
+  period-selected windows. Enforcement stays OFF permanently for this trial ID;
+  the former "n >= 20 closed trades" activation criteria are withdrawn. Further
+  `v3_would_block` logging is diagnostic only and cannot reactivate it —
+  that would require a new pre-registered trial ID. See `docs/trial_registry.md`.
+- Earlier "profitable, ready to go live" conclusions came from period-selected
+  windows and an obsolete fee model. They are superseded.
 
-## Pending Work (as of July 2026)
+**Do NOT switch `DRY_RUN=false` on current evidence.**
 
-1. Switch `DRY_RUN=false` — strategy validated, both assets profitable on backtests
-2. Monitor first 10 live signals → confirm fills, check actual P&L matches backtest
-3. Build test fixtures from first real signals (raw market snapshots for regression tests)
-4. Develop BTC/SOL strategies (trend-following, not mean-reversion)
+## Pending Work (as of Aug 2026)
+
+Immediate implementation brief:
+`docs/tasks/2026-08-research-evidence-hardening.md`.
+
+1. V3 is retired as an activation candidate (recorded in `docs/trial_registry.md`);
+   enforcement stays off. Do not use the current replay/journal as a formal
+   activation record until integrated-path and cohort/outcome semantics are fixed.
+2. Correct equity calendar-duration accounting and commit reproducible research
+   runners plus data/result manifests.
+3. If pursuing a new edge: a slow trend-following trial would have to be
+   pre-registered from scratch. The earlier "positive on all four assets"
+   result is **LEGACY / UNVERIFIED** — its implementation is not in this
+   repository, so it cannot be regenerated and is recorded under
+   `non_reproducible` in `docs/research/artifacts/results.json`. It is not
+   evidence that this family is promising; it is an unverified note.
+4. Run LLM agents on scanner events rather than hourly until an ablation shows
+   measurable incremental value.
 5. n8n pipeline for visual automation (good for portfolio/resume)

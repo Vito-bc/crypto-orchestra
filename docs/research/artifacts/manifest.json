@@ -1,0 +1,269 @@
+{
+  "code_commit": "a92ddf93ebd88b23bb0031ef54361fa2d2725232",
+  "config": {
+    "accepted_gap_bars": {
+      "BTC_USD_1d.parquet": 0,
+      "BTC_USD_1h.parquet": 16,
+      "ETH_USD_1d.parquet": 0,
+      "ETH_USD_1h.parquet": 16,
+      "SOL_USD_1d.parquet": 0,
+      "SOL_USD_1h.parquet": 15,
+      "ZEC_USD_1d.parquet": 0,
+      "ZEC_USD_1h.parquet": 16
+    },
+    "asset_eval_start": {
+      "BTC-USD": "2021-03-01",
+      "ETH-USD": "2021-03-01",
+      "SOL-USD": "2021-06-17",
+      "ZEC-USD": "2021-03-01"
+    },
+    "assets": [
+      "ZEC-USD",
+      "BTC-USD",
+      "ETH-USD",
+      "SOL-USD"
+    ],
+    "config_id": "2026-08-evidence-hardening.v1",
+    "continuous_window": {
+      "end": "2026-07-12",
+      "start": "2021-03-01"
+    },
+    "costs": {
+      "entry_fee_pct": 0.4,
+      "extra_friction_stress_pct": 0.25,
+      "slippage_model": "none (limit entry at level, stop/target at price)",
+      "stop_loss_fee_pct": 0.6,
+      "take_profit_fee_pct": 0.4
+    },
+    "frozen_mechanism": {
+      "atr_stop": 2.0,
+      "atr_target": 3.5,
+      "btc_regime_filter": false,
+      "daily_ema_period": 200,
+      "enabled": true,
+      "max_hold_hours": 36,
+      "min_conditions": 4,
+      "source": "ZEC-USD (git tag v2-adx25-frozen)",
+      "v3_candidate_threshold": 0.2,
+      "v3_enforcement_enabled": false,
+      "vol_spike_ratio": 1.3
+    },
+    "non_reproducible_probes": [
+      "mean_reversion",
+      "slow_trend",
+      "agent_vote_ic",
+      "drawdown_buying",
+      "realised_vol_regime",
+      "bollinger_bandwidth_regime"
+    ],
+    "oos_freeze": "2026-07-12",
+    "period_names": [
+      "bull_2021",
+      "bear_2022",
+      "mid_year_holdout",
+      "recent_year"
+    ],
+    "primary_asset": "ZEC-USD",
+    "regime_metrics": {
+      "er_30": [
+        0.2,
+        0.35
+      ],
+      "vm_30": [
+        0.0,
+        1.0
+      ]
+    },
+    "registry_window_names": [
+      "bull_2021",
+      "bear_2022",
+      "mid_year_holdout",
+      "recent_year"
+    ],
+    "trial_ids": [
+      "V2-continuous",
+      "V2-registry-windows",
+      "V3-ER30-integrated"
+    ],
+    "v3": {
+      "enforcement_enabled": false,
+      "status": "RETIRED / REJECTED FOR ACTIVATION (2026-08-09)",
+      "threshold_historical_only": 0.2
+    }
+  },
+  "config_id": "2026-08-evidence-hardening.v1",
+  "inputs": [
+    {
+      "file": "BTC_USD_1d.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [],
+      "max_ts": "2026-08-09T00:00:00+00:00",
+      "min_ts": "2020-01-02T00:00:00+00:00",
+      "missing_bars_est": 0,
+      "n_gaps": 0,
+      "rows": 2412,
+      "sha256": "12516629df95e1d5c796ee2f45b2bceaa81bd02f86f0053a55571303d7016928"
+    },
+    {
+      "file": "BTC_USD_1h.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [
+        {
+          "after": "2020-01-30T16:00:00+00:00",
+          "gap_hours": 2.0
+        },
+        {
+          "after": "2020-09-04T22:00:00+00:00",
+          "gap_hours": 2.0
+        },
+        {
+          "after": "2020-10-20T19:00:00+00:00",
+          "gap_hours": 2.0
+        },
+        {
+          "after": "2023-03-04T17:00:00+00:00",
+          "gap_hours": 4.0
+        },
+        {
+          "after": "2025-10-25T15:00:00+00:00",
+          "gap_hours": 6.0
+        },
+        {
+          "after": "2026-05-08T01:00:00+00:00",
+          "gap_hours": 6.0
+        }
+      ],
+      "max_ts": "2026-08-09T16:00:00+00:00",
+      "min_ts": "2020-01-01T01:00:00+00:00",
+      "missing_bars_est": 16,
+      "n_gaps": 6,
+      "rows": 57888,
+      "sha256": "8153bd70e90ad25864b28cd7f46dcdaaf3a4bae0448814f3934038d0251fee9c"
+    },
+    {
+      "file": "ETH_USD_1d.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [],
+      "max_ts": "2026-08-09T00:00:00+00:00",
+      "min_ts": "2020-01-02T00:00:00+00:00",
+      "missing_bars_est": 0,
+      "n_gaps": 0,
+      "rows": 2412,
+      "sha256": "58bb0e0d3510cb84b477b6f674cac2eff305d7fee31876e47830087a913bd824"
+    },
+    {
+      "file": "ETH_USD_1h.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [
+        {
+          "after": "2020-01-30T16:00:00+00:00",
+          "gap_hours": 2.0
+        },
+        {
+          "after": "2020-09-04T22:00:00+00:00",
+          "gap_hours": 2.0
+        },
+        {
+          "after": "2020-10-20T19:00:00+00:00",
+          "gap_hours": 2.0
+        },
+        {
+          "after": "2023-03-04T17:00:00+00:00",
+          "gap_hours": 4.0
+        },
+        {
+          "after": "2025-10-25T15:00:00+00:00",
+          "gap_hours": 6.0
+        },
+        {
+          "after": "2026-05-08T01:00:00+00:00",
+          "gap_hours": 6.0
+        }
+      ],
+      "max_ts": "2026-08-09T16:00:00+00:00",
+      "min_ts": "2020-01-01T01:00:00+00:00",
+      "missing_bars_est": 16,
+      "n_gaps": 6,
+      "rows": 57888,
+      "sha256": "55842ab050a481a553a1e7ffcf0b6e99004d74fa3242973e9ccfe29188c6a9aa"
+    },
+    {
+      "file": "SOL_USD_1d.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [],
+      "max_ts": "2026-08-09T00:00:00+00:00",
+      "min_ts": "2021-06-17T00:00:00+00:00",
+      "missing_bars_est": 0,
+      "n_gaps": 0,
+      "rows": 1880,
+      "sha256": "4b0b7dc401a37b37a4e74b09b5e769a6c73138194165d3a28805d775ba6d4082"
+    },
+    {
+      "file": "SOL_USD_1h.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [
+        {
+          "after": "2023-03-04T16:00:00+00:00",
+          "gap_hours": 6.0
+        },
+        {
+          "after": "2025-10-25T15:00:00+00:00",
+          "gap_hours": 6.0
+        },
+        {
+          "after": "2026-05-08T01:00:00+00:00",
+          "gap_hours": 6.0
+        }
+      ],
+      "max_ts": "2026-08-09T16:00:00+00:00",
+      "min_ts": "2021-06-17T16:00:00+00:00",
+      "missing_bars_est": 15,
+      "n_gaps": 3,
+      "rows": 45082,
+      "sha256": "befcb47e55984d956180dbf43403126edd94d79a815c96dbb6967dde192ad26b"
+    },
+    {
+      "file": "ZEC_USD_1d.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [],
+      "max_ts": "2026-08-09T00:00:00+00:00",
+      "min_ts": "2020-12-08T00:00:00+00:00",
+      "missing_bars_est": 0,
+      "n_gaps": 0,
+      "rows": 2071,
+      "sha256": "3e4bd2ca64bf63f0d79cae5872338d6e94a9d4e7896cffee31e2d4767c61d8ed"
+    },
+    {
+      "file": "ZEC_USD_1h.parquet",
+      "gap_threshold_hours": 1,
+      "gaps_sample": [
+        {
+          "after": "2023-03-04T17:00:00+00:00",
+          "gap_hours": 5.0
+        },
+        {
+          "after": "2024-06-09T08:00:00+00:00",
+          "gap_hours": 2.0
+        },
+        {
+          "after": "2025-10-25T15:00:00+00:00",
+          "gap_hours": 6.0
+        },
+        {
+          "after": "2026-05-08T01:00:00+00:00",
+          "gap_hours": 6.0
+        },
+        {
+          "after": "2026-07-17T00:00:00+00:00",
+          "gap_hours": 2.0
+        }
+      ],
+      "max_ts": "2026-08-09T16:00:00+00:00",
+      "min_ts": "2020-12-08T17:00:00+00:00",
+      "missing_bars_est": 16,
+      "n_gaps": 5,
+      "rows": 49664,
+      "sha256": "6b981614724eb2c6a5ab43f2e57f50b9e6510b6733a10d1e411ad9a7aa169b93"
+    }
+  ]
+}
