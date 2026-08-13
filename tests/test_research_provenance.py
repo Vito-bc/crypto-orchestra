@@ -80,9 +80,10 @@ def test_manifest_records_evaluation_boundaries() -> None:
 
 def test_v3_integrated_is_worse_than_unfiltered() -> None:
     """
-    The stated reason for retiring V3 is PF 0.69 integrated vs 0.86 without.
-    If this ever stops holding, the retirement rationale in trial_registry.md is
-    stale and must be revisited — not silently left in place.
+    The stated reason for retiring V3 is PF 0.706 integrated vs 0.761 without
+    (trial 2026-08-warmup-semantics.v1). If this ever stops holding, the
+    retirement rationale in trial_registry.md is stale and must be revisited —
+    not silently left in place.
     """
     r = _load(RESULTS)
     base = _row(r, "V2-continuous")
