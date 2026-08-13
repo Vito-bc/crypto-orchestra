@@ -29,6 +29,21 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _utc(stamp: str):
+    """
+    Parse a bare date or a full ISO stamp to a UTC instant.
+
+    Window boundaries are compared as INSTANTS everywhere in this file.
+    Comparing them as text accepts a real bug: "2022-01-01" and
+    "2022-01-01T00:00:00+00:00" are unequal as strings and identical in time, so
+    a window that was never clipped reads as clipped.
+    """
+    import pandas as pd
+
+    ts = pd.Timestamp(stamp)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+
+
 def _row(results: dict, trial: str) -> dict:
     for r in results["rows"]:
         if r["trial"] == trial:
@@ -162,9 +177,12 @@ def test_registry_windows_match_registered_dates() -> None:
         assert name in PERIODS, f"unknown period {name}"
         assert row["requested_start"] == PERIODS[name]["start"], f"{name} start drifted"
         assert row["end"] == PERIODS[name]["end"], f"{name} end drifted"
-        assert row["start"] >= row["requested_start"], "a window may only be clipped forward"
+        assert _utc(row["start"]) >= _utc(row["requested_start"]), (
+            "a window may only be clipped forward"
+        )
         assert row["start_clipped_to_gate_availability"] == (
-            row["start"] != row["requested_start"]), f"{name} clip flag disagrees with dates"
+            _utc(row["start"]) > _utc(row["requested_start"])
+        ), f"{name} clip flag disagrees with dates"
         seen += 1
     assert seen == 4, f"expected 4 registry windows, found {seen}"
 
@@ -182,12 +200,6 @@ def test_period_cells_record_the_registered_request_not_the_clip() -> None:
     r = _load(RESULTS)
     cells = [x for x in r["rows"] if x["trial"].startswith("period:")]
     assert cells, "no period cells in the artifact"
-    import pandas as pd
-
-    def _utc(stamp: str) -> pd.Timestamp:
-        ts = pd.Timestamp(stamp)
-        return ts.tz_localize("UTC") if ts.tzinfo is None else ts
-
     for c in cells:
         name = c["trial"].rsplit(":", 1)[1]
         assert c["requested_start"] == PERIODS[name]["start"], (
