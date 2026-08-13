@@ -429,16 +429,30 @@ def summarise_journal() -> None:
     closed_a = [s for s in accepted if s.get("pnl_pct") is not None]
     closed_b = [s for s in blocked  if s.get("pnl_pct") is not None]
 
-    n_traded = sum(1 for s in view if s.get("disposition") == "traded")
-    n_elsewhere = sum(1 for s in view if s.get("disposition") == "blocked_elsewhere")
+    # Four SEPARATE counters. Reporting "everything that is not traded or
+    # blocked_elsewhere" as counterfactual silently turned PENDING back into a
+    # settled state — the exact conflation the disposition split exists to end.
+    # counterfactual = V3 blocked it, outcome simulated.
+    # pending        = outcome genuinely unknown (e.g. SUBMITTING awaiting
+    #                  reconciliation). It is NOT a counterfactual.
+    n_by = {"traded": 0, "blocked_elsewhere": 0, "counterfactual": 0, "pending": 0}
+    n_other = 0
+    for s in view:
+        d = s.get("disposition")
+        if d in n_by:
+            n_by[d] += 1
+        else:
+            n_other += 1
 
     print(f"\nV3 Forward OOS Journal — {len(view)} signals total")
     print("  (V3 is RETIRED as an activation candidate — diagnostic only)")
     print(f"  Candidate-accepted : {len(accepted)} ({len(closed_a)} closed)")
     print(f"  Candidate-blocked  : {len(blocked)} shadow ({len(closed_b)} resolved)")
-    print(f"  Disposition        : {n_traded} traded, "
-          f"{n_elsewhere} blocked elsewhere, "
-          f"{len(view) - n_traded - n_elsewhere} counterfactual")
+    print(f"  Disposition        : {n_by['traded']} traded, "
+          f"{n_by['blocked_elsewhere']} blocked elsewhere, "
+          f"{n_by['counterfactual']} counterfactual, "
+          f"{n_by['pending']} pending"
+          + (f", {n_other} unknown" if n_other else ""))
 
     if not closed_a:
         print("\n  No closed candidate-accepted trades yet.")

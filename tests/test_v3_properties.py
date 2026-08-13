@@ -458,3 +458,54 @@ def test_resolver_still_resolves_a_touched_stop(tmp_path, monkeypatch) -> None:
     n = vj.reconcile_pending(asset="ZEC-USD", max_hold_hours=36)
     assert n == 1
     assert vj._build_signal_view(vj.read_journal())[0]["outcome"] == "LOSS"
+
+
+def test_summary_reports_pending_separately_from_counterfactual(tmp_path, monkeypatch, capsys) -> None:
+    """
+    A pending signal must NOT be counted as counterfactual. Pending means the
+    outcome is unknown (e.g. SUBMITTING awaiting reconciliation); counterfactual
+    means V3 blocked it and the outcome was simulated.
+    """
+    vj = _journal_env(tmp_path, monkeypatch)
+
+    # 1 traded, 1 blocked_elsewhere, 1 counterfactual (V3-blocked), 1 pending.
+    sid_t = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True)
+    vj.log_disposition(sid_t, "traded")
+    vj.log_outcome(sid_t, "WIN", 3.0, is_counterfactual=False)
+
+    sid_b = vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-14T00:00:00+00:00", would_block=False),
+        accepted=True)
+    vj.log_disposition(sid_b, "blocked_elsewhere")
+
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-15T00:00:00+00:00",
+                                    would_block=True, blocked=True),
+        accepted=False)                       # -> counterfactual
+
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-16T00:00:00+00:00", would_block=False),
+        accepted=True)                        # -> stays pending (SUBMITTING-like)
+
+    vj.summarise_journal()
+    out = capsys.readouterr().out
+
+    assert "1 traded" in out
+    assert "1 blocked elsewhere" in out
+    assert "1 counterfactual" in out
+    assert "1 pending" in out, "pending must be its own counter, not folded in"
+
+
+def test_summary_pending_is_not_absorbed_into_counterfactual(tmp_path, monkeypatch, capsys) -> None:
+    """With ONLY a pending signal, counterfactual must read zero."""
+    vj = _journal_env(tmp_path, monkeypatch)
+    vj.log_v2_signal(
+        scanner_signal=_scanner_sig("2026-07-13T00:00:00+00:00", would_block=False),
+        accepted=True)
+
+    vj.summarise_journal()
+    out = capsys.readouterr().out
+    assert "0 counterfactual" in out
+    assert "1 pending" in out

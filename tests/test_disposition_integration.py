@@ -42,28 +42,12 @@ def _block_telegram_transport(_block_telegram_sends):
     """
     # Patch the function itself as well: several modules import it lazily inside
     # their functions, so an alias patch on one module does not cover them.
-    import os
-
-    def _no_network(*a, **k):
-        if os.environ.get("DIAG_NET"):
-            import traceback
-            traceback.print_stack()
-        raise AssertionError("test attempted a real HTTP request")
-
-    with patch("notifications.telegram.request.urlopen", side_effect=_no_network), \
-         patch("notifications.telegram.send_telegram_message", return_value=True):
-        yield
-
-    # The guard above is STRICTER than the conftest one: it raises on any HTTP
-    # attempt rather than recording it, and it never fires here — so no request
-    # is made while the test body runs. The conftest counter can still register
-    # activity from a window outside this fixture (late background work during
-    # teardown), which would fail the shared guard for something this test did
-    # not do. Clear it, having already proven the stronger property.
-    import notifications.telegram as _tg
-    outer = _tg.request.urlopen
-    if hasattr(outer, "reset_mock"):
-        outer.reset_mock()
+    # Deliberately does NOT re-patch the transport. The conftest guard is the
+    # single source of truth for "no real HTTP happened", and shadowing it with a
+    # permissive mock — then clearing it — hid the very thing it exists to catch.
+    # Intentional notifications are intercepted at
+    # pipeline.runner.send_telegram_message inside _run() instead.
+    yield
 
 
 # ── Fixtures / boundary stubs ─────────────────────────────────────────────────
@@ -152,8 +136,13 @@ def _run(tmp_path, monkeypatch, *, dry_run: bool, outbox_result=None,
         # built from these classes, so stub the classes. Their .run() raises,
         # which the runner already handles per-agent — the ThreadPool path still
         # executes, only the network call is removed.
+        # ALL SEVEN. Missing AssetNewsAgent/BreakoutAgent left the test calling
+        # Google News, Reddit and Anthropic, and made it depend on a local
+        # ANTHROPIC_API_KEY — so it failed in a clean CI checkout before ever
+        # reaching the placement branch it is supposed to verify.
         for _cls in ("TechnicalAgent", "MacroAgent", "SentimentAgent",
-                     "WhaleAgent", "RiskAgent"):
+                     "WhaleAgent", "RiskAgent", "AssetNewsAgent",
+                     "BreakoutAgent"):
             m = e(patch(f"pipeline.runner.{_cls}"))
             # The error path formats agent.name.value, so it needs a real string.
             m.return_value.name = SimpleNamespace(value=_cls)
@@ -162,10 +151,10 @@ def _run(tmp_path, monkeypatch, *, dry_run: bool, outbox_result=None,
         e(patch("pipeline.runner._check_entry_filters", return_value=(True, "", 1.0)))
         e(patch("pipeline.runner._log_decision"))
         e(patch("pipeline.runner._log_order_event"))
+        # Intentional notifications only. The transport stays guarded by the
+        # conftest fixture, which must remain able to fail this test.
         e(patch("pipeline.runner.send_telegram_message"))
-        # Inner transport patch (the pattern conftest documents): other modules
-        # import send_telegram_message directly, so block it at the socket.
-        e(patch("notifications.telegram.request.urlopen"))
+        e(patch("notifications.telegram.send_telegram_message", return_value=True))
         e(patch("exchange.coinbase_client.is_dry_run", return_value=dry_run))
 
         orch = e(patch("pipeline.runner.OrchestratorAgent"))
