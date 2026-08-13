@@ -335,6 +335,12 @@ def _round(value, digits: int = 6):
     return value
 
 
+def _as_utc(stamp: str) -> pd.Timestamp:
+    """Parse a bare date or a full ISO stamp to a UTC instant."""
+    ts = pd.Timestamp(stamp)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+
+
 def effective_start(asset: str, requested: str) -> str:
     """
     Clip a requested window start to the REGISTERED boundary at which the
@@ -344,9 +350,8 @@ def effective_start(asset: str, requested: str) -> str:
     strategy: until every gate has its inputs, the scanner can only refuse
     signals (previously: silently admit them under a weaker mechanism).
     """
-    declared = pd.Timestamp(RESEARCH_CONFIG["asset_effective_start"][asset])
-    want = pd.Timestamp(requested, tz="UTC") if len(requested) <= 10 else pd.Timestamp(requested)
-    return max(want, declared).isoformat()
+    declared = _as_utc(RESEARCH_CONFIG["asset_effective_start"][asset])
+    return max(_as_utc(requested), declared).isoformat()
 
 
 def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool,
@@ -384,7 +389,12 @@ def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool,
         # the evaluated window is not the one that was asked for, and why.
         "requested_start": requested,
         "effective_start": start,
-        "start_clipped_to_gate_availability": start != requested,
+        # Compare INSTANTS, not strings. effective_start() returns a full ISO
+        # stamp while a registered start is a bare date, so "2022-01-01" vs
+        # "2022-01-01T00:00:00+00:00" is unequal as text and identical in time —
+        # which flagged three unclipped registry windows as clipped.
+        "start_clipped_to_gate_availability": bool(
+            pd.Timestamp(start) > _as_utc(requested)),
         "n_gate_unavailable": int(res.get("blocked_gate_unavailable", 0)),
         "v3_enforcement": v3_enforcement,
         "mechanism": res.get("mechanism"),

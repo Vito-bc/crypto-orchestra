@@ -182,19 +182,37 @@ def test_period_cells_record_the_registered_request_not_the_clip() -> None:
     r = _load(RESULTS)
     cells = [x for x in r["rows"] if x["trial"].startswith("period:")]
     assert cells, "no period cells in the artifact"
+    import pandas as pd
+
+    def _utc(stamp: str) -> pd.Timestamp:
+        ts = pd.Timestamp(stamp)
+        return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+
     for c in cells:
         name = c["trial"].rsplit(":", 1)[1]
         assert c["requested_start"] == PERIODS[name]["start"], (
             f"{c['trial']} reports requested_start {c['requested_start']}, "
             f"but the registered window opens at {PERIODS[name]['start']}"
         )
+        # Compare INSTANTS. Comparing the strings would accept the same bug the
+        # runner had: "2022-01-01" != "2022-01-01T00:00:00+00:00" as text, so a
+        # window that was never clipped reported clip=True.
         assert c["start_clipped_to_gate_availability"] == (
-            c["start"] != c["requested_start"])
+            _utc(c["start"]) > _utc(c["requested_start"])), (
+            f"{c['trial']} clip flag disagrees with its own dates"
+        )
 
-    zec_bull = next(c for c in cells if c["trial"] == "period:ZEC-USD:bull_2021")
-    assert zec_bull["requested_start"] == "2021-03-01"
-    assert zec_bull["start"].startswith("2021-06-26")
-    assert zec_bull["start_clipped_to_gate_availability"] is True
+    zec = {c["trial"].rsplit(":", 1)[1]: c
+           for c in cells if c["asset"] == "ZEC-USD"}
+    assert zec["bull_2021"]["requested_start"] == "2021-03-01"
+    assert zec["bull_2021"]["start"].startswith("2021-06-26")
+    assert zec["bull_2021"]["start_clipped_to_gate_availability"] is True
+    # The other three ZEC windows open after the boundary and must NOT be
+    # reported as clipped — otherwise the flag carries no information.
+    for name in ("bear_2022", "mid_year_holdout", "recent_year"):
+        assert zec[name]["start_clipped_to_gate_availability"] is False, (
+            f"{name} was not clipped but claims it was"
+        )
 
 
 def test_warmup_exclusion_window_is_half_open() -> None:
