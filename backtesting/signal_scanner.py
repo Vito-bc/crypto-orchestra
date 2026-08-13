@@ -228,6 +228,11 @@ ASSET_CONFIG = {
 ASSET_PARAMS = {k: {"atr_stop": v["atr_stop"], "atr_target": v["atr_target"]}
                 for k, v in ASSET_CONFIG.items()}
 
+# How far back daily frames are pulled, for the asset itself and for the BTC
+# regime column alike. Both must use the same start, or the BTC gate becomes
+# evaluable over a different span than the daily trend gate.
+_DAILY_HISTORY_START = "2020-01-01"
+
 # Shared hard gates (not per-asset — these are structural, not tunable)
 _MIN_VOL_RATIO     = 0.8
 _WHIPSAW_MAX_STOPS = 2
@@ -270,12 +275,107 @@ def _attach_daily_context(signal_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd
 
 # ── Signal detection ──────────────────────────────────────────────────────────
 
-def _detect_breakout_signal(df: pd.DataFrame, i: int, cfg: dict) -> dict | None:
+def _cell(source: pd.Series, col: str) -> float | None:
+    """
+    Read one indicator value, or None when it is genuinely unavailable.
+
+    Returns None for an absent column and for NaN alike — the caller must not be
+    able to tell "the merge produced no value" from "the indicator has not warmed
+    up", because both mean the same thing: this gate cannot be evaluated here.
+
+    Deliberately returns None rather than a neutral default. The predecessor
+    idiom `_safe(col) or 1.0` also swallowed a legitimate 0.0 (a zero-volume hour
+    became volume_ratio 1.0 and cleared the 0.8 volume gate), so the fallback was
+    not merely unsound on NaN.
+    """
+    try:
+        if col not in source.index:
+            return None
+        v = float(source[col])
+    except (TypeError, ValueError):
+        return None
+    return None if v != v else v      # NaN
+
+
+def gate_input_columns(cfg: dict, *, btc_regime_applicable: bool) -> dict[str, list[str]]:
+    """
+    The merged-frame columns each DECLARED gate needs, for this config.
+
+    "Declared" is per-asset: a gate the effective config switches off is not
+    applicable and its absence is not a defect. Only an APPLICABLE gate whose
+    input is missing refuses a signal.
+    """
+    cols = {
+        "vol_gate":    ["volume_ratio"],
+        "trend_4h":    ["close_4h", "ema50_4h"],
+        "daily_trend": ["close_1d", f"ema{cfg.get('daily_ema_period', 200)}_1d"],
+        "scored_conditions": ["rsi", "adx", "volume_ratio", "cvd_24h",
+                              "close", "ema50"],
+    }
+    if btc_regime_applicable:
+        cols["btc_regime"] = ["btc_close_1d", "btc_ema50_1d"]
+    return cols
+
+
+def gate_availability(df: pd.DataFrame, cfg: dict, *,
+                      btc_regime_applicable: bool) -> dict:
+    """
+    First timestamp on the MERGED 1h frame at which each declared gate becomes
+    evaluable, plus the effective start for the whole mechanism.
+
+    This is the boundary that must be REGISTERED for a research run. Recomputing
+    it silently per run would let the evaluation window drift with the data
+    cache; the runner declares it and compares.
+    """
+    per_gate: dict[str, str | None] = {}
+    for gate, cols in sorted(gate_input_columns(
+            cfg, btc_regime_applicable=btc_regime_applicable).items()):
+        missing_col = [c for c in cols if c not in df.columns]
+        if missing_col:
+            per_gate[gate] = None            # never evaluable on this frame
+            continue
+        ok = df[cols].notna().all(axis=1)
+        per_gate[gate] = (df.index[ok.values.argmax()].isoformat()
+                          if bool(ok.any()) else None)
+
+    firsts = [v for v in per_gate.values()]
+    effective = (None if any(v is None for v in firsts) or not firsts
+                 else max(firsts))
+    return {"per_gate": per_gate, "effective_start": effective}
+
+
+def _detect_breakout_signal(df: pd.DataFrame, i: int, cfg: dict, *,
+                            btc_regime_applicable: bool | None = None) -> dict | None:
     """
     Check if row `i` in `df` represents a valid breakout BUY signal.
     Mirrors the logic in agents/breakout_agent.py exactly.
     cfg is the asset's ASSET_CONFIG entry — drives per-asset thresholds.
-    Returns None if no signal, or a dict with signal details.
+
+    Three outcomes, deliberately distinguishable by the caller:
+
+      None                                   — NO SIGNAL (no EMA50 cross here).
+      {"blocked": "gate_inputs_unavailable"} — a signal formed, but at least one
+                                               input a DECLARED gate needs is not
+                                               computable on this bar. Refused.
+      {"blocked": <gate>}                    — a declared gate actually rejected it.
+      {"signal": "BUY", ...}                 — accepted.
+
+    `gate_inputs_unavailable` is the fix for trial 2026-08-warmup-semantics. This
+    function used to fail OPEN on a missing indicator: `_safe(...) or 1.0` fed a
+    hard gate a synthetic neutral value, and `x is not None and x < y` skipped the
+    gate outright when x was NaN. Both meant that while an indicator was still
+    warming up the bar was evaluated by a WEAKER mechanism than the config
+    declares — invisibly, because nothing counted it. On the ZEC continuous
+    window that admitted 19 trades worth +22.28% before the 200-day daily EMA
+    existed, which is where the whole apparent bull_2021 edge came from. A gate
+    that cannot be evaluated must refuse the signal, never wave it through.
+
+    btc_regime_applicable:
+      None  — derive from `cfg["btc_regime_filter"]`.
+      bool  — explicit. Callers pass False for BTC-USD itself, whose own daily
+              EMA is never attached as a separate BTC-regime column. This keeps
+              "gate not applicable to this asset" distinct from "gate applicable
+              but its input is missing"; only the latter refuses a signal.
     """
     if i < 12:
         return None
@@ -302,46 +402,69 @@ def _detect_breakout_signal(df: pd.DataFrame, i: int, cfg: dict) -> dict | None:
     row       = df.iloc[i]
     cross_row = df.iloc[i - candles_above + 1] if i >= candles_above else df.iloc[0]
 
-    def _safe(col):
-        try:
-            v = float(row[col]) if col in row.index else None
-            return None if v is None or (v != v) else v  # NaN check
-        except Exception:
-            return None
+    # Per-asset thresholds from config
+    vol_spike    = cfg.get("vol_spike_ratio", 1.3)
+    min_cond     = cfg.get("min_conditions",  3)
+    daily_period = cfg.get("daily_ema_period", 200)
+    if btc_regime_applicable is None:
+        btc_regime_applicable = bool(cfg.get("btc_regime_filter", False))
 
-    vol_ratio    = _safe("volume_ratio") or 1.0
-    adx_now      = _safe("adx") or 0.0
-    close_now    = _safe("close") or 0.0
-    ema50_now    = _safe("ema50") or 1.0
-    close_4h     = _safe("close_4h")
-    ema50_4h     = _safe("ema50_4h")
-    cvd_24h      = _safe("cvd_24h") or 0.0
+    # ── Required-input contract ───────────────────────────────────────────────
+    # Every name below is consumed either by a hard gate or by the scored
+    # conditions, so every one of them is result-determining. `notna` is checked
+    # on the MERGED 1h row, not on the source frame: `_attach_daily_context`
+    # shifts daily stamps +1d and `attach_higher_timeframe_context` shifts 4h
+    # stamps +4h (both anti-look-ahead), so availability on the 1h grid lags the
+    # source frame. A bar-count heuristic on the daily frame answers a different
+    # question — and `regime["ema200_valid"]` is hardcoded to 200 regardless of
+    # the configured `daily_ema_period`, so it cannot serve as this check either.
+    required = {
+        "close":        _cell(row, "close"),
+        "ema50":        _cell(row, "ema50"),
+        "volume_ratio": _cell(row, "volume_ratio"),
+        "adx":          _cell(row, "adx"),
+        "cvd_24h":      _cell(row, "cvd_24h"),
+        "close_4h":     _cell(row, "close_4h"),
+        "ema50_4h":     _cell(row, "ema50_4h"),
+        "close_1d":     _cell(row, "close_1d"),
+        f"ema{daily_period}_1d": _cell(row, f"ema{daily_period}_1d"),
+        # Read off the cross bar, not the signal bar — a different row, so it
+        # needs its own availability check.
+        "rsi@cross":    _cell(cross_row, "rsi"),
+    }
+    if btc_regime_applicable:
+        required["btc_close_1d"] = _cell(row, "btc_close_1d")
+        required["btc_ema50_1d"] = _cell(row, "btc_ema50_1d")
+
+    missing = sorted(k for k, v in required.items() if v is None)
+    if missing:
+        return {"blocked": "gate_inputs_unavailable", "missing": missing}
+
+    vol_ratio    = required["volume_ratio"]
+    adx_now      = required["adx"]
+    close_now    = required["close"]
+    ema50_now    = required["ema50"]
+    close_4h     = required["close_4h"]
+    ema50_4h     = required["ema50_4h"]
+    cvd_24h      = required["cvd_24h"]
+    close_1d     = required["close_1d"]
+    daily_ema    = required[f"ema{daily_period}_1d"]
+    rsi_at_cross = required["rsi@cross"]
     pct_above    = (close_now - ema50_now) / ema50_now * 100
 
-    rsi_at_cross = float(cross_row["rsi"]) if "rsi" in cross_row.index else 50.0
-
-    # Per-asset thresholds from config
-    vol_spike   = cfg.get("vol_spike_ratio", 1.3)
-    min_cond    = cfg.get("min_conditions",  3)
-    daily_period = cfg.get("daily_ema_period", 200)
-
-    # Hard gates
+    # Hard gates. Every operand is known to be present, so each comparison is a
+    # real decision — none of them can be skipped by a missing value any more.
     if vol_ratio < _MIN_VOL_RATIO:
         return {"blocked": "vol_gate", "vol_ratio": round(vol_ratio, 2)}
 
-    if close_4h is not None and ema50_4h is not None and close_4h < ema50_4h:
+    if close_4h < ema50_4h:
         return {"blocked": "4h_trend", "close_4h": round(close_4h, 2), "ema50_4h": round(ema50_4h, 2)}
 
     # BTC macro regime — block long entries when BTC is below its daily EMA50
-    if cfg.get("btc_regime_filter", False):
-        btc_close = _safe("btc_close_1d")
-        btc_ema50 = _safe("btc_ema50_1d")
-        if btc_close is not None and btc_ema50 is not None and btc_close < btc_ema50:
-            return {"blocked": "btc_regime"}
+    if btc_regime_applicable and required["btc_close_1d"] < required["btc_ema50_1d"]:
+        return {"blocked": "btc_regime"}
 
-    close_1d   = _safe("close_1d")
-    daily_ema  = _safe(f"ema{daily_period}_1d")
-    if close_1d is not None and daily_ema is not None and close_1d < daily_ema:
+    if close_1d < daily_ema:
         return {"blocked": "daily_trend", "close_1d": round(close_1d, 2),
                 f"ema{daily_period}_1d": round(daily_ema, 2)}
 
@@ -369,8 +492,8 @@ def _detect_breakout_signal(df: pd.DataFrame, i: int, cfg: dict) -> dict | None:
         "adx":          round(adx_now, 1),
         "vol_ratio":    round(vol_ratio, 2),
         "pct_above":    round(pct_above, 2),
-        "close_4h":     round(close_4h, 2) if close_4h else None,
-        "ema50_4h":     round(ema50_4h, 2) if ema50_4h else None,
+        "close_4h":     round(close_4h, 2),
+        "ema50_4h":     round(ema50_4h, 2),
         "blocked":      None,
     }
 
@@ -649,11 +772,12 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
 
     sig_df   = _download_and_compute(asset, period["warmup"], period["end"], "1h")
     trend_df = _download_and_compute(asset, period["warmup"], period["end"], "4h")
-    # Daily data: extend warmup far back so EMA200 (200 trading days ≈ 10 months) is valid.
-    # yfinance daily has no 730-day limit, so "2022-01-01" is safe for any period.
-    # Start daily from Coinbase listing date (2020-12-08) so EMA200 and ER-30
-    # are valid even for periods that start in 2021.
-    daily_df = _download_and_compute(asset, "2020-01-01", period["end"], "1d")
+    # Daily data: extend warmup far back so EMA200 (200 trading days ≈ 10 months)
+    # is valid. This only reaches as far back as the asset's listing date, so for
+    # an asset listed close to the window start the daily EMA is still NaN for
+    # its first ~200 days — that is exactly why the gates fail closed and why the
+    # runner registers an effective_start. See gate_availability().
+    daily_df = _download_and_compute(asset, _DAILY_HISTORY_START, period["end"], "1d")
 
     if sig_df is None or trend_df is None:
         print(f"  {asset}: no data")
@@ -681,8 +805,20 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
 
     # BTC regime filter — attach BTC daily close vs EMA50 for each 1h bar
     # Must come after asset_cfg is resolved (needs btc_regime_filter flag).
-    if asset != "BTC-USD" and asset_cfg.get("btc_regime_filter", False):
-        btc_daily = _download_and_compute("BTC-USD", "2022-01-01", period["end"], "1d")
+    # BTC-USD itself never gets this column, so for BTC the gate is NOT
+    # APPLICABLE rather than unavailable — the distinction decides whether a
+    # missing column refuses a signal.
+    btc_regime_applicable = (asset != "BTC-USD"
+                             and bool(asset_cfg.get("btc_regime_filter", False)))
+    if btc_regime_applicable:
+        # Same daily history start as the asset's own daily frame. This used to
+        # be hardcoded to "2022-01-01", which left the column NaN for every
+        # pre-2022 bar. Under the old fail-open rule that silently dropped the
+        # gate; under fail-closed it would refuse every pre-2022 signal instead.
+        # Neither is the declared mechanism — so make the input actually cover
+        # the window rather than choosing which wrong answer to give.
+        btc_daily = _download_and_compute("BTC-USD", _DAILY_HISTORY_START,
+                                          period["end"], "1d")
         if btc_daily is not None:
             btc_regime_cols = btc_daily[["time", "close", "ema50"]].copy()
             btc_regime_cols = btc_regime_cols.rename(
@@ -719,6 +855,11 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
     blocked_cond     = 0
     blocked_whipsaw  = 0
     blocked_v3        = 0
+    # Signals refused because a DECLARED gate could not be evaluated on that bar.
+    # Every one of these used to be silently admitted under a weaker mechanism.
+    blocked_unavail   = 0
+    last_unavail_ts: pd.Timestamp | None = None
+    missing_seen: dict[str, int] = {}
     skip_until        = -1   # don't double-enter
     recent_stop_ts: list[pd.Timestamp] = []
     v3_threshold      = asset_cfg.get("v3_candidate_threshold")
@@ -737,14 +878,21 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
         if i < skip_until:
             continue
 
-        result = _detect_breakout_signal(df, i, asset_cfg)
+        result = _detect_breakout_signal(
+            df, i, asset_cfg, btc_regime_applicable=btc_regime_applicable)
         if result is None:
             continue
 
         ts    = df.index[i]
         price = float(df.iloc[i]["close"])
 
-        if result.get("blocked") == "vol_gate":
+        if result.get("blocked") == "gate_inputs_unavailable":
+            blocked_unavail += 1
+            last_unavail_ts = ts
+            for name in result.get("missing", []):
+                missing_seen[name] = missing_seen.get(name, 0) + 1
+            continue
+        elif result.get("blocked") == "vol_gate":
             blocked_vol += 1
             continue
         elif result.get("blocked") == "4h_trend":
@@ -819,6 +967,17 @@ def scan_asset(asset: str, period: dict, *, v3_enforcement: bool | None = None,
         "blocked_cond":     blocked_cond,
         "blocked_whipsaw":  blocked_whipsaw,
         "blocked_v3":       blocked_v3,
+        # Warm-up accounting. `blocked_gate_unavailable` counts signals that
+        # formed but could not be judged by the declared mechanism; under the
+        # previous fail-open rule every one of them was ACCEPTED instead.
+        "blocked_gate_unavailable": blocked_unavail,
+        "last_gate_unavailable_ts": (last_unavail_ts.isoformat()
+                                     if last_unavail_ts is not None else None),
+        "gate_unavailable_by_input": dict(sorted(missing_seen.items())),
+        "btc_regime_applicable": btc_regime_applicable,
+        "gate_availability": gate_availability(
+            df, asset_cfg, btc_regime_applicable=btc_regime_applicable),
+        "requested_start":  period["start"],
         "atr_stop":         atr_stop,
         "atr_target":       atr_target,
     }
@@ -858,8 +1017,10 @@ def scan_latest(asset: str) -> dict | None:
         df.index = pd.to_datetime(df["time"], utc=True)
 
     # BTC regime filter — attach BTC daily EMA50 so _detect_breakout_signal can check
-    if asset != "BTC-USD" and cfg.get("btc_regime_filter", False):
-        btc_daily = _download_and_compute("BTC-USD", "2022-01-01", today, "1d")
+    btc_regime_applicable = (asset != "BTC-USD"
+                             and bool(cfg.get("btc_regime_filter", False)))
+    if btc_regime_applicable:
+        btc_daily = _download_and_compute("BTC-USD", _DAILY_HISTORY_START, today, "1d")
         if btc_daily is not None:
             btc_regime_cols = btc_daily[["time", "close", "ema50"]].copy()
             btc_regime_cols = btc_regime_cols.rename(
@@ -882,8 +1043,19 @@ def scan_latest(asset: str) -> dict | None:
     if i < 12:
         return None
 
-    result = _detect_breakout_signal(df, i, cfg)
-    if result is None or result.get("blocked"):
+    result = _detect_breakout_signal(df, i, cfg,
+                                     btc_regime_applicable=btc_regime_applicable)
+    if result is None:
+        return None
+    if result.get("blocked") == "gate_inputs_unavailable":
+        # LIVE SAFETY: a declared gate could not be evaluated on the last closed
+        # candle — most plausibly a failed daily-candle download, which used to
+        # drop the daily trend veto entirely and let a BUY through during a data
+        # outage. Refuse, and say so: a silent None would look like "no setup".
+        print(f"[ScanLatest] {asset}: REFUSED — declared gate inputs unavailable: "
+              f"{', '.join(result.get('missing', []))}")
+        return None
+    if result.get("blocked"):
         return None
 
     ts = df.index[i]

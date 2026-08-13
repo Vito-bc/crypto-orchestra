@@ -85,6 +85,7 @@ def _run_scan(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp,
     blocked_4h      = 0
     blocked_cond    = 0
     blocked_whipsaw = 0
+    blocked_other: dict[str, int] = {}
     skip_until      = -1
     recent_stop_ts: list[pd.Timestamp] = []
 
@@ -109,6 +110,15 @@ def _run_scan(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp,
             blocked_4h += 1; continue
         if result.get("blocked") == "conditions":
             blocked_cond += 1; continue
+        # Catch-all. This loop only enumerated three of the blocked reasons, so a
+        # `daily_trend`- or `btc_regime`-blocked result fell through and was
+        # TRADED — a hard gate ignored outright. Adding the new
+        # `gate_inputs_unavailable` reason would have leaked the same way.
+        # Counted separately so the omission stays visible rather than being
+        # folded into an existing bucket.
+        if result.get("blocked"):
+            blocked_other[result["blocked"]] = blocked_other.get(result["blocked"], 0) + 1
+            continue
 
         cutoff = ts - pd.Timedelta(hours=_WHIPSAW_WINDOW_H)
         recent_stop_ts = [t for t in recent_stop_ts if t >= cutoff]
@@ -161,6 +171,22 @@ def _run_scan(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp,
 
 def _load_asset(asset: str) -> pd.DataFrame | None:
     """Download full range once, compute indicators, merge 4h context."""
+    raise RuntimeError(
+        "walk_forward is disabled pending trial 2026-08-warmup-semantics.\n"
+        "\n"
+        "This loader never attached the daily frame, so `close_1d` / `ema*_1d` "
+        "were absent from every row and the declared daily-EMA trend gate was "
+        "skipped for every signal on every asset — walk-forward has always "
+        "validated a WEAKER mechanism than the one it reports on. The scan loop "
+        "additionally enumerated only three blocked reasons, so `daily_trend` "
+        "and `btc_regime` blocks fell through and were traded.\n"
+        "\n"
+        "Now that the gates fail closed, running this unchanged would refuse "
+        "every signal and report an empty, meaningless walk-forward. Repairing "
+        "it means attaching daily + BTC-regime context here, which changes this "
+        "tool's numbers and is out of scope for the current PR. Recorded in "
+        "docs/trial_registry.md; fix in a follow-up before relying on it."
+    )
     sig_df   = _download_and_compute(asset, _GLOBAL_WARMUP, _GLOBAL_END, "1h")
     trend_df = _download_and_compute(asset, _GLOBAL_WARMUP, _GLOBAL_END, "4h")
     if sig_df is None or trend_df is None:
