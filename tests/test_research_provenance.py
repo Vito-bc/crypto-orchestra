@@ -29,6 +29,21 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _utc(stamp: str):
+    """
+    Parse a bare date or a full ISO stamp to a UTC instant.
+
+    Window boundaries are compared as INSTANTS everywhere in this file.
+    Comparing them as text accepts a real bug: "2022-01-01" and
+    "2022-01-01T00:00:00+00:00" are unequal as strings and identical in time, so
+    a window that was never clipped reads as clipped.
+    """
+    import pandas as pd
+
+    ts = pd.Timestamp(stamp)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+
+
 def _row(results: dict, trial: str) -> dict:
     for r in results["rows"]:
         if r["trial"] == trial:
@@ -51,7 +66,7 @@ def test_manifest_hashes_every_input() -> None:
     for inp in m["inputs"]:
         assert len(inp["sha256"]) == 64, f"{inp['file']}: not a SHA-256"
         assert inp["rows"] > 0
-        assert inp["min_ts"] < inp["max_ts"]
+        assert _utc(inp["min_ts"]) < _utc(inp["max_ts"])
 
 
 def test_manifest_records_evaluation_boundaries() -> None:
@@ -65,30 +80,31 @@ def test_manifest_records_evaluation_boundaries() -> None:
 
 def test_v3_integrated_is_worse_than_unfiltered() -> None:
     """
-    The stated reason for retiring V3 is PF 0.69 integrated vs 0.86 without.
-    If this ever stops holding, the retirement rationale in trial_registry.md is
-    stale and must be revisited — not silently left in place.
+    The stated reason for retiring V3 is PF 0.706 integrated vs 0.761 without
+    (trial 2026-08-warmup-semantics.v1). If this ever stops holding, the
+    retirement rationale in trial_registry.md is stale and must be revisited —
+    not silently left in place.
     """
     r = _load(RESULTS)
     base = _row(r, "V2-continuous")
     integ = _row(r, "V3-ER30-integrated")
-    assert base["pf"] == pytest.approx(0.86, abs=0.02), (
-        f"registry documents PF 0.86 for the continuous window, artifact says {base['pf']}"
+    assert base["pf"] == pytest.approx(0.76, abs=0.02), (
+        f"registry documents PF 0.76 for the continuous window, artifact says {base['pf']}"
     )
-    assert integ["pf"] == pytest.approx(0.69, abs=0.02), (
-        f"registry documents PF 0.69 for integrated V3, artifact says {integ['pf']}"
+    assert integ["pf"] == pytest.approx(0.71, abs=0.02), (
+        f"registry documents PF 0.71 for integrated V3, artifact says {integ['pf']}"
     )
     assert integ["pf"] < base["pf"], "V3 must be worse — that is why it is retired"
 
 
 def test_continuous_window_is_unprofitable() -> None:
-    """CLAUDE.md states PF 0.86, -0.37%/trade, n=133. Keep prose honest."""
+    """CLAUDE.md states PF 0.76, -0.62%/trade, n=114. Keep prose honest."""
     r = _load(RESULTS)
     base = _row(r, "V2-continuous")
-    assert base["n_closed"] == 133, f"documented n=133, artifact says {base['n_closed']}"
+    assert base["n_closed"] == 114, f"documented n=114, artifact says {base['n_closed']}"
     assert base["pf"] < 1.0, "documented as not profitable"
-    # expectancy is a fraction in the artifact (-0.003662 == -0.37%)
-    assert base["expectancy_pct"] * 100 == pytest.approx(-0.37, abs=0.02)
+    # expectancy is a fraction in the artifact (-0.006227 == -0.62%)
+    assert base["expectancy_pct"] * 100 == pytest.approx(-0.62, abs=0.02)
 
 
 def test_zec_drawdown_matches_documented_audit() -> None:
@@ -145,6 +161,11 @@ def test_registry_windows_match_registered_dates() -> None:
     """
     Window dates come from signal_scanner.PERIODS, not hardcoded copies. Three
     of four were previously wrong, which silently changed the trade counts.
+
+    `requested_start` is the registered date; `start` may be later when the
+    mechanism is not yet computable there (bull_2021 opens 2021-03-01 but ZEC's
+    daily EMA200 does not exist until 2021-06-26). Both must be present, and the
+    clip must be flagged rather than folded silently into `start`.
     """
     from backtesting.signal_scanner import PERIODS
 
@@ -155,17 +176,166 @@ def test_registry_windows_match_registered_dates() -> None:
             continue
         name = row["trial"].split(":", 1)[1]
         assert name in PERIODS, f"unknown period {name}"
-        assert row["start"] == PERIODS[name]["start"], f"{name} start drifted"
+        assert row["requested_start"] == PERIODS[name]["start"], f"{name} start drifted"
         assert row["end"] == PERIODS[name]["end"], f"{name} end drifted"
+        assert _utc(row["start"]) >= _utc(row["requested_start"]), (
+            "a window may only be clipped forward"
+        )
+        assert row["start_clipped_to_gate_availability"] == (
+            _utc(row["start"]) > _utc(row["requested_start"])
+        ), f"{name} clip flag disagrees with dates"
         seen += 1
     assert seen == 4, f"expected 4 registry windows, found {seen}"
 
 
+def test_period_cells_record_the_registered_request_not_the_clip() -> None:
+    """
+    A period cell must state the window it was ASKED for. Clipping the date
+    before handing it to the scanner made the row claim requested_start ==
+    effective_start with the clip flag false, erasing the fact the field exists
+    to record: period:ZEC-USD:bull_2021 was asked for 2021-03-01, not
+    2021-06-26.
+    """
+    from backtesting.signal_scanner import PERIODS
+
+    r = _load(RESULTS)
+    cells = [x for x in r["rows"] if x["trial"].startswith("period:")]
+    assert cells, "no period cells in the artifact"
+    for c in cells:
+        name = c["trial"].rsplit(":", 1)[1]
+        assert c["requested_start"] == PERIODS[name]["start"], (
+            f"{c['trial']} reports requested_start {c['requested_start']}, "
+            f"but the registered window opens at {PERIODS[name]['start']}"
+        )
+        # Compare INSTANTS. Comparing the strings would accept the same bug the
+        # runner had: "2022-01-01" != "2022-01-01T00:00:00+00:00" as text, so a
+        # window that was never clipped reported clip=True.
+        assert c["start_clipped_to_gate_availability"] == (
+            _utc(c["start"]) > _utc(c["requested_start"])), (
+            f"{c['trial']} clip flag disagrees with its own dates"
+        )
+
+    zec = {c["trial"].rsplit(":", 1)[1]: c
+           for c in cells if c["asset"] == "ZEC-USD"}
+    assert zec["bull_2021"]["requested_start"] == "2021-03-01"
+    assert zec["bull_2021"]["start"].startswith("2021-06-26")
+    assert zec["bull_2021"]["start_clipped_to_gate_availability"] is True
+    # The other three ZEC windows open after the boundary and must NOT be
+    # reported as clipped — otherwise the flag carries no information.
+    for name in ("bear_2022", "mid_year_holdout", "recent_year"):
+        assert zec[name]["start_clipped_to_gate_availability"] is False, (
+            f"{name} was not clipped but claims it was"
+        )
+
+
+def test_warmup_exclusion_window_is_half_open() -> None:
+    """
+    [requested_start, effective_start). The bar AT the effective start is the
+    first EVALUATED bar; counting it as excluded too would put one candle in
+    both the warm-up and the corrected window.
+    """
+    r = _load(RESULTS)
+    m = _load(MANIFEST)
+    declared = m["config"]["asset_effective_start"]
+    for e in r["warmup_exclusions"]:
+        if e["window"] is None:
+            assert e["excluded_candles"] == 0
+            continue
+        eff = declared[e["asset"]]
+        assert _utc(e["window"]["end"]) < _utc(eff), (
+            f"{e['asset']} warm-up ends at {e['window']['end']}, not strictly "
+            f"before the effective start {eff}"
+        )
+        assert e["window"]["interval"] == "[requested_start, effective_start)"
+        last = e.get("last_excluded_signal_ts")
+        if last is not None:
+            assert _utc(last) < _utc(eff), (
+                f"{e['asset']} excluded a signal at {last}, at or past {eff}"
+            )
+
+
+def test_no_registered_row_contains_an_unevaluable_signal() -> None:
+    """
+    THE invariant of trial 2026-08-warmup-semantics: inside a registered window
+    no signal may be accepted while a declared gate's input is missing. Before
+    the fix, 327 such ZEC bars and 534 SOL bars were evaluated by a weaker
+    mechanism, and the ones that cleared the remaining gates were traded.
+    """
+    r = _load(RESULTS)
+    offenders = [x["trial"] for x in r["rows"] if x.get("n_gate_unavailable")]
+    assert not offenders, f"rows evaluated on missing gate inputs: {offenders}"
+
+
+def test_effective_boundaries_are_registered_and_explain_the_clipping() -> None:
+    """
+    The boundary must be declared in the artifact, not implied by the rows —
+    otherwise a reader cannot tell a deliberate window from a silent truncation.
+    """
+    r = _load(RESULTS)
+    m = _load(MANIFEST)
+    declared = m["config"]["asset_effective_start"]
+    assert set(declared) == {"ZEC-USD", "BTC-USD", "ETH-USD", "SOL-USD"}
+
+    by_asset = {b["asset"]: b for b in r["gate_boundaries"]}
+    for asset, start in declared.items():
+        assert by_asset[asset]["effective_start"] == start
+        assert by_asset[asset]["per_gate_first_valid"]["daily_trend"]
+
+    # ZEC and SOL are the two assets whose daily EMA200 postdates their listing.
+    listing = m["config"]["asset_listing_start"]
+    assert _utc(declared["ZEC-USD"]) > _utc(listing["ZEC-USD"])
+    assert _utc(declared["SOL-USD"]) > _utc(listing["SOL-USD"])
+
+    for row in r["rows"]:
+        if "effective_start" not in row:
+            continue
+        assert _utc(row["start"]) >= _utc(declared[row["asset"]]), (
+            f"{row['trial']} starts before its registered boundary"
+        )
+
+
+def test_warmup_exclusions_are_quantified() -> None:
+    """
+    The correction's size belongs in the artifact. BTC/ETH are unaffected —
+    their EMA200 predates the window — so a non-zero exclusion there would mean
+    the boundary logic had started firing where it should not.
+    """
+    r = _load(RESULTS)
+    excl = {e["asset"]: e for e in r["warmup_exclusions"]}
+    assert excl["ZEC-USD"]["refused_signals_with_missing_input"] > 0
+    assert excl["SOL-USD"]["refused_signals_with_missing_input"] > 0
+    assert excl["BTC-USD"]["refused_signals_with_missing_input"] == 0
+    assert excl["ETH-USD"]["refused_signals_with_missing_input"] == 0
+    assert "ema200_1d" in excl["ZEC-USD"]["by_missing_input"]
+
+
+def test_artifact_records_what_it_supersedes() -> None:
+    """
+    The previous artifact measured a different mechanism. Saying so in the
+    artifact is what stops the two sets of numbers being compared as if they
+    were the same experiment.
+    """
+    m = _load(MANIFEST)
+    sup = m["config"]["supersedes"]
+    assert sup["config_id"] == "2026-08-evidence-hardening.v1"
+    assert m["config_id"] != sup["config_id"]
+    old = ROOT / sup["artifacts"]
+    assert (old / "results.json").exists(), "superseded artifact must be kept, not deleted"
+    assert (old / "SUPERSEDED.md").exists(), "superseded artifact must say why"
+
+
 def test_registry_window_trade_counts_are_the_registered_ones() -> None:
-    """Documented per-window closed-trade counts: 25 / 12 / 27 / 37."""
+    """
+    Documented per-window closed-trade counts: 6 / 12 / 27 / 37.
+
+    bull_2021 was 25 under the superseded artifact. 19 of those trades fired
+    before ZEC's daily EMA200 existed and contributed +22.28% between them; the
+    6 that the declared mechanism actually judges are net negative. That single
+    number is the clearest statement of what the warm-up defect was worth.
+    """
     r = _load(RESULTS)
     expected = {
-        "bull_2021": 25, "bear_2022": 12,
+        "bull_2021": 6, "bear_2022": 12,
         "mid_year_holdout": 27, "recent_year": 37,
     }
     got = {row["trial"].split(":", 1)[1]: row["n_closed"]
@@ -304,15 +474,18 @@ def test_non_reproducible_probes_are_declared_not_invented() -> None:
 
 def test_manifest_records_per_asset_evaluation_starts() -> None:
     """
-    SOL has no Coinbase candles before 2021-06-17. A row labelled 2021-03-01
-    for SOL would misstate its own window, so the boundary is declared.
+    SOL has no Coinbase candles before 2021-06-17 — but its evaluation cannot
+    start there either, because the frozen mechanism's 200-day daily EMA does
+    not exist until 2022-01-03. The listing date is recorded as data coverage;
+    the effective date is what the row is actually evaluated over.
     """
     m = _load(MANIFEST)
-    starts = m["config"]["asset_eval_start"]
-    assert starts["SOL-USD"] == "2021-06-17"
+    assert m["config"]["asset_listing_start"]["SOL-USD"] == "2021-06-17"
+    assert m["config"]["asset_effective_start"]["SOL-USD"].startswith("2022-01-03")
     r = _load(RESULTS)
     sol = next(x for x in r["rows"] if x["trial"] == "transfer-frozen-zec:SOL-USD")
-    assert sol["start"] == "2021-06-17", "SOL row must state its real window"
+    assert sol["start"].startswith("2022-01-03"), "SOL row must state its real window"
+    assert sol["requested_start"] == "2021-03-01"
 
 
 def test_gap_detection_is_not_blind_to_short_holes() -> None:

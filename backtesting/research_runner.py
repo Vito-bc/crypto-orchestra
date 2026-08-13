@@ -48,21 +48,43 @@ ARTIFACT_DIR = ROOT / "docs" / "research" / "artifacts"
 
 # ── FROZEN configuration — do not parameterise from the CLI ──────────────────
 RESEARCH_CONFIG: dict = {
-    "config_id": "2026-08-evidence-hardening.v1",
+    "config_id": "2026-08-warmup-semantics.v1",
     "trial_ids": ["V2-continuous", "V2-registry-windows", "V3-ER30-integrated"],
+    "supersedes": {
+        "config_id": "2026-08-evidence-hardening.v1",
+        "reason": "incorrect warm-up semantics — declared gates failed OPEN "
+                  "while their indicators were still warming up, so part of "
+                  "every affected window was evaluated by a weaker mechanism "
+                  "than the config declares. Results are NOT comparable.",
+        "artifacts": "docs/research/artifacts/superseded/2026-08-evidence-hardening.v1/",
+    },
     "primary_asset": "ZEC-USD",
     "assets": ["ZEC-USD", "BTC-USD", "ETH-USD", "SOL-USD"],
     "continuous_window": {"start": "2021-03-01", "end": "2026-07-12"},
-    # Per-asset evaluation starts, declared explicitly because listing dates
-    # differ. SOL-USD has no Coinbase candles before 2021-06-17, so a row
-    # labelled "2021-03-01" for SOL would misstate its own window — the earlier
-    # artifact did exactly that. Declaring the boundary here keeps it frozen and
-    # visible instead of silently truncated at scan time.
-    "asset_eval_start": {
-        "ZEC-USD": "2021-03-01",
-        "BTC-USD": "2021-03-01",
-        "ETH-USD": "2021-03-01",
-        "SOL-USD": "2021-06-17",   # first Coinbase candle
+    # First CACHED candle per asset, across both intervals — the earliest date
+    # the data can support, not necessarily the exchange listing date (the cache
+    # is capped at _DAILY_HISTORY_START for BTC/ETH). INFORMATIONAL ONLY: a
+    # window may not start here, because the mechanism is not yet computable
+    # then. The previous config used exactly these dates as evaluation starts.
+    "asset_listing_start": {
+        "ZEC-USD": "2020-12-08",
+        "BTC-USD": "2020-01-02",   # 1d frame starts a day after the 1h frame
+        "ETH-USD": "2020-01-02",
+        "SOL-USD": "2021-06-17",
+    },
+    # REGISTERED evaluation boundaries: the first bar on the merged 1h grid at
+    # which EVERY declared gate of the frozen mechanism is evaluable. Frozen
+    # here and drift-checked at run time against
+    # signal_scanner.asset_gate_availability(); a mismatch fails the run rather
+    # than silently re-deriving the window from whatever the cache now holds.
+    #
+    # These are ~1 day later than the daily frame's own first-valid bar because
+    # _attach_daily_context shifts daily stamps +1d to avoid look-ahead.
+    "asset_effective_start": {
+        "ZEC-USD": "2021-06-26T00:00:00+00:00",   # daily EMA200; listed 2020-12-08
+        "BTC-USD": "2020-07-20T00:00:00+00:00",
+        "ETH-USD": "2020-07-20T00:00:00+00:00",
+        "SOL-USD": "2022-01-03T00:00:00+00:00",   # daily EMA200; listed 2021-06-17
     },
     "oos_freeze": "2026-07-12",
     # Referenced BY NAME from signal_scanner.PERIODS so the dates cannot drift
@@ -313,18 +335,49 @@ def _round(value, digits: int = 6):
     return value
 
 
+def _as_utc(stamp: str) -> pd.Timestamp:
+    """Parse a bare date or a full ISO stamp to a UTC instant."""
+    ts = pd.Timestamp(stamp)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts
+
+
+def effective_start(asset: str, requested: str) -> str:
+    """
+    Clip a requested window start to the REGISTERED boundary at which the
+    mechanism becomes computable.
+
+    A window that opens before this point does not measure the declared
+    strategy: until every gate has its inputs, the scanner can only refuse
+    signals (previously: silently admit them under a weaker mechanism).
+    """
+    declared = _as_utc(RESEARCH_CONFIG["asset_effective_start"][asset])
+    return max(_as_utc(requested), declared).isoformat()
+
+
 def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool,
                  warmup: Optional[str] = None,
                  config_override: Optional[dict] = None) -> dict:
     from backtesting.equity_report import summary
     from backtesting.signal_scanner import scan_asset
 
+    requested = start
+    start = effective_start(asset, requested)
     warmup = warmup or (pd.Timestamp(start) - pd.Timedelta(days=120)).date().isoformat()
     period = {"label": f"{asset} {start}->{end}", "btc_move": "",
               "warmup": warmup, "start": start, "end": end}
     res = scan_asset(asset, period, v3_enforcement=v3_enforcement,
                      config_override=config_override)
     sigs = res.get("signals", [])
+    # Invariant, not a diagnostic: the window opens at the registered boundary,
+    # so nothing inside it can be judged on a missing input. If this ever trips,
+    # the declared boundary and the data no longer agree.
+    if res.get("blocked_gate_unavailable", 0):
+        raise ProvenanceError(
+            f"{asset} {start}->{end}: {res['blocked_gate_unavailable']} signals "
+            f"had unavailable gate inputs INSIDE the effective window "
+            f"({res.get('gate_unavailable_by_input')}). The registered "
+            "effective_start disagrees with the data."
+        )
     # Right-censored trades carry no realised outcome (Phase 2).
     closed = [s for s in sigs if s["trade"].get("resolved", True)]
     trades = [{"ts": s["timestamp"], "pnl_pct": s["trade"]["pnl_pct"],
@@ -332,6 +385,17 @@ def _scan_window(asset: str, start: str, end: str, *, v3_enforcement: bool,
     m = summary(trades, start=start, end=end)
     return {
         "asset": asset, "start": start, "end": end,
+        # Both boundaries travel with the row: a reader must be able to see that
+        # the evaluated window is not the one that was asked for, and why.
+        "requested_start": requested,
+        "effective_start": start,
+        # Compare INSTANTS, not strings. effective_start() returns a full ISO
+        # stamp while a registered start is a bare date, so "2022-01-01" vs
+        # "2022-01-01T00:00:00+00:00" is unequal as text and identical in time —
+        # which flagged three unclipped registry windows as clipped.
+        "start_clipped_to_gate_availability": bool(
+            pd.Timestamp(start) > _as_utc(requested)),
+        "n_gate_unavailable": int(res.get("blocked_gate_unavailable", 0)),
         "v3_enforcement": v3_enforcement,
         "mechanism": res.get("mechanism"),
         # The parameters ACTUALLY used. Dropping these hid the max_hold leak:
@@ -372,6 +436,7 @@ def _regime_cells(asset: str, start: str, end: str) -> list[dict]:
     from backtesting.signal_scanner import scan_asset
 
     cfg = RESEARCH_CONFIG
+    start = effective_start(asset, start)
     warmup = (pd.Timestamp(start) - pd.Timedelta(days=120)).date().isoformat()
     period = {"label": f"{asset} regimes", "btc_move": "",
               "warmup": warmup, "start": start, "end": end}
@@ -420,16 +485,88 @@ def run_results(manifest: Optional[dict] = None) -> dict:
     inputs = (manifest or build_manifest())["inputs"]
     rows: list[dict] = []
 
-    # Coverage must be proven BEFORE any scan runs, against each asset's
-    # DECLARED evaluation start (see asset_eval_start).
+    # Coverage must be proven BEFORE any scan runs, against each asset's LISTING
+    # date — the data has to reach that far back even though evaluation starts
+    # later, because the daily warm-up is computed from those earlier bars.
     for a in cfg["assets"]:
-        a_start = cfg["asset_eval_start"][a]
+        a_start = cfg["asset_listing_start"][a]
         for interval in ("1h", "1d"):
             assert_covers(inputs, a, interval, a_start, cw["end"])
 
     prev_strict = scanner.STRICT_COINBASE_ONLY
     scanner.STRICT_COINBASE_ONLY = True
     try:
+        # 0. Drift check: the REGISTERED effective boundary must still match what
+        #    the data says. Declared, then verified — never silently re-derived,
+        #    or the evaluation window would move with the cache.
+        boundaries: list[dict] = []
+        for a in cfg["assets"]:
+            avail = scanner.asset_gate_availability(a, frozen, cw["end"])
+            declared = cfg["asset_effective_start"][a]
+            if avail["effective_start"] != declared:
+                raise ProvenanceError(
+                    f"{a}: registered effective_start {declared} but the data "
+                    f"now yields {avail['effective_start']}. Gate availability "
+                    "drifted; re-register the boundary deliberately."
+                )
+            boundaries.append({
+                "asset": a,
+                "listing_start": cfg["asset_listing_start"][a],
+                "effective_start": declared,
+                "per_gate_first_valid": avail["per_gate"],
+            })
+
+        # 0b. Warm-up exclusion accounting: what the previous config evaluated
+        #     between the listing date and the effective boundary, and which the
+        #     old fail-open rule ADMITTED under a weaker mechanism. Scanned
+        #     explicitly so the size of the correction is in the artifact rather
+        #     than only in a commit message.
+        exclusions: list[dict] = []
+        for a in cfg["assets"]:
+            lo = cfg["asset_listing_start"][a]
+            hi = cfg["asset_effective_start"][a]
+            prev_requested = max(pd.Timestamp(lo, tz="UTC"),
+                                 pd.Timestamp(cw["start"], tz="UTC"))
+            if prev_requested >= pd.Timestamp(hi):
+                exclusions.append({"asset": a, "excluded_candles": 0,
+                                   "refused_signals_with_missing_input": 0,
+                                   "by_missing_input": {}, "window": None})
+                continue
+            w_start = prev_requested.isoformat()
+            # HALF-OPEN: [requested_start, effective_start). The candle AT the
+            # effective start is the first EVALUATED bar, so counting it here
+            # would put one bar in both the excluded warm-up and the corrected
+            # window. The loader treats `end` as inclusive, hence the -1h.
+            w_end = (pd.Timestamp(hi) - pd.Timedelta(hours=1)).isoformat()
+            period = {"label": f"{a} warmup-exclusion", "btc_move": "",
+                      "warmup": (prev_requested - pd.Timedelta(days=120)).date().isoformat(),
+                      "start": w_start, "end": w_end}
+            res = scanner.scan_asset(a, period, v3_enforcement=False,
+                                     config_override=frozen)
+            last_excl = res.get("last_gate_unavailable_ts")
+            if last_excl is not None and pd.Timestamp(last_excl) >= pd.Timestamp(hi):
+                raise ProvenanceError(
+                    f"{a}: warm-up exclusion reaches {last_excl}, at or past the "
+                    f"effective start {hi}. The interval is no longer half-open."
+                )
+            exclusions.append({
+                "asset": a,
+                "window": {"start": w_start, "end": w_end,
+                           "interval": "[requested_start, effective_start)"},
+                "excluded_candles": int(res.get("candles", 0)),
+                "last_excluded_signal_ts": last_excl,
+                # Signals that FORMED in this span but could not be judged by the
+                # declared mechanism. Under the previous fail-open rule each of
+                # these was evaluated by the remaining gates instead, and those
+                # that cleared them were traded. How many actually traded is a
+                # property of the OLD code and is therefore recorded in
+                # docs/trial_registry.md against the superseded artifact, not
+                # invented here.
+                "refused_signals_with_missing_input": int(
+                    res.get("blocked_gate_unavailable", 0)),
+                "by_missing_input": res.get("gate_unavailable_by_input", {}),
+            })
+
         # 1. Continuous-window ZEC (the falsification result), own mechanism.
         rows.append({"trial": "V2-continuous", **_scan_window(
             asset, cw["start"], cw["end"], v3_enforcement=False)})
@@ -450,9 +587,14 @@ def run_results(manifest: Optional[dict] = None) -> dict:
         # 4. Zero-tuning transfer: the FROZEN ZEC mechanism applied unchanged to
         #    every asset. Using each asset's own tuned config would answer a
         #    different question.
+        #    All four assets REQUEST the same calendar start and are then clipped
+        #    to their own gate-availability boundary. Requesting each asset's
+        #    listing date instead would widen BTC/ETH by ~8 months relative to
+        #    the superseded artifact, mixing a window change into what is meant
+        #    to isolate the warm-up correction.
         for a in cfg["assets"]:
             rows.append({"trial": f"transfer-frozen-zec:{a}", **_scan_window(
-                a, cfg["asset_eval_start"][a], cw["end"], v3_enforcement=False,
+                a, cw["start"], cw["end"], v3_enforcement=False,
                 config_override=frozen)})
 
         # 5. Asset x CALENDAR PERIOD cells (named "period", not "regime" — these
@@ -460,21 +602,39 @@ def run_results(manifest: Optional[dict] = None) -> dict:
         for a in cfg["assets"]:
             for name in cfg["period_names"]:
                 p = PERIODS[name]
-                a_start = max(p["start"], cfg["asset_eval_start"][a])
-                if a_start >= p["end"]:
-                    continue   # asset had not listed during this window
+                # Instants, not strings: effective_start() returns a full ISO
+                # stamp and p["end"] is a bare date, so text comparison is the
+                # same defect class that mis-set the clip flag. Correct on
+                # today's dates, wrong the moment a boundary carries a time.
+                if _as_utc(effective_start(a, p["start"])) >= _as_utc(p["end"]):
+                    # The mechanism is not evaluable anywhere inside this window
+                    # for this asset — emit nothing rather than a cell whose
+                    # label promises a window it never scanned. The clip is only
+                    # consulted here; the REGISTERED date is what gets passed on.
+                    continue
+                # Pass the registered start, not the clipped one. Clipping here
+                # made _scan_window see an already-clipped date, so the row
+                # reported requested_start == effective_start and
+                # start_clipped_to_gate_availability == false — erasing the very
+                # fact the field exists to record. bull_2021 claimed it had been
+                # asked for 2021-06-26 when it was asked for 2021-03-01.
                 rows.append({"trial": f"period:{a}:{name}", **_scan_window(
-                    a, a_start, p["end"], v3_enforcement=False,
+                    a, p["start"], p["end"], v3_enforcement=False,
                     warmup=p["warmup"], config_override=frozen)})
 
         # 6. Asset x REGIME cells — cut on the regime metric at signal time.
         for a in cfg["assets"]:
-            rows.extend(_regime_cells(a, cfg["asset_eval_start"][a], cw["end"]))
+            rows.extend(_regime_cells(a, cw["start"], cw["end"]))
     finally:
         scanner.STRICT_COINBASE_ONLY = prev_strict
 
     return {
         "config_id": cfg["config_id"],
+        # The registered evaluation boundaries and the warm-up they exclude. A
+        # reader must be able to see WHICH window produced these rows without
+        # re-running anything.
+        "gate_boundaries": boundaries,
+        "warmup_exclusions": exclusions,
         "rows": rows,
         # Recorded explicitly so the artifact states what it does NOT cover.
         "non_reproducible": [

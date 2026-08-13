@@ -1,5 +1,5 @@
 {
-  "code_commit": "b073c629221ad308544bbce48db7df374339b046",
+  "code_commit": "193cb6a303e8ca3f6148c01a2b923cc92ed7c3b9",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
@@ -11,17 +11,11 @@
       "ZEC_USD_1d.parquet": 0,
       "ZEC_USD_1h.parquet": 16
     },
-    "asset_effective_start": {
-      "BTC-USD": "2020-07-20T00:00:00+00:00",
-      "ETH-USD": "2020-07-20T00:00:00+00:00",
-      "SOL-USD": "2022-01-03T00:00:00+00:00",
-      "ZEC-USD": "2021-06-26T00:00:00+00:00"
-    },
-    "asset_listing_start": {
-      "BTC-USD": "2020-01-02",
-      "ETH-USD": "2020-01-02",
+    "asset_eval_start": {
+      "BTC-USD": "2021-03-01",
+      "ETH-USD": "2021-03-01",
       "SOL-USD": "2021-06-17",
-      "ZEC-USD": "2020-12-08"
+      "ZEC-USD": "2021-03-01"
     },
     "assets": [
       "ZEC-USD",
@@ -29,7 +23,7 @@
       "ETH-USD",
       "SOL-USD"
     ],
-    "config_id": "2026-08-warmup-semantics.v1",
+    "config_id": "2026-08-evidence-hardening.v1",
     "continuous_window": {
       "end": "2026-07-12",
       "start": "2021-03-01"
@@ -86,11 +80,6 @@
       "mid_year_holdout",
       "recent_year"
     ],
-    "supersedes": {
-      "artifacts": "docs/research/artifacts/superseded/2026-08-evidence-hardening.v1/",
-      "config_id": "2026-08-evidence-hardening.v1",
-      "reason": "incorrect warm-up semantics \u2014 declared gates failed OPEN while their indicators were still warming up, so part of every affected window was evaluated by a weaker mechanism than the config declares. Results are NOT comparable."
-    },
     "trial_ids": [
       "V2-continuous",
       "V2-registry-windows",
@@ -102,7 +91,7 @@
       "threshold_historical_only": 0.2
     }
   },
-  "config_id": "2026-08-warmup-semantics.v1",
+  "config_id": "2026-08-evidence-hardening.v1",
   "inputs": [
     {
       "file": "BTC_USD_1d.parquet",
