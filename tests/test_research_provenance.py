@@ -248,14 +248,36 @@ def test_code_commit_is_stable_across_artifact_commits() -> None:
 
     from backtesting.research_runner import _CODE_PATHS
 
+    def _git(*args: str) -> str:
+        out = subprocess.run(["git", *args], cwd=str(ROOT),
+                             capture_output=True, text=True, check=False)
+        return out.stdout.strip()
+
     m = _load(MANIFEST)
-    out = subprocess.run(
-        ["git", "log", "-1", "--format=%H", "--", *_CODE_PATHS],
-        cwd=str(ROOT), capture_output=True, text=True, check=False,
-    )
-    expected = out.stdout.strip()
-    if not expected:
+
+    # CI checks out a SHALLOW merge ref (actions/checkout defaults to depth 1),
+    # so `git log -1 -- <paths>` resolves to the single synthetic commit present
+    # rather than the real code commit. The property is unverifiable there — skip
+    # rather than assert something the environment cannot answer. The stronger
+    # guarantee (`research_runner.py --verify`, byte-for-byte regeneration) does
+    # not depend on git history at all.
+    import os
+
+    if not _git("rev-parse", "--git-dir"):
         pytest.skip("not a git checkout")
+    if _git("rev-parse", "--is-shallow-repository") == "true":
+        pytest.skip("shallow checkout: full history unavailable")
+    if os.environ.get("GITHUB_ACTIONS") and os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
+        # PR builds run against a synthetic merge ref that exists in neither
+        # branch, so "last commit touching the code" is not meaningful here.
+        pytest.skip("PR merge ref: code_commit is not resolvable")
+
+    # NOTE: deliberately no "commit not found" escape hatch. A manifest naming a
+    # commit that does not exist in full history is a REAL failure, and skipping
+    # on it made this assertion vacuous.
+    expected = _git("log", "-1", "--format=%H", "--", *_CODE_PATHS)
+    if not expected:
+        pytest.skip("no history for the code paths in this checkout")
     assert m["code_commit"] == expected, (
         "manifest code_commit does not match the last commit touching the "
         "result-determining code — the artifact cannot be reproduced from here"
