@@ -328,37 +328,93 @@ def get_coinbase_premium(asset: str = "BTC-USD") -> dict:
     return result
 
 
+# Funding-result status. Callers must branch on this, never on `error`.
+#
+#   "ok"             — a real reading; annualized_pct is meaningful.
+#   "not_applicable" — the asset has no OKX perpetual in the registry below.
+#                      The filter does not apply, so it must not block.
+#   "unavailable"    — the instrument IS supported but no trustworthy reading
+#                      could be obtained (timeout, HTTP error, malformed body,
+#                      unknown failure). The filter applies but cannot be
+#                      evaluated, so callers must fail closed.
+#
+# The distinction has to come from the REGISTRY (_OKX_SYMBOL), not from the
+# presence of an `error` string. Both "ZEC has no perp" and "the request timed
+# out" used to set `error`, and the caller's `if not funding.get("error")` then
+# skipped the veto for both — correct by accident for ZEC, a silently dropped
+# safety filter for BTC/ETH/SOL during any outage.
+FUNDING_OK             = "ok"
+FUNDING_NOT_APPLICABLE = "not_applicable"
+FUNDING_UNAVAILABLE    = "unavailable"
+
+
+def funding_is_applicable(asset: str) -> bool:
+    """
+    Does this asset have a registered OKX perpetual?
+
+    Applicability is a property of the instrument, decided here and only here.
+    An asset absent from the registry has no declared perpetual and is treated
+    the same as an explicit None.
+    """
+    return bool(_OKX_SYMBOL.get(asset.upper()))
+
+
 def get_okx_funding_rate(asset: str) -> dict:
     """
     OKX perpetual funding rate, annualized for leverage detection.
 
-    Thresholds (research-based):
+    Thresholds (research-based, unchanged):
       > 20% annualized → crowded longs, unwind risk — block long entry
       8–20%            → neutral / normal carry
       < -8% annualized → forced short covering — bullish contrarian signal
 
-    Returns None for assets without OKX perpetuals (e.g. ZEC).
+    Always returns a dict carrying `status` (see FUNDING_* above). `error` is
+    retained for humans and logs; it is NOT a control field.
     """
     result = {
         "rate_pct": 0.0, "annualized_pct": 0.0,
         "signal": "NEUTRAL", "source": None, "error": None,
+        "status": FUNDING_OK,
     }
-    okx_sym = _OKX_SYMBOL.get(asset.upper())
-    if not okx_sym:
-        return {**result, "error": f"No OKX perpetual for {asset}"}
+    if not funding_is_applicable(asset):
+        return {**result, "status": FUNDING_NOT_APPLICABLE,
+                "error": f"No OKX perpetual for {asset}"}
+    okx_sym = _OKX_SYMBOL[asset.upper()]
+
+    def _unavailable(why: str) -> dict:
+        return {**result, "status": FUNDING_UNAVAILABLE, "error": why}
+
     try:
         data = _get(f"{_OKX_BASE}/public/funding-rate?instId={okx_sym}")
-        if data and data.get("data"):
-            rate = float(data["data"][0]["fundingRate"])
-            # 3 settlements/day (8h intervals) × 365 days
-            ann  = rate * 3 * 365 * 100
-            result["rate_pct"]       = round(rate * 100, 6)
-            result["annualized_pct"] = round(ann, 2)
-            result["source"]         = "OKX"
-            if ann > 20.0:
-                result["signal"] = "SELL"    # leverage chase — wait for unwind
-            elif ann < -8.0:
-                result["signal"] = "BUY"     # capitulation shorts — contrarian long
-    except Exception as e:
-        result["error"] = str(e)
+    except Exception as exc:                      # _get swallows, belt and braces
+        return _unavailable(f"OKX request failed: {exc}")
+    if data is None:
+        # _get returns None on timeout / HTTP error / unparseable body.
+        return _unavailable("OKX request failed or returned no body")
+    try:
+        rows = data.get("data")
+    except AttributeError:
+        return _unavailable(f"OKX returned {type(data).__name__}, expected an object")
+    if not rows:
+        # Previously this fell through with annualized_pct 0.0 and error None,
+        # so an empty or malformed body read as "funding is zero, all clear" —
+        # a fail-open worse than the error case, because it looked like a real
+        # measurement.
+        return _unavailable("OKX response contained no funding data")
+    try:
+        rate = float(rows[0]["fundingRate"])
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        return _unavailable(f"OKX funding payload malformed: {exc}")
+    if rate != rate or rate in (float("inf"), float("-inf")):
+        return _unavailable(f"OKX funding rate is not finite: {rate}")
+
+    # 3 settlements/day (8h intervals) × 365 days
+    ann = rate * 3 * 365 * 100
+    result["rate_pct"]       = round(rate * 100, 6)
+    result["annualized_pct"] = round(ann, 2)
+    result["source"]         = "OKX"
+    if ann > 20.0:
+        result["signal"] = "SELL"    # leverage chase — wait for unwind
+    elif ann < -8.0:
+        result["signal"] = "BUY"     # capitulation shorts — contrarian long
     return result
