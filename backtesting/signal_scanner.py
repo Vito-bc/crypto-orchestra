@@ -170,9 +170,15 @@ ASSET_CONFIG = {
         "daily_ema_period": 200,
         "btc_regime_filter": False,  # ZEC moves independently of BTC — filter blocks good setups
         # V3 regime filter — ER-30 (Kaufman Efficiency Ratio, 30-day window).
-        # Integrated filter analysis across 4 historical regimes (4.5 years):
+        #
+        # SUPERSEDED HISTORICAL RESULT — retained only to record what was tested.
+        # These four windows were period-selected AND, for bull_2021, largely
+        # produced while the daily EMA200 gate was not computable. On the
+        # continuous window under corrected warm-up semantics, enforcement is
+        # WORSE: PF 0.706 with V3 vs 0.761 without. No threshold below is "best"
+        # or "stable" in any forward sense; that wording is removed deliberately.
         #   No filter: PFs=[1.42, 1.41, 0.52, 1.00], avg=-0.08%/trade
-        #   er>=0.20:  PFs=[1.41, 1.03, 1.00, 1.11], avg=+0.31%/trade (best stable threshold)
+        #   er>=0.20:  PFs=[1.41, 1.03, 1.00, 1.11], avg=+0.31%/trade
         #   er>=0.25:  PFs=[0.77, 5.32, 0.77, 1.16]  (small sample instability)
         #
         # v3_candidate_threshold — pre-registered (2026-07-13), LOCKED at 0.20.

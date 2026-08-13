@@ -1,6 +1,24 @@
 """
 Walk-Forward Optimization for CryptoOrchestra.
 
+╔════════════════════════════════════════════════════════════════════════════╗
+║ DISABLED / INVALID UNTIL REPAIRED — trial 2026-08-warmup-semantics         ║
+║                                                                            ║
+║ _load_asset() raises. Do NOT run this script and do NOT cite any number it ║
+║ has ever produced.                                                         ║
+║                                                                            ║
+║ Why: this loader never attached the daily frame, so `close_1d` / `ema*_1d` ║
+║ were absent from every row and the declared daily-EMA trend gate was       ║
+║ skipped for every signal on every asset. The scan loop also enumerated     ║
+║ only three blocked reasons, so `daily_trend` and `btc_regime` blocks fell  ║
+║ through and were TRADED. This tool has therefore always validated a weaker ║
+║ mechanism than the one it reports on — the same defect class corrected in  ║
+║ signal_scanner.py, but here it was total rather than confined to a warm-up.║
+║                                                                            ║
+║ Repair means attaching daily + BTC-regime context in _load_asset, which    ║
+║ changes every number this tool emits. Tracked in docs/trial_registry.md.   ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
 Validates per-asset ATR parameters out-of-sample (OOS).
 
 Method:
@@ -13,8 +31,8 @@ Method:
 This answers: "Are we overfitting our ATR params, or do they genuinely work?"
 
 Usage:
-    python backtesting/walk_forward.py
-    python backtesting/walk_forward.py --asset ZEC-USD
+    None. The entry points below are retained only so the repair has something
+    to restore; invoking either one raises immediately.
 """
 
 from __future__ import annotations

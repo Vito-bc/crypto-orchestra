@@ -259,6 +259,37 @@ def test_live_scan_still_produces_a_signal_when_inputs_are_present(monkeypatch) 
     assert _scan_latest_with(daily, monkeypatch) is not None
 
 
+# ── walk_forward is deliberately out of service ──────────────────────────────
+
+def test_walk_forward_is_disabled_and_says_why() -> None:
+    """
+    Pins an INTENTIONAL disablement so it cannot be quietly re-enabled without
+    the repair.
+
+    walk_forward's loader never attached the daily frame, so the declared
+    daily-EMA gate was absent for every signal on every asset, and its scan loop
+    enumerated only three blocked reasons — `daily_trend` and `btc_regime`
+    blocks fell through and were traded. Now that the shared detector fails
+    closed, running it unrepaired would report an empty walk-forward as if it
+    were a result. Raising is the safe state until the daily context is
+    attached.
+    """
+    from backtesting.walk_forward import _load_asset
+
+    with pytest.raises(RuntimeError) as exc:
+        _load_asset("ZEC-USD")
+    msg = str(exc.value)
+    assert "2026-08-warmup-semantics" in msg, "the refusal must name its trial"
+    assert "daily" in msg.lower(), "the refusal must state the cause"
+
+
+def test_walk_forward_docstring_marks_it_invalid() -> None:
+    """Documentation and behaviour must not disagree about whether to run it."""
+    import backtesting.walk_forward as wf
+
+    assert "DISABLED" in wf.__doc__ and "INVALID UNTIL REPAIRED" in wf.__doc__
+
+
 def test_declared_gate_columns_follow_the_config() -> None:
     cols = gate_input_columns({"daily_ema_period": 50}, btc_regime_applicable=False)
     assert cols["daily_trend"] == ["close_1d", "ema50_1d"]

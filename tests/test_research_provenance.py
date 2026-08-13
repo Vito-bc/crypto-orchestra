@@ -169,6 +169,60 @@ def test_registry_windows_match_registered_dates() -> None:
     assert seen == 4, f"expected 4 registry windows, found {seen}"
 
 
+def test_period_cells_record_the_registered_request_not_the_clip() -> None:
+    """
+    A period cell must state the window it was ASKED for. Clipping the date
+    before handing it to the scanner made the row claim requested_start ==
+    effective_start with the clip flag false, erasing the fact the field exists
+    to record: period:ZEC-USD:bull_2021 was asked for 2021-03-01, not
+    2021-06-26.
+    """
+    from backtesting.signal_scanner import PERIODS
+
+    r = _load(RESULTS)
+    cells = [x for x in r["rows"] if x["trial"].startswith("period:")]
+    assert cells, "no period cells in the artifact"
+    for c in cells:
+        name = c["trial"].rsplit(":", 1)[1]
+        assert c["requested_start"] == PERIODS[name]["start"], (
+            f"{c['trial']} reports requested_start {c['requested_start']}, "
+            f"but the registered window opens at {PERIODS[name]['start']}"
+        )
+        assert c["start_clipped_to_gate_availability"] == (
+            c["start"] != c["requested_start"])
+
+    zec_bull = next(c for c in cells if c["trial"] == "period:ZEC-USD:bull_2021")
+    assert zec_bull["requested_start"] == "2021-03-01"
+    assert zec_bull["start"].startswith("2021-06-26")
+    assert zec_bull["start_clipped_to_gate_availability"] is True
+
+
+def test_warmup_exclusion_window_is_half_open() -> None:
+    """
+    [requested_start, effective_start). The bar AT the effective start is the
+    first EVALUATED bar; counting it as excluded too would put one candle in
+    both the warm-up and the corrected window.
+    """
+    r = _load(RESULTS)
+    m = _load(MANIFEST)
+    declared = m["config"]["asset_effective_start"]
+    for e in r["warmup_exclusions"]:
+        if e["window"] is None:
+            assert e["excluded_candles"] == 0
+            continue
+        eff = declared[e["asset"]]
+        assert e["window"]["end"] < eff, (
+            f"{e['asset']} warm-up ends at {e['window']['end']}, not strictly "
+            f"before the effective start {eff}"
+        )
+        assert e["window"]["interval"] == "[requested_start, effective_start)"
+        last = e.get("last_excluded_signal_ts")
+        if last is not None:
+            assert last < eff, (
+                f"{e['asset']} excluded a signal at {last}, at or past {eff}"
+            )
+
+
 def test_no_registered_row_contains_an_unevaluable_signal() -> None:
     """
     THE invariant of trial 2026-08-warmup-semantics: inside a registered window

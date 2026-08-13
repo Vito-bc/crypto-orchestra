@@ -29,8 +29,12 @@ venv\Scripts\python.exe pipeline/scheduler.py
 
 # Backtesting:
 venv\Scripts\python.exe backtesting/signal_scanner.py --period full_year
-venv\Scripts\python.exe backtesting/walk_forward.py
 venv\Scripts\python.exe backtesting/monte_carlo.py --scanner
+# walk_forward.py is DISABLED (raises) — see "What NOT to Touch" below.
+
+# Regenerate + verify the research artifacts (local candle cache, no network):
+venv\Scripts\python.exe backtesting/research_runner.py
+venv\Scripts\python.exe backtesting/research_runner.py --verify
 
 # Regenerate Obsidian vault:
 venv\Scripts\python.exe backtesting/generate_journal.py
@@ -94,7 +98,8 @@ These read `LIVE_BALANCE_USD` as the baseline. Do not hardcode dollar amounts.
 | `pipeline/runner.py` | Main pipeline + all entry filters + circuit breakers |
 | `pipeline/limit_orders.py` | Order lifecycle — uses `LIVE_BALANCE_USD` for sizing |
 | `exchange/coinbase_client.py` | All Coinbase calls isolated here — ECDSA key file |
-| `backtesting/walk_forward.py` | OOS validation — run this before changing ATR params |
+| `backtesting/walk_forward.py` | **DISABLED / INVALID UNTIL REPAIRED** — raises. Never attached the daily frame, so it always validated a weaker mechanism than it reported. Do not run it; do not cite its past numbers. |
+| `backtesting/research_runner.py` | Deterministic research runner — frozen config, registered boundaries, byte-identical artifacts |
 
 ## What NOT to Touch Without Reason
 
@@ -134,7 +139,9 @@ Summary as of 2026-08-09:
   under `docs/research/artifacts/superseded/`; their numbers are NOT comparable.
 - V3 ER-30 filter: **RETIRED / REJECTED FOR ACTIVATION (2026-08-09)**.
   Integrated enforcement on the continuous window makes results *worse*
-  (PF 0.69 with V3 vs PF 0.86 without). The earlier positive case came from
+  (**PF 0.706 with V3 vs PF 0.761 without**, trial `2026-08-warmup-semantics.v1`;
+  the superseded figures PF 0.69 vs 0.86 measured a different mechanism — see
+  `docs/research/artifacts/superseded/`). The earlier positive case came from
   period-selected windows. Enforcement stays OFF permanently for this trial ID;
   the former "n >= 20 closed trades" activation criteria are withdrawn. Further
   `v3_would_block` logging is diagnostic only and cannot reactivate it —

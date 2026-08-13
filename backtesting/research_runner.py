@@ -523,15 +523,28 @@ def run_results(manifest: Optional[dict] = None) -> dict:
                                    "by_missing_input": {}, "window": None})
                 continue
             w_start = prev_requested.isoformat()
+            # HALF-OPEN: [requested_start, effective_start). The candle AT the
+            # effective start is the first EVALUATED bar, so counting it here
+            # would put one bar in both the excluded warm-up and the corrected
+            # window. The loader treats `end` as inclusive, hence the -1h.
+            w_end = (pd.Timestamp(hi) - pd.Timedelta(hours=1)).isoformat()
             period = {"label": f"{a} warmup-exclusion", "btc_move": "",
                       "warmup": (prev_requested - pd.Timedelta(days=120)).date().isoformat(),
-                      "start": w_start, "end": hi}
+                      "start": w_start, "end": w_end}
             res = scanner.scan_asset(a, period, v3_enforcement=False,
                                      config_override=frozen)
+            last_excl = res.get("last_gate_unavailable_ts")
+            if last_excl is not None and pd.Timestamp(last_excl) >= pd.Timestamp(hi):
+                raise ProvenanceError(
+                    f"{a}: warm-up exclusion reaches {last_excl}, at or past the "
+                    f"effective start {hi}. The interval is no longer half-open."
+                )
             exclusions.append({
                 "asset": a,
-                "window": {"start": w_start, "end": hi},
+                "window": {"start": w_start, "end": w_end,
+                           "interval": "[requested_start, effective_start)"},
                 "excluded_candles": int(res.get("candles", 0)),
+                "last_excluded_signal_ts": last_excl,
                 # Signals that FORMED in this span but could not be judged by the
                 # declared mechanism. Under the previous fail-open rule each of
                 # these was evaluated by the remaining gates instead, and those
@@ -579,14 +592,20 @@ def run_results(manifest: Optional[dict] = None) -> dict:
         for a in cfg["assets"]:
             for name in cfg["period_names"]:
                 p = PERIODS[name]
-                a_start = effective_start(a, p["start"])
-                if a_start >= p["end"]:
+                if effective_start(a, p["start"]) >= p["end"]:
                     # The mechanism is not evaluable anywhere inside this window
                     # for this asset — emit nothing rather than a cell whose
-                    # label promises a window it never scanned.
+                    # label promises a window it never scanned. The clip is only
+                    # consulted here; the REGISTERED date is what gets passed on.
                     continue
+                # Pass the registered start, not the clipped one. Clipping here
+                # made _scan_window see an already-clipped date, so the row
+                # reported requested_start == effective_start and
+                # start_clipped_to_gate_availability == false — erasing the very
+                # fact the field exists to record. bull_2021 claimed it had been
+                # asked for 2021-06-26 when it was asked for 2021-03-01.
                 rows.append({"trial": f"period:{a}:{name}", **_scan_window(
-                    a, a_start, p["end"], v3_enforcement=False,
+                    a, p["start"], p["end"], v3_enforcement=False,
                     warmup=p["warmup"], config_override=frozen)})
 
         # 6. Asset x REGIME cells — cut on the regime metric at signal time.
