@@ -348,15 +348,24 @@ FUNDING_NOT_APPLICABLE = "not_applicable"
 FUNDING_UNAVAILABLE    = "unavailable"
 
 
-def funding_is_applicable(asset: str) -> bool:
+def funding_applicability(asset: str) -> str:
     """
-    Does this asset have a registered OKX perpetual?
+    Three-way applicability, decided by the registry and only by the registry.
 
-    Applicability is a property of the instrument, decided here and only here.
-    An asset absent from the registry has no declared perpetual and is treated
-    the same as an explicit None.
+      key present with a symbol -> FUNDING_OK        (applicable, go and read it)
+      key present set to None   -> FUNDING_NOT_APPLICABLE (declared: no perp)
+      key ABSENT                -> FUNDING_UNAVAILABLE    (unknown instrument)
+
+    The third case is the one that matters. Treating an unregistered asset as
+    "not applicable" means anyone enabling a new asset silently loses the
+    funding gate — and LINK/ATOM/AVAX/DOT already sit in ASSET_CONFIG as
+    disabled candidates, so that is a live trap, not a hypothetical. An asset
+    nobody has classified is unknown, and unknown must fail closed.
     """
-    return bool(_OKX_SYMBOL.get(asset.upper()))
+    key = asset.upper()
+    if key not in _OKX_SYMBOL:
+        return FUNDING_UNAVAILABLE
+    return FUNDING_OK if _OKX_SYMBOL[key] else FUNDING_NOT_APPLICABLE
 
 
 def get_okx_funding_rate(asset: str) -> dict:
@@ -376,9 +385,15 @@ def get_okx_funding_rate(asset: str) -> dict:
         "signal": "NEUTRAL", "source": None, "error": None,
         "status": FUNDING_OK,
     }
-    if not funding_is_applicable(asset):
+    applicability = funding_applicability(asset)
+    if applicability == FUNDING_NOT_APPLICABLE:
         return {**result, "status": FUNDING_NOT_APPLICABLE,
-                "error": f"No OKX perpetual for {asset}"}
+                "error": f"No OKX perpetual registered for {asset}"}
+    if applicability == FUNDING_UNAVAILABLE:
+        return {**result, "status": FUNDING_UNAVAILABLE,
+                "error": (f"{asset} is not in the OKX instrument registry — "
+                          "applicability unknown, refusing to assume it has no "
+                          "perpetual")}
     okx_sym = _OKX_SYMBOL[asset.upper()]
 
     def _unavailable(why: str) -> dict:
