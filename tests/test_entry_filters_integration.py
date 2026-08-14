@@ -64,7 +64,7 @@ def _buy_decision(asset: str):
     )
 
 
-def _run(tmp_path, monkeypatch, *, raw_df, daily, funding):
+def _run(tmp_path, monkeypatch, *, raw_df, daily, funding, raises=None):
     """
     Drive the real run_pipeline with the REAL _check_entry_filters in place.
 
@@ -119,6 +119,13 @@ def _run(tmp_path, monkeypatch, *, raw_df, daily, funding):
                             id="ORD-1", stop_price=96.0, target_price=107.0,
                             reasoning="test", limit_price=99.0)))
         outbox = e(patch("pipeline.outbox.place_order_outbox"))
+
+        # Entered LAST so it overrides the stubs above. Patching the same target
+        # from outside _run does not work — these context managers are applied
+        # afterwards and would shadow it.
+        if raises is not None:
+            target, exc = raises
+            e(patch(target, side_effect=exc))
 
         decision = runner.run_pipeline(ASSET, _skip_exit_check=True)
     return decision, limit, outbox
@@ -191,6 +198,47 @@ def test_unavailable_filter_data_never_reaches_placement(
     # A blocked entry must not carry sizing forward.
     assert decision.position_size_pct is None
     assert decision.stop_loss_price is None
+
+
+def test_a_raising_source_holds_without_crashing_the_pass(tmp_path, monkeypatch) -> None:
+    """
+    A source that throws must become a HOLD, not an exception out of
+    run_pipeline. The old behaviour was safe in the narrow sense — no order was
+    placed — but _check_entry_filters did not return its declared tuple, no
+    FILTER_DATA_UNAVAILABLE was recorded, and one asset could abort the whole
+    scheduler pass.
+    """
+    from pipeline.runner import FILTER_DATA_UNAVAILABLE
+
+    decision, limit, outbox = _run(
+        tmp_path, monkeypatch, raw_df=_raw_df(),
+        daily=_GOOD_DAILY, funding=_ok_funding(),
+        raises=("pipeline.runner.get_daily_trend",
+                ConnectionError("market data upstream down")))
+
+    assert decision.action == TradeAction.HOLD
+    assert FILTER_DATA_UNAVAILABLE in decision.reasoning
+    assert "ConnectionError" in decision.reasoning
+    assert not limit.called and not outbox.called
+
+
+def test_corrupt_trade_history_holds_without_crashing(tmp_path, monkeypatch) -> None:
+    """A STOP_LOSS row with no exit_price used to raise KeyError."""
+    import json
+
+    from pipeline.runner import FILTER_DATA_UNAVAILABLE
+
+    (tmp_path / "trades.jsonl").write_text(
+        json.dumps({"asset": ASSET, "reason": "STOP_LOSS"}) + "\n",
+        encoding="utf-8")
+
+    decision, limit, outbox = _run(
+        tmp_path, monkeypatch, raw_df=_raw_df(),
+        daily=_GOOD_DAILY, funding=_ok_funding())
+
+    assert decision.action == TradeAction.HOLD
+    assert FILTER_DATA_UNAVAILABLE in decision.reasoning
+    assert not limit.called and not outbox.called
 
 
 def test_a_genuine_veto_is_not_reported_as_missing_data(tmp_path, monkeypatch) -> None:

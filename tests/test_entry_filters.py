@@ -64,7 +64,8 @@ _DEFAULT = object()
 
 
 def _run(asset: str = ASSET, *, raw_df=_DEFAULT, daily=_DEFAULT,
-         funding=None, snapshot=_DEFAULT, stops: int = 0, tmp_path=None):
+         funding=None, snapshot=_DEFAULT, stops: int = 0, tmp_path=None,
+         raises: tuple | None = None):
     """
     Drive the real _check_entry_filters with only its data sources stubbed.
 
@@ -92,6 +93,12 @@ def _run(asset: str = ASSET, *, raw_df=_DEFAULT, daily=_DEFAULT,
         e(patch("pipeline.runner.TRADE_HISTORY",
                 (tmp_path / "trades.jsonl") if tmp_path
                 else __import__("pathlib").Path("does-not-exist.jsonl")))
+        # Entered LAST so it overrides the stubs above. Patching the same target
+        # from outside _run does not work: these context managers are applied
+        # afterwards and would shadow it.
+        if raises is not None:
+            target, exc = raises
+            e(patch(target, side_effect=exc))
         return _check_entry_filters(asset)
 
 
@@ -292,6 +299,42 @@ def test_btc_snapshot_unavailable_blocks_when_filter_applies() -> None:
         "BTC 4h regime")
 
 
+@pytest.mark.parametrize("trend", [
+    "",           # get_snapshot's own fallback: row.get("trend_4h", "")
+    "sideways",   # a label this code does not know
+    "unknown",
+    "BULL",       # case drift
+    123,          # non-string
+    None,
+    True,
+])
+def test_undeclared_btc_trend_value_blocks(trend) -> None:
+    """
+    Only "bull" and "bear" answer the question. Every value here used to read as
+    "not bear" to a bare `== "bear"` test and silently lifted the veto — and ""
+    is not hypothetical, it is what tools/price_data.py substitutes when the
+    column is absent.
+    """
+    _assert_unavailable(
+        _run(BTC_FILTERED_ASSET,
+             snapshot={"close": 100.0, "atr_1h": 2.0, "trend_4h": trend},
+             funding=_funding(FUNDING_OK)),
+        "BTC 4h regime")
+
+
+@pytest.mark.parametrize("trend", ["bull", "bear"])
+def test_declared_btc_trend_values_are_accepted(trend) -> None:
+    """The whitelist must not block the values it exists to admit."""
+    with patch("pipeline.runner._calc_btc_correlation", return_value=0.10):
+        allowed, reason, _ = _run(
+            BTC_FILTERED_ASSET,
+            snapshot={"close": 100.0, "atr_1h": 2.0, "trend_4h": trend},
+            funding=_funding(FUNDING_OK, ann=1.0))
+    # bull -> no veto at all; bear + decorrelated -> veto lifted. Either way the
+    # entry proceeds, and neither is a data-availability failure.
+    assert allowed is True, reason
+
+
 def test_btc_filter_not_applicable_for_zec_even_without_a_snapshot() -> None:
     """
     ZEC sets btc_regime_filter=False. Not applicable must stay not applicable —
@@ -348,6 +391,69 @@ def test_bounce_satisfied_allows_entry(tmp_path) -> None:
 
 def test_whipsaw_guard_is_a_real_reading() -> None:
     _assert_real_veto(_run(stops=2), "Whipsaw guard")
+
+
+# ── Sources that raise, and corrupt state ────────────────────────────────────
+
+@pytest.mark.parametrize("asset,target", [
+    (ASSET, "pipeline.runner.get_raw_df"),
+    (ASSET, "pipeline.runner.get_daily_trend"),
+    (ASSET, "pipeline.runner.count_recent_stops"),
+    (ASSET, "tools.market_positioning.get_okx_funding_rate"),
+    # get_snapshot is only consulted when a filter that needs it APPLIES. ZEC
+    # sets btc_regime_filter=False and has no stop history here, so nothing asks
+    # for a snapshot and its failure is correctly irrelevant. ETH does ask.
+    (BTC_FILTERED_ASSET, "pipeline.runner.get_snapshot"),
+])
+def test_a_raising_source_becomes_an_unavailable_result(asset, target) -> None:
+    """
+    A source that raises is unavailable data, not a different kind of event.
+    Letting it escape meant the function did not return its declared tuple,
+    produced no FILTER_DATA_UNAVAILABLE, and could abort a whole scheduler pass
+    over a single asset.
+    """
+    _assert_unavailable(
+        _run(asset, funding=_funding(FUNDING_OK, ann=1.0),
+             raises=(target, ConnectionError("upstream down"))),
+        "entry filters")
+
+
+def test_a_source_that_is_never_consulted_cannot_fail_the_entry() -> None:
+    """
+    The mirror of the case above, and the reason it is parametrised by asset:
+    ZEC never asks for a BTC snapshot, so a broken get_snapshot must not block
+    it. Fail-closed applies to filters that APPLY, not to every import.
+    """
+    allowed, reason, _ = _run(
+        ASSET, raises=("pipeline.runner.get_snapshot",
+                       ConnectionError("upstream down")))
+    assert allowed is True, reason
+
+
+def test_corrupt_stop_record_without_exit_price_blocks(tmp_path) -> None:
+    """`rec["exit_price"]` raised KeyError straight out of the function."""
+    import json
+    (tmp_path / "trades.jsonl").write_text(
+        json.dumps({"asset": ASSET, "reason": "STOP_LOSS"}) + "\n",
+        encoding="utf-8")
+    _assert_unavailable(_run(tmp_path=tmp_path), "bounce confirmation")
+
+
+@pytest.mark.parametrize("bad", [None, "100.0", float("nan"), float("inf")])
+def test_corrupt_stop_record_with_unusable_exit_price_blocks(tmp_path, bad) -> None:
+    import json
+    (tmp_path / "trades.jsonl").write_text(
+        json.dumps({"asset": ASSET, "reason": "STOP_LOSS", "exit_price": bad}) + "\n",
+        encoding="utf-8")
+    _assert_unavailable(_run(tmp_path=tmp_path), "bounce confirmation")
+
+
+def test_unparseable_history_lines_are_skipped_not_fatal(tmp_path) -> None:
+    """Pre-existing tolerance for junk lines must survive the new strictness."""
+    p = tmp_path / "trades.jsonl"
+    p.write_text("not json at all\n{\"partial\": \n", encoding="utf-8")
+    allowed, reason, _ = _run(tmp_path=tmp_path)
+    assert allowed is True, reason
 
 
 # ── The interface itself ─────────────────────────────────────────────────────

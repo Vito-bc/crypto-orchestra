@@ -461,6 +461,11 @@ def _calc_btc_correlation(asset: str, hours: int = 720) -> float | None:
 # that a data outage is never mistaken for a genuine negative reading.
 FILTER_DATA_UNAVAILABLE = "Required filter data unavailable"
 
+# The only values that answer "what is BTC's 4h regime?". Anything else — the
+# "" that get_snapshot falls back to, a renamed label, a corrupt value — is an
+# absence of information, not a "not bear".
+_BTC_TREND_VALUES = frozenset({"bull", "bear"})
+
 
 def _finite(value) -> bool:
     """True only for a real, finite number. None, NaN, ±inf and non-numerics fail."""
@@ -475,6 +480,28 @@ def _unavailable_reason(asset: str, filter_name: str, detail: str) -> str:
 
 
 def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
+    """
+    Public wrapper: guarantees the declared tuple on EVERY path.
+
+    A data source that raises is unavailable data, not a different kind of
+    event. Letting the exception escape meant the function did not return its
+    documented shape, produced no FILTER_DATA_UNAVAILABLE, and could abort a
+    whole scheduler pass over one asset — the outcome was safe (no order) but
+    the observability was worse than advertised.
+
+    Deliberately broad: the sources are network and file I/O behind several
+    layers, and enumerating their exception types is exactly the fragile
+    enumeration this phase is removing.
+    """
+    try:
+        return _check_entry_filters_inner(asset)
+    except Exception as exc:                     # noqa: BLE001 - see docstring
+        return False, _unavailable_reason(
+            asset, "entry filters",
+            f"{type(exc).__name__} while reading filter inputs: {exc}"), 1.0
+
+
+def _check_entry_filters_inner(asset: str) -> tuple[bool, str, float]:
     """
     Pre-BUY guards that prevent bad entries.
     Returns (allowed, reason_if_blocked, position_size_modifier).
@@ -528,13 +555,24 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
     # 1. Correlation-adjusted BTC BEAR veto (skip for BTC itself and assets with btc_regime_filter=False)
     if asset != "BTC-USD" and _asset_cfg.get("btc_regime_filter", True):
         btc = get_snapshot("BTC-USD")
-        if not btc or btc.get("trend_4h") is None:
+        if not btc:
             # The filter is APPLICABLE to this asset but BTC's regime is
             # unreadable, so "is BTC bearish?" has no answer. Skipping it here
             # dropped the veto exactly when market data was degraded.
             return False, _unavailable_reason(
                 asset, "BTC 4h regime", "BTC snapshot unavailable"), 1.0
-        if btc.get("trend_4h") == "bear":
+        btc_trend = btc.get("trend_4h")
+        if btc_trend not in _BTC_TREND_VALUES:
+            # Only the DECLARED values are an answer. get_snapshot falls back to
+            # "" when the column is absent (tools/price_data.py), and a corrupt
+            # or renamed value would arrive as "unknown"/None/non-string — all of
+            # which mean "not bear" to a bare `== "bear"` test and silently
+            # lifted the veto. Testing only for None caught one case of many.
+            return False, _unavailable_reason(
+                asset, "BTC 4h regime",
+                f"trend_4h is {btc_trend!r}, expected one of "
+                f"{sorted(_BTC_TREND_VALUES)}"), 1.0
+        if btc_trend == "bear":
             corr = _calc_btc_correlation(asset)
             corr_str = f"{corr:.2f}" if corr is not None else "unknown"
             if corr is None or corr >= _CORR_FULL_VETO_THRESHOLD:
@@ -587,7 +625,15 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
             except Exception:
                 continue
             if rec.get("asset") == asset and rec.get("reason") == "STOP_LOSS":
-                stop_exit_price = rec["exit_price"]
+                # A STOP_LOSS row with no usable exit_price cannot anchor the
+                # bounce. `rec["exit_price"]` raised KeyError straight out of
+                # the function; a corrupt journal must block, not crash.
+                stop_exit_price = rec.get("exit_price")
+                if not _finite(stop_exit_price):
+                    return False, _unavailable_reason(
+                        asset, "bounce confirmation",
+                        f"last STOP_LOSS record has exit_price="
+                        f"{stop_exit_price!r}"), size_modifier
                 snap = get_snapshot(asset)
                 # A recent stop makes this filter applicable. Without a snapshot
                 # the bounce cannot be measured, and skipping it re-entered
