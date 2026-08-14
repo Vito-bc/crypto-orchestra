@@ -456,10 +456,73 @@ def _calc_btc_correlation(asset: str, hours: int = 720) -> float | None:
         return None
 
 
+# Marker that prefixes every "the filter applies but could not be evaluated"
+# reason. Callers and tests must branch on this rather than parsing prose, so
+# that a data outage is never mistaken for a genuine negative reading.
+FILTER_DATA_UNAVAILABLE = "Required filter data unavailable"
+
+# The only values that answer "what is BTC's 4h regime?". Anything else — the
+# "" that get_snapshot falls back to, a renamed label, a corrupt value — is an
+# absence of information, not a "not bear".
+_BTC_TREND_VALUES = frozenset({"bull", "bear"})
+
+
+def _finite(value) -> bool:
+    """True only for a real, finite number. None, NaN, ±inf and non-numerics fail."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return value == value and value not in (float("inf"), float("-inf"))
+
+
+def _unavailable_reason(asset: str, filter_name: str, detail: str) -> str:
+    return (f"{FILTER_DATA_UNAVAILABLE} — {asset} {filter_name}: {detail}. "
+            "Entry blocked (fail-closed).")
+
+
 def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
+    """
+    Public wrapper: guarantees the declared tuple on EVERY path.
+
+    A data source that raises is unavailable data, not a different kind of
+    event. Letting the exception escape meant the function did not return its
+    documented shape, produced no FILTER_DATA_UNAVAILABLE, and could abort a
+    whole scheduler pass over one asset — the outcome was safe (no order) but
+    the observability was worse than advertised.
+
+    Deliberately broad: the sources are network and file I/O behind several
+    layers, and enumerating their exception types is exactly the fragile
+    enumeration this phase is removing.
+    """
+    try:
+        return _check_entry_filters_inner(asset)
+    except Exception as exc:                     # noqa: BLE001 - see docstring
+        return False, _unavailable_reason(
+            asset, "entry filters",
+            f"{type(exc).__name__} while reading filter inputs: {exc}"), 1.0
+
+
+def _check_entry_filters_inner(asset: str) -> tuple[bool, str, float]:
     """
     Pre-BUY guards that prevent bad entries.
     Returns (allowed, reason_if_blocked, position_size_modifier).
+
+    FAIL-CLOSED CONTRACT (trial 2026-08 Phase 6.8). Three distinct outcomes:
+
+      applicable + readable   → the filter decides on a real measurement.
+      applicable + unreadable → ENTRY BLOCKED, reason prefixed with
+                                FILTER_DATA_UNAVAILABLE.
+      not applicable          → the filter is skipped and does not block. This
+                                is a property of the asset (ZEC has no OKX
+                                perpetual; btc_regime_filter=False disables the
+                                BTC veto), never of a failed request.
+
+    Previously filters 1, 3, 4 and 5 all fell through to "allowed" when their
+    inputs were missing, so degraded market data silently removed the guards
+    instead of stopping the entry — the live twin of the scanner warm-up defect
+    corrected in trial 2026-08-warmup-semantics.
+
+    Thresholds, sizing and execution semantics are unchanged; only the
+    unreadable-input branches move.
 
     position_size_modifier is 1.0 normally, 0.5 when partially vetoed
     (BTC BEAR + partial correlation — entry allowed but size halved).
@@ -479,7 +542,12 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
        Asset down > 5% in last 24h → no long entry.
     """
     from backtesting.signal_scanner import ASSET_CONFIG as _SCANNER_CFG
-    from tools.market_positioning import get_okx_funding_rate
+    from tools.market_positioning import (
+        FUNDING_NOT_APPLICABLE,
+        FUNDING_OK,
+        FUNDING_UNAVAILABLE,
+        get_okx_funding_rate,
+    )
 
     size_modifier = 1.0
     _asset_cfg = _SCANNER_CFG.get(asset, {})
@@ -487,7 +555,24 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
     # 1. Correlation-adjusted BTC BEAR veto (skip for BTC itself and assets with btc_regime_filter=False)
     if asset != "BTC-USD" and _asset_cfg.get("btc_regime_filter", True):
         btc = get_snapshot("BTC-USD")
-        if btc and btc.get("trend_4h") == "bear":
+        if not btc:
+            # The filter is APPLICABLE to this asset but BTC's regime is
+            # unreadable, so "is BTC bearish?" has no answer. Skipping it here
+            # dropped the veto exactly when market data was degraded.
+            return False, _unavailable_reason(
+                asset, "BTC 4h regime", "BTC snapshot unavailable"), 1.0
+        btc_trend = btc.get("trend_4h")
+        if btc_trend not in _BTC_TREND_VALUES:
+            # Only the DECLARED values are an answer. get_snapshot falls back to
+            # "" when the column is absent (tools/price_data.py), and a corrupt
+            # or renamed value would arrive as "unknown"/None/non-string — all of
+            # which mean "not bear" to a bare `== "bear"` test and silently
+            # lifted the veto. Testing only for None caught one case of many.
+            return False, _unavailable_reason(
+                asset, "BTC 4h regime",
+                f"trend_4h is {btc_trend!r}, expected one of "
+                f"{sorted(_BTC_TREND_VALUES)}"), 1.0
+        if btc_trend == "bear":
             corr = _calc_btc_correlation(asset)
             corr_str = f"{corr:.2f}" if corr is not None else "unknown"
             if corr is None or corr >= _CORR_FULL_VETO_THRESHOLD:
@@ -505,15 +590,33 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
     elif asset != "BTC-USD":
         print(f"[EntryFilter] BTC correlation veto skipped for {asset} (btc_regime_filter=False)")
 
-    # 2. Funding rate leverage veto (skips assets with no OKX perp, e.g. ZEC)
+    # 2. Funding rate leverage veto.
+    #    NOT APPLICABLE (no registered OKX perp, e.g. ZEC) must not block.
+    #    UNAVAILABLE (supported instrument, unreadable) must block: the filter
+    #    applies and cannot be evaluated. Branching on `error` conflated the two.
     funding = get_okx_funding_rate(asset)
-    if not funding.get("error"):
-        ann = funding.get("annualized_pct", 0.0)
+    f_status = funding.get("status")
+    if f_status == FUNDING_UNAVAILABLE:
+        return False, _unavailable_reason(
+            asset, "OKX funding rate",
+            funding.get("error") or "no reading returned"), size_modifier
+    if f_status == FUNDING_OK:
+        # No default. `get("annualized_pct", 0.0)` turned a missing value into
+        # "funding is 0%", which cleared the 20% threshold — a status of OK with
+        # no number is missing data, not a benign reading.
+        ann = funding.get("annualized_pct")
+        if not _finite(ann):
+            return False, _unavailable_reason(
+                asset, "OKX funding rate", f"non-finite annualized value {ann!r}"), size_modifier
         if ann > _FUNDING_BLOCK_ANNUALIZED:
             return False, (
                 f"Funding rate veto — {asset} funding {ann:.1f}% annualized "
                 f"(>{_FUNDING_BLOCK_ANNUALIZED:.0f}%); leveraged long crowd, wait for unwind"
             ), size_modifier
+    elif f_status != FUNDING_NOT_APPLICABLE:
+        # An unrecognised status is not a licence to proceed.
+        return False, _unavailable_reason(
+            asset, "OKX funding rate", f"unknown status {f_status!r}"), size_modifier
 
     # 3. Bounce confirmation after stop loss (ATR-based, not fixed %)
     if TRADE_HISTORY.exists():
@@ -525,47 +628,99 @@ def _check_entry_filters(asset: str) -> tuple[bool, str, float]:
             except Exception:
                 continue
             if rec.get("asset") == asset and rec.get("reason") == "STOP_LOSS":
-                stop_exit_price = rec["exit_price"]
+                # A STOP_LOSS row with no usable exit_price cannot anchor the
+                # bounce. `rec["exit_price"]` raised KeyError straight out of
+                # the function; a corrupt journal must block, not crash.
+                stop_exit_price = rec.get("exit_price")
+                if not _finite(stop_exit_price):
+                    return False, _unavailable_reason(
+                        asset, "bounce confirmation",
+                        f"last STOP_LOSS record has exit_price="
+                        f"{stop_exit_price!r}"), size_modifier
                 snap = get_snapshot(asset)
-                if snap:
-                    current     = snap["close"]
-                    atr         = snap["atr_1h"]
-                    required    = stop_exit_price + _BOUNCE_CONFIRMATION_ATR * atr
-                    bounce_atr  = (current - stop_exit_price) / atr if atr else 0
-                    if current < required:
-                        return False, (
-                            f"Bounce confirmation needed — last stop exit ${stop_exit_price:.2f}, "
-                            f"current ${current:.2f} ({bounce_atr:+.2f}x ATR); "
-                            f"need +{_BOUNCE_CONFIRMATION_ATR}x ATR (${required:.2f}) above stop exit"
-                        ), size_modifier
+                # A recent stop makes this filter applicable. Without a snapshot
+                # the bounce cannot be measured, and skipping it re-entered
+                # immediately after a stop — the case the filter exists for.
+                if not snap:
+                    return False, _unavailable_reason(
+                        asset, "bounce confirmation",
+                        "price snapshot unavailable after a recent stop"), size_modifier
+                current = snap.get("close")
+                atr     = snap.get("atr_1h")
+                if not _finite(current) or not _finite(atr) or atr <= 0:
+                    return False, _unavailable_reason(
+                        asset, "bounce confirmation",
+                        f"unusable snapshot (close={current!r}, atr={atr!r})"), size_modifier
+                required   = stop_exit_price + _BOUNCE_CONFIRMATION_ATR * atr
+                bounce_atr = (current - stop_exit_price) / atr
+                if current < required:
+                    return False, (
+                        f"Bounce confirmation needed — last stop exit ${stop_exit_price:.2f}, "
+                        f"current ${current:.2f} ({bounce_atr:+.2f}x ATR); "
+                        f"need +{_BOUNCE_CONFIRMATION_ATR}x ATR (${required:.2f}) above stop exit"
+                    ), size_modifier
                 break
 
-    # 4. Velocity veto — price falling > 5% in last 24h
+    # 4. Velocity veto — price falling > 5% in last 24h.
+    #    Every branch below used to fall through to "allowed": a None frame, a
+    #    short frame, a NaN close or a zero 24h-ago price all skipped the veto.
     raw_df = get_raw_df(asset)
-    if raw_df is not None and len(raw_df) >= 25:
+    if raw_df is None:
+        return False, _unavailable_reason(
+            asset, "24h velocity", "price frame unavailable"), size_modifier
+    if len(raw_df) < 25:
+        return False, _unavailable_reason(
+            asset, "24h velocity",
+            f"only {len(raw_df)} hourly bars, need 25"), size_modifier
+    try:
         close_now = float(raw_df["close"].iloc[-1])
         close_24h = float(raw_df["close"].iloc[-25])
-        chg_24h   = (close_now - close_24h) / close_24h * 100
-        if chg_24h <= _VELOCITY_VETO_PCT:
-            return False, (
-                f"Velocity veto — {asset} down {chg_24h:.1f}% in 24h; "
-                "no long entry into active distribution"
-            ), size_modifier
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        return False, _unavailable_reason(
+            asset, "24h velocity", f"close series unreadable: {exc}"), size_modifier
+    if not _finite(close_now) or not _finite(close_24h):
+        return False, _unavailable_reason(
+            asset, "24h velocity",
+            f"non-finite closes (now={close_now!r}, 24h={close_24h!r})"), size_modifier
+    if close_24h == 0:
+        return False, _unavailable_reason(
+            asset, "24h velocity", "24h-ago close is zero, change is undefined"), size_modifier
+    chg_24h = (close_now - close_24h) / close_24h * 100
+    if chg_24h <= _VELOCITY_VETO_PCT:
+        return False, (
+            f"Velocity veto — {asset} down {chg_24h:.1f}% in 24h; "
+            "no long entry into active distribution"
+        ), size_modifier
 
     # 5. Daily EMA trend filter — asset-specific period (50 or 200 day).
     # Backtesting: mean-reversion signals in daily downtrends are net losers.
     # ETH uses 50EMA (faster), ZEC uses 200EMA (slower, low-liquidity asset).
-    daily = get_daily_trend(asset)
-    if daily:
-        daily_period = _DAILY_EMA_PERIOD.get(asset, 200)
-        c1d      = daily.get("close_1d")
-        ema_key  = f"ema{daily_period}_1d"
-        daily_ma = daily.get(ema_key)
-        if c1d is not None and daily_ma is not None and c1d < daily_ma:
-            return False, (
-                f"Daily {daily_period}EMA veto — {asset} daily close ${c1d:,.2f} < "
-                f"{daily_period}-day EMA ${daily_ma:,.2f}; daily downtrend"
-            ), size_modifier
+    #
+    # This is the live twin of the scanner defect corrected in trial
+    # 2026-08-warmup-semantics: a declared veto that cannot be computed must
+    # refuse the entry, not wave it through. `get_daily_trend` returns None for
+    # the EMA key when the column is absent and a NaN when it is present but not
+    # yet warm, and the old `is not None` test caught neither.
+    daily_period = _DAILY_EMA_PERIOD.get(asset, 200)
+    ema_key      = f"ema{daily_period}_1d"
+    daily        = get_daily_trend(asset)
+    if not daily:
+        return False, _unavailable_reason(
+            asset, f"daily {daily_period}EMA", "daily frame unavailable"), size_modifier
+    c1d      = daily.get("close_1d")
+    daily_ma = daily.get(ema_key)
+    if not _finite(c1d):
+        return False, _unavailable_reason(
+            asset, f"daily {daily_period}EMA", f"daily close is {c1d!r}"), size_modifier
+    if not _finite(daily_ma):
+        return False, _unavailable_reason(
+            asset, f"daily {daily_period}EMA",
+            f"{ema_key} is {daily_ma!r} (absent or still warming up)"), size_modifier
+    if c1d < daily_ma:
+        return False, (
+            f"Daily {daily_period}EMA veto — {asset} daily close ${c1d:,.2f} < "
+            f"{daily_period}-day EMA ${daily_ma:,.2f}; daily downtrend"
+        ), size_modifier
 
     # 6. Whipsaw guard — 2+ stops in 96h means choppy market regardless of regime
     stop_count = count_recent_stops(asset, hours=_WHIPSAW_LOOKBACK_H)
