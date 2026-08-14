@@ -255,6 +255,20 @@ def test_funding_ok_with_non_finite_value_blocks() -> None:
                         "OKX funding rate")
 
 
+@pytest.mark.parametrize("payload", [
+    {"status": FUNDING_OK},                              # key absent entirely
+    {"status": FUNDING_OK, "annualized_pct": None},
+    {"status": FUNDING_OK, "annualized_pct": "12.5"},    # string, not a number
+])
+def test_funding_ok_without_a_usable_value_blocks(payload) -> None:
+    """
+    `get("annualized_pct", 0.0)` turned a missing value into "funding is 0%",
+    which cleared the 20% threshold and allowed the entry. A status of OK with
+    no number is missing data, not a benign reading.
+    """
+    _assert_unavailable(_run(funding=payload), "OKX funding rate")
+
+
 # ── Filter 1: BTC regime — existing fail-closed must not regress ─────────────
 
 def test_correlation_fail_closed_does_not_regress() -> None:

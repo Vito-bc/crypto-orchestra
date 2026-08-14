@@ -365,7 +365,20 @@ def funding_applicability(asset: str) -> str:
     key = asset.upper()
     if key not in _OKX_SYMBOL:
         return FUNDING_UNAVAILABLE
-    return FUNDING_OK if _OKX_SYMBOL[key] else FUNDING_NOT_APPLICABLE
+    symbol = _OKX_SYMBOL[key]
+    # Strict, not truthy. `if symbol else NOT_APPLICABLE` read "", False, 0, []
+    # and {} as a deliberate "this asset has no perpetual", so one corrupt
+    # registry entry silently disabled the funding filter for that asset. And a
+    # truthy non-string (123) was accepted as an instrument id and would have
+    # been interpolated straight into the request URL.
+    #
+    # Only an explicit None declares "no perpetual". Only a non-empty string
+    # names one. Everything else is a registry we cannot interpret.
+    if symbol is None:
+        return FUNDING_NOT_APPLICABLE
+    if isinstance(symbol, str) and symbol.strip():
+        return FUNDING_OK
+    return FUNDING_UNAVAILABLE
 
 
 def get_okx_funding_rate(asset: str) -> dict:
@@ -390,10 +403,13 @@ def get_okx_funding_rate(asset: str) -> dict:
         return {**result, "status": FUNDING_NOT_APPLICABLE,
                 "error": f"No OKX perpetual registered for {asset}"}
     if applicability == FUNDING_UNAVAILABLE:
+        detail = ("is not in the OKX instrument registry"
+                  if asset.upper() not in _OKX_SYMBOL
+                  else f"has an uninterpretable registry entry "
+                       f"({_OKX_SYMBOL[asset.upper()]!r})")
         return {**result, "status": FUNDING_UNAVAILABLE,
-                "error": (f"{asset} is not in the OKX instrument registry — "
-                          "applicability unknown, refusing to assume it has no "
-                          "perpetual")}
+                "error": (f"{asset} {detail} — applicability unknown, refusing "
+                          "to assume it has no perpetual")}
     okx_sym = _OKX_SYMBOL[asset.upper()]
 
     def _unavailable(why: str) -> dict:

@@ -61,6 +61,47 @@ def test_unregistered_asset_is_unavailable_not_not_applicable() -> None:
         assert "registry" in res["error"]
 
 
+@pytest.mark.parametrize("value,expected", [
+    # Only an explicit None declares "this asset has no perpetual".
+    (None, FUNDING_NOT_APPLICABLE),
+    # Only a non-empty string names an instrument.
+    ("BTC-USDT-SWAP", FUNDING_OK),
+    ("  ETH-USDT-SWAP  ", FUNDING_OK),
+    # Everything else is a registry entry we cannot interpret. Truthiness read
+    # the first five as a deliberate "no perpetual", so one corrupt entry
+    # silently disabled the funding filter for that asset...
+    ("", FUNDING_UNAVAILABLE),
+    ("   ", FUNDING_UNAVAILABLE),
+    (False, FUNDING_UNAVAILABLE),
+    (0, FUNDING_UNAVAILABLE),
+    ([], FUNDING_UNAVAILABLE),
+    ({}, FUNDING_UNAVAILABLE),
+    # ...and accepted the last two as an instrument id, which would have been
+    # interpolated straight into the request URL.
+    (123, FUNDING_UNAVAILABLE),
+    (True, FUNDING_UNAVAILABLE),
+    (["BTC-USDT-SWAP"], FUNDING_UNAVAILABLE),
+])
+def test_registry_values_are_classified_strictly_not_by_truthiness(
+        value, expected) -> None:
+    with patch.dict(mp._OKX_SYMBOL, {"TEST-USD": value}):
+        assert funding_applicability("TEST-USD") == expected
+
+
+@pytest.mark.parametrize("value", ["", False, 0, [], {}, 123, True])
+def test_a_corrupt_registry_entry_never_reaches_the_network(value) -> None:
+    """
+    An uninterpretable entry must be refused before a request is built — not
+    least because a truthy non-string would have been used as the instId.
+    """
+    with patch.dict(mp._OKX_SYMBOL, {"TEST-USD": value}), \
+         patch.object(mp, "_get") as g:
+        res = get_okx_funding_rate("TEST-USD")
+    assert res["status"] == FUNDING_UNAVAILABLE
+    assert not g.called
+    assert "registry entry" in res["error"]
+
+
 def test_not_applicable_never_makes_a_request() -> None:
     with patch.object(mp, "_get") as g:
         get_okx_funding_rate("ZEC-USD")

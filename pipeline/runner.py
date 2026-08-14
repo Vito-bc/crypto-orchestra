@@ -601,7 +601,10 @@ def _check_entry_filters_inner(asset: str) -> tuple[bool, str, float]:
             asset, "OKX funding rate",
             funding.get("error") or "no reading returned"), size_modifier
     if f_status == FUNDING_OK:
-        ann = funding.get("annualized_pct", 0.0)
+        # No default. `get("annualized_pct", 0.0)` turned a missing value into
+        # "funding is 0%", which cleared the 20% threshold — a status of OK with
+        # no number is missing data, not a benign reading.
+        ann = funding.get("annualized_pct")
         if not _finite(ann):
             return False, _unavailable_reason(
                 asset, "OKX funding rate", f"non-finite annualized value {ann!r}"), size_modifier

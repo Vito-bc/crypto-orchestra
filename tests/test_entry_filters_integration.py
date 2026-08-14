@@ -174,6 +174,9 @@ def test_buy_reaches_placement_when_every_filter_is_readable(tmp_path, monkeypat
     ("price frame unavailable", None, _GOOD_DAILY, _ok_funding()),
     ("price frame too short", _raw_df(n=10), _GOOD_DAILY, _ok_funding()),
     ("funding unreadable", _raw_df(), _GOOD_DAILY, _unavailable_funding()),
+    # status OK but no number: the default turned this into "funding is 0%".
+    ("funding ok with no value", _raw_df(), _GOOD_DAILY,
+     {"status": "ok", "error": None}),
 ])
 def test_unavailable_filter_data_never_reaches_placement(
         tmp_path, monkeypatch, name, raw_df, daily, funding) -> None:
