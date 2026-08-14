@@ -17,9 +17,12 @@ Two guarantees:
   1. The suite runs on pinned, safe configuration regardless of the developer's
      local .env. Verified by running with an external DRY_RUN=false: the
      bootstrap still forces DRY_RUN=true.
-  2. No test can reach the network. Enforced at the socket layer, so it covers
+  2. No test can reach the network. Enforced at the socket layer — TCP connect,
+     DNS resolution and connectionless UDP sends alike — so it covers
      requests/urllib/httpx/anthropic/coinbase-advanced-py and any SDK that
-     hides its transport, rather than enumerating call sites.
+     hides its transport, rather than enumerating call sites. Raw AF_PACKET or
+     a subprocess shelling out to curl would still escape; nothing in this
+     project does either.
 """
 
 from __future__ import annotations
@@ -74,6 +77,11 @@ _real_connect = socket.socket.connect
 _real_connect_ex = socket.socket.connect_ex
 _real_getaddrinfo = socket.getaddrinfo
 _real_create_connection = socket.create_connection
+# Connectionless sends bypass connect() entirely, so a UDP datagram was the one
+# way out of this guard. Guarding only TCP+DNS and calling it "no network" was
+# a stronger claim than the code made good on.
+_real_sendto = socket.socket.sendto
+_real_sendmsg = getattr(socket.socket, "sendmsg", None)
 
 
 class NetworkAccessBlocked(RuntimeError):
@@ -120,6 +128,20 @@ def _guard_create_connection(address, *args, **kwargs):
     raise _refuse(address, "create_connection")
 
 
+def _guard_sendto(self, data, *args, **kwargs):
+    # Signatures: sendto(data, address) and sendto(data, flags, address).
+    address = args[-1] if args else None
+    if address is None or _host_of(address) in _LOOPBACK:
+        return _real_sendto(self, data, *args, **kwargs)
+    raise _refuse(address, "UDP sendto")
+
+
+def _guard_sendmsg(self, buffers, ancdata=(), flags=0, address=None, *rest):
+    if address is None or _host_of(address) in _LOOPBACK:
+        return _real_sendmsg(self, buffers, ancdata, flags, address, *rest)
+    raise _refuse(address, "UDP sendmsg")
+
+
 def _guard_getaddrinfo(host, *args, **kwargs):
     # DNS is blocked too. Allowing resolution while blocking connect would let a
     # test leak the fact that it is running to a DNS server, and would make the
@@ -134,6 +156,9 @@ def pytest_configure(config: pytest.Config) -> None:
     socket.socket.connect_ex = _guard_connect_ex
     socket.create_connection = _guard_create_connection
     socket.getaddrinfo = _guard_getaddrinfo
+    socket.socket.sendto = _guard_sendto
+    if _real_sendmsg is not None:
+        socket.socket.sendmsg = _guard_sendmsg
     config.addinivalue_line(
         "markers",
         "allow_network: test is permitted real outbound network access "
@@ -146,3 +171,6 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     socket.socket.connect_ex = _real_connect_ex
     socket.create_connection = _real_create_connection
     socket.getaddrinfo = _real_getaddrinfo
+    socket.socket.sendto = _real_sendto
+    if _real_sendmsg is not None:
+        socket.socket.sendmsg = _real_sendmsg
