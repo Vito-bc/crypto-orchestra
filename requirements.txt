@@ -1,12 +1,43 @@
-ccxt
-numpy
-pandas
-ta
-yfinance
-anthropic
-pydantic
-httpx
-python-dotenv
-coinbase-advanced-py
-streamlit
-plotly
+# Runtime dependencies — EXACT pins.
+#
+# Canonical interpreter: Python 3.13 (see backtesting/research_runner.py
+# _CANONICAL_PYTHON). research_runner refuses to WRITE artifacts on any other
+# minor version, because results are not comparable across them.
+#
+# Why exact rather than ranges: numpy/pandas/ta/pyarrow compute every indicator
+# in the research pipeline, so an unpinned upgrade silently moves every headline
+# number while the committed artifact still verifies green. This file previously
+# listed twelve bare package names with no versions at all.
+#
+# The four marked RESULT-DETERMINING are recorded in
+# docs/research/artifacts/manifest.json under `environment`, so changing one
+# invalidates verification loudly instead of quietly re-deriving the numbers.
+#
+# These are the versions that produced the committed artifacts. They are NOT a
+# `pip freeze` of a working environment: only direct dependencies are pinned
+# here, leaving transitive resolution to pip.
+
+# ── RESULT-DETERMINING (recorded in the research manifest) ───────────────────
+numpy==2.4.4
+pandas==3.0.2
+ta==0.11.0
+# Parquet engine for the candle cache. pandas selects it implicitly via
+# read_parquet/to_parquet, so it was a silent, unpinned dependency of every
+# research number despite never appearing in this file.
+pyarrow==24.0.0
+
+# ── Exchange / market data ───────────────────────────────────────────────────
+coinbase-advanced-py==1.8.2
+ccxt==4.5.48
+# Legacy fallback source. STRICT_COINBASE_ONLY disables it for registered runs.
+yfinance==1.2.2
+
+# ── Agents / runtime ─────────────────────────────────────────────────────────
+anthropic==0.95.0
+pydantic==2.13.1
+httpx==0.28.1
+python-dotenv==1.2.2
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+streamlit==1.58.0
+plotly==6.7.0

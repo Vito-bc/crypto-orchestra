@@ -19,9 +19,20 @@ Contract:
   * Coverage is checked and the run FAILS CLOSED on missing or short input. A
     registered run never silently falls back to a different data provider.
 
+  * Identity of the CODE is content-addressed (SHA-256 per file plus an
+    aggregate). `code_commit` is retained as an informational label only: it
+    goes stale whenever history is rewritten, whereas the hashes survive any
+    squash or rebase that does not change file contents.
+  * The computational environment travels with the results. numpy/pandas/ta/
+    pyarrow compute the indicators, so their versions determine the numbers as
+    surely as the source does.
+
 Usage:
     python backtesting/research_runner.py                 # write artifacts
-    python backtesting/research_runner.py --check         # verify, do not write
+    python backtesting/research_runner.py --check         # inputs only, no write
+    python backtesting/research_runner.py --verify        # full byte-for-byte replay
+    python backtesting/research_runner.py --verify-code   # code+env only (no candles,
+                                                          # no git history needed)
 
 Artifacts (committed; raw parquet is NOT):
     docs/research/artifacts/manifest.json    inputs + hashes + coverage
@@ -199,6 +210,114 @@ _CODE_PATHS = [
 ]
 
 
+# ── Computational environment ────────────────────────────────────────────────
+#
+# These libraries compute the indicators, so their versions are as
+# result-determining as the scanner source. requirements.txt pinned nothing at
+# all, which meant a `ta` or `pandas` release could move every headline number
+# with the artifact still verifying green.
+#
+# Python is declared to MAJOR.MINOR only. A patch release does not change
+# floating-point semantics here, and pinning 3.13.5 exactly would break
+# verification on 3.13.6 for no reproducibility gain. A minor-version change
+# does matter and must be a deliberate re-registration.
+_CANONICAL_PYTHON = "3.13"
+_RESULT_DETERMINING_PACKAGES = ("numpy", "pandas", "ta", "pyarrow")
+
+
+class EnvironmentError_(ProvenanceError):
+    """The interpreter or libraries differ from the registered environment."""
+
+
+def environment_fingerprint() -> dict:
+    """Versions that determine the numbers, recorded alongside them."""
+    import importlib.metadata as md
+
+    packages = {}
+    for name in _RESULT_DETERMINING_PACKAGES:
+        try:
+            packages[name] = md.version(name)
+        except md.PackageNotFoundError:
+            raise ProvenanceError(
+                f"{name} is not installed but is result-determining. Install "
+                "the pinned requirements before running a registered scan."
+            ) from None
+    return {"python": _CANONICAL_PYTHON, "packages": packages}
+
+
+def assert_canonical_python() -> None:
+    """
+    Refuse to WRITE artifacts from a non-canonical interpreter.
+
+    Without this, regenerating under a different minor version would silently
+    rewrite the committed numbers and present them as the same experiment.
+    """
+    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if running != _CANONICAL_PYTHON:
+        raise EnvironmentError_(
+            f"registered environment is Python {_CANONICAL_PYTHON}, this is "
+            f"{running}. Results are not comparable across minor versions; "
+            "re-register deliberately rather than regenerating here."
+        )
+
+
+# ── Content-addressed code identity ──────────────────────────────────────────
+
+def code_fingerprint() -> dict:
+    """
+    SHA-256 of every result-determining source file, plus an aggregate.
+
+    This is the PRIMARY identity of the code that produced the results, and it
+    is independent of git entirely. `code_commit` below is a convenience label:
+    it goes stale on squash/rebase (twice already in this project's history,
+    each time needing a follow-up commit), whereas these hashes survive any
+    history rewrite that does not change file contents.
+    """
+    files = []
+    for rel in _CODE_PATHS:
+        path = ROOT / rel
+        if not path.exists():
+            raise ProvenanceError(f"result-determining file missing: {rel}")
+        files.append({"file": rel, "sha256": sha256_file(path)})
+    files.sort(key=lambda d: d["file"])
+    agg = hashlib.sha256()
+    for entry in files:
+        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
+    return {"files": files, "code_sha256": agg.hexdigest()}
+
+
+def assert_code_is_committed() -> None:
+    """
+    Refuse to write artifacts from a dirty working tree.
+
+    A manifest generated from uncommitted edits describes code that exists
+    nowhere but one laptop. Absence of git is not an excuse to skip the check
+    silently — it is reported — but it is not a failure either, because a
+    source tarball is a legitimate way to run this.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--", *_CODE_PATHS],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=30, check=False,
+        )
+    except Exception:
+        print("note: git unavailable; cannot check for uncommitted research code",
+              file=sys.stderr)
+        return
+    if out.returncode != 0:
+        print("note: not a git checkout; skipping the dirty-tree check",
+              file=sys.stderr)
+        return
+    dirty = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    if dirty:
+        raise ProvenanceError(
+            "result-determining code has uncommitted changes:\n  "
+            + "\n  ".join(dirty)
+            + "\nCommit them first: an artifact must describe code that exists "
+              "outside this working tree."
+        )
+
+
 def _git_commit() -> str:
     """
     Commit of the CODE that produced these results.
@@ -316,10 +435,53 @@ def build_manifest(assets: Optional[list[str]] = None) -> dict:
             inputs.append(describe_dataset(CANDLE_DIR / f"{stem}_{interval}.parquet"))
     return {
         "config_id": RESEARCH_CONFIG["config_id"],
+        # PRIMARY code identity: content-addressed, git-independent.
+        "code": code_fingerprint(),
+        # Informational provenance label only. Kept because it is useful for
+        # "where did this come from", not relied on for identity: it goes stale
+        # on squash/rebase while the hashes above do not.
         "code_commit": _git_commit(),
+        "environment": environment_fingerprint(),
         "config": RESEARCH_CONFIG,
         "inputs": sorted(inputs, key=lambda d: d["file"]),
     }
+
+
+def verify_code_and_environment() -> bool:
+    """
+    Cheap identity check: code hashes + environment, nothing else.
+
+    Runs in milliseconds with NO candle cache and NO git history, so CI can
+    assert that the committed artifact describes the checked-out code even where
+    the full replay is impractical. The full --verify remains the stronger
+    guarantee; this is the one that can run anywhere.
+    """
+    m_path = ARTIFACT_DIR / "manifest.json"
+    if not m_path.exists():
+        raise ProvenanceError("manifest is not committed — nothing to verify")
+    committed = json.loads(m_path.read_text(encoding="utf-8"))
+
+    ok = True
+    fresh_code = code_fingerprint()
+    old_code = committed.get("code") or {}
+    if old_code.get("code_sha256") != fresh_code["code_sha256"]:
+        ok = False
+        print("MISMATCH: result-determining code differs from the artifact",
+              file=sys.stderr)
+        old_by_file = {e["file"]: e["sha256"] for e in old_code.get("files", [])}
+        for entry in fresh_code["files"]:
+            was = old_by_file.get(entry["file"])
+            if was != entry["sha256"]:
+                print(f"  {entry['file']}: manifest {was} != working tree "
+                      f"{entry['sha256']}", file=sys.stderr)
+
+    fresh_env = environment_fingerprint()
+    if committed.get("environment") != fresh_env:
+        ok = False
+        print(f"MISMATCH: environment differs\n  manifest: "
+              f"{committed.get('environment')}\n  running : {fresh_env}",
+              file=sys.stderr)
+    return ok
 
 
 def _round(value, digits: int = 6):
@@ -650,6 +812,12 @@ def run_results(manifest: Optional[dict] = None) -> dict:
 
 
 def write_artifacts(out_dir: Optional[Path] = None) -> tuple[Path, Path]:
+    # Writing is the moment provenance is claimed, so both guards live here and
+    # not in verify: verifying a tarball with no git history is legitimate,
+    # publishing numbers from uncommitted code on an unregistered interpreter is
+    # not.
+    assert_canonical_python()
+    assert_code_is_committed()
     out_dir = out_dir or ARTIFACT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = build_manifest()
@@ -697,8 +865,17 @@ def _cli() -> None:
             print(json.dumps(manifest, indent=2, sort_keys=True))
             print(f"\nOK: {len(manifest['inputs'])} input datasets hashed.")
             return
+        if "--verify-code" in sys.argv:
+            # Cheap identity check — no candle cache, no git history needed.
+            if verify_code_and_environment():
+                print("OK: code hashes and environment match the artifact.")
+                return
+            sys.exit(1)
         if "--verify" in sys.argv:
-            if verify_artifacts():
+            # Code identity first: when both are wrong, "the code changed" is
+            # the useful message and "the numbers changed" is its consequence.
+            code_ok = verify_code_and_environment()
+            if verify_artifacts() and code_ok:
                 print("OK: committed artifacts reproduce byte-for-byte.")
                 return
             sys.exit(1)

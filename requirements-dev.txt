@@ -1,6 +1,10 @@
-# Development / CI dependencies.
+# Development / CI dependencies — EXACT pins.
 # Kept out of requirements.txt so a production install never pulls test tooling.
 #   pip install -r requirements-dev.txt
+#
+# ruff is pinned because an unpinned lint upgrade turns a green CI red on
+# unrelated PRs; pytest because collection and fixture semantics change across
+# minor versions.
 -r requirements.txt
-pytest
-ruff
+pytest==9.1.1
+ruff==0.15.15
