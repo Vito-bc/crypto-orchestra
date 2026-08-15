@@ -43,11 +43,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -163,13 +165,20 @@ RESEARCH_CONFIG: dict = {
     # Coverage gaps that are KNOWN and accepted. Any gap not listed here fails
     # the run: checking only the first and last timestamp let interior holes
     # through, and a 2-5h hole silently removes signals.
-    # Measured 2026-08-09; exchange-side outages, not download errors. Daily
-    # series are complete. Raising a budget must be a deliberate, reviewed edit.
+    #
+    # RE-MEASURED 2026-08-15 INSIDE THE REGISTERED SCOPE. The previous budgets
+    # counted the whole parquet including the tail past the freeze, so a hole in
+    # data the research never reads consumed budget, and a hole inside the window
+    # could hide behind a clean tail. ZEC drops 16 -> 15 because one of its gaps
+    # was entirely in the tail.
+    #
+    # Exchange-side outages, not download errors. Daily series are complete.
+    # Raising a budget must be a deliberate, reviewed edit.
     "accepted_gap_bars": {
-        "BTC_USD_1h.parquet": 16,   # 6 gaps
-        "ETH_USD_1h.parquet": 16,   # 6 gaps
-        "SOL_USD_1h.parquet": 15,   # 3 gaps
-        "ZEC_USD_1h.parquet": 16,   # 5 gaps
+        "BTC_USD_1h.parquet": 16,   # 6 gaps in scope
+        "ETH_USD_1h.parquet": 16,   # 6 gaps in scope
+        "SOL_USD_1h.parquet": 15,   # 3 gaps in scope
+        "ZEC_USD_1h.parquet": 15,   # 4 gaps in scope
         "BTC_USD_1d.parquet": 0,
         "ETH_USD_1d.parquet": 0,
         "SOL_USD_1d.parquet": 0,
@@ -241,7 +250,7 @@ _CODE_PATHS = [
 # floating-point semantics here, and pinning 3.13.5 exactly would break
 # verification on 3.13.6 for no reproducibility gain. A minor-version change
 # does matter and must be a deliberate re-registration.
-_CANONICAL_PYTHON = "3.13"
+_CANONICAL_PYTHON = "3.13.5"
 _RESULT_DETERMINING_PACKAGES = ("numpy", "pandas", "ta", "pyarrow")
 
 
@@ -250,7 +259,14 @@ class EnvironmentError_(ProvenanceError):
 
 
 def environment_fingerprint() -> dict:
-    """Versions that determine the numbers, recorded alongside them."""
+    """
+    Versions that determine the numbers, recorded alongside them.
+
+    Reports the ACTUALLY RUNNING interpreter, not the declared constant. Writing
+    `_CANONICAL_PYTHON` here made the field self-fulfilling: a run under 3.12
+    still stamped "3.13", so the one thing the field existed to detect was the
+    one thing it could not.
+    """
     import importlib.metadata as md
 
     packages = {}
@@ -262,22 +278,21 @@ def environment_fingerprint() -> dict:
                 f"{name} is not installed but is result-determining. Install "
                 "the pinned requirements before running a registered scan."
             ) from None
-    return {"python": _CANONICAL_PYTHON, "packages": packages}
+    return {"python": platform.python_version(), "packages": packages}
 
 
 def assert_canonical_python() -> None:
     """
     Refuse to WRITE artifacts from a non-canonical interpreter.
 
-    Without this, regenerating under a different minor version would silently
-    rewrite the committed numbers and present them as the same experiment.
+    Without this, regenerating under a different version would silently rewrite
+    the committed numbers and present them as the same experiment.
     """
-    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    running = platform.python_version()
     if running != _CANONICAL_PYTHON:
         raise EnvironmentError_(
             f"registered environment is Python {_CANONICAL_PYTHON}, this is "
-            f"{running}. Results are not comparable across minor versions; "
-            "re-register deliberately rather than regenerating here."
+            f"{running}. Re-register deliberately rather than regenerating here."
         )
 
 
@@ -360,6 +375,97 @@ def _git_commit() -> str:
         return "unknown"
 
 
+# ── Logical input identity ───────────────────────────────────────────────────
+#
+# The physical parquet SHA-256 is NOT an identity for the data. It covers the
+# whole file, including rows past the freeze that the exchange keeps completing
+# and revising, so a fresh public download of identical research data mismatched
+# on all eight inputs while results.json stayed byte-identical. The hash
+# asserted more than what determines the results.
+#
+# What determines the results is the OHLCV the registered runner can actually
+# read, so that is what is hashed:
+#
+#   start  _DAILY_HISTORY_START, inclusive. Not asset_effective_start: warm-up
+#          rows determine the EMAs and therefore gate availability itself, so
+#          they are part of the input, not context.
+#   end    the frozen evaluation boundary, INCLUSIVE — coinbase_candles.download
+#          slices `(time >= start) & (time <= end)`, so the boundary bar is read.
+#
+# Rows after the end are ignored; any change to a row inside the scope, and any
+# insertion or deletion, must break verification.
+_HASH_SCHEME = "ohlcv-logical-v1"
+_SCOPE_START = "2020-01-01T00:00:00+00:00"
+_OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
+
+
+def _scope_end() -> str:
+    """
+    Widest end boundary any registered scan reads.
+
+    Every registered window ends at or before the continuous window's end, so
+    that single boundary bounds them all.
+    """
+    return (pd.Timestamp(RESEARCH_CONFIG["continuous_window"]["end"], tz="UTC")
+            .isoformat())
+
+
+def scoped_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows inside the registered scope, sorted, validated. Fails closed."""
+    if "time" not in df.columns:
+        raise ProvenanceError("dataset has no 'time' column")
+    out = df.copy()
+    out["time"] = pd.to_datetime(out["time"], utc=True)
+    lo = pd.Timestamp(_SCOPE_START)
+    hi = pd.Timestamp(_scope_end())
+    out = out[(out["time"] >= lo) & (out["time"] <= hi)]
+    out = out.sort_values("time").reset_index(drop=True)
+
+    if out.empty:
+        raise ProvenanceError(f"no rows inside scope {lo.isoformat()}..{hi.isoformat()}")
+    if out["time"].duplicated().any():
+        dupes = out.loc[out["time"].duplicated(), "time"].head(3).tolist()
+        raise ProvenanceError(f"duplicate timestamps in scope: {dupes}")
+
+    missing = [c for c in _OHLCV_COLUMNS if c not in out.columns]
+    if missing:
+        raise ProvenanceError(f"dataset is missing OHLCV columns: {missing}")
+    values = out[list(_OHLCV_COLUMNS)]
+    try:
+        values = values.astype("float64")
+    except (TypeError, ValueError) as exc:
+        raise ProvenanceError(f"OHLCV column is not numeric: {exc}") from None
+    if not np.isfinite(values.to_numpy()).all():
+        bad = out.loc[~np.isfinite(values.to_numpy()).all(axis=1), "time"].head(3).tolist()
+        raise ProvenanceError(f"non-finite OHLCV inside scope at {bad}")
+
+    out[list(_OHLCV_COLUMNS)] = values
+    return out
+
+
+def logical_sha256(df: pd.DataFrame) -> str:
+    """
+    Canonical, encoder-independent hash of the in-scope OHLCV rows.
+
+    Fixed schema and byte order so the value cannot depend on the parquet
+    writer, the pyarrow version, column order, or the index. Versioned by
+    _HASH_SCHEME: changing the encoding must be a visible, deliberate change of
+    what verification means, not a silent re-derivation.
+    """
+    scoped = scoped_frame(df)
+    h = hashlib.sha256()
+    h.update(f"{_HASH_SCHEME}\n{_SCOPE_START}\n{_scope_end()}\n".encode())
+    h.update(f"rows={len(scoped)}\n".encode())
+    # int64 epoch nanoseconds, big-endian — exact for the millisecond-resolution
+    # timestamps the exchange returns.
+    times = scoped["time"].to_numpy(dtype="datetime64[ns]").astype(">i8")
+    h.update(times.tobytes())
+    for col in _OHLCV_COLUMNS:
+        h.update(f"{col}\n".encode())
+        h.update(scoped[col].to_numpy(dtype=">f8").tobytes())
+    return h.hexdigest()
+
+
 def describe_dataset(path: Path) -> dict:
     """Hash + coverage description for one candle file. Fails closed."""
     if not path.exists():
@@ -370,7 +476,13 @@ def describe_dataset(path: Path) -> dict:
     if "time" not in df.columns:
         raise ProvenanceError(f"input dataset has no 'time' column: {path}")
 
-    ts = pd.to_datetime(df["time"], utc=True).sort_values().reset_index(drop=True)
+    # Everything below describes the SCOPE — the rows a registered scan can
+    # actually read. Coverage and gap statistics used to be measured over the
+    # whole file, so a hole in the tail past the freeze counted against a budget
+    # for data the research never touches, and a hole inside the window could be
+    # offset by a clean tail.
+    scoped = scoped_frame(df)
+    ts = scoped["time"]
     gaps: list[dict] = []
     total_missing_h = 0.0
     if len(ts) > 1 and path.stem.endswith("_1h"):
@@ -385,8 +497,17 @@ def describe_dataset(path: Path) -> dict:
             })
     return {
         "file": path.name,
-        "sha256": sha256_file(path),
-        "rows": int(len(df)),
+        # PRIMARY input identity: the in-scope OHLCV, canonically encoded.
+        "hash_scheme": _HASH_SCHEME,
+        "logical_sha256": logical_sha256(df),
+        "scope_start_inclusive": _SCOPE_START,
+        "scope_end_inclusive": _scope_end(),
+        # Informational only. The physical bytes move whenever the exchange
+        # completes a candle past the freeze, or a different parquet writer is
+        # used, neither of which changes a single number.
+        "physical_sha256": sha256_file(path),
+        "physical_rows": int(len(df)),
+        "rows": int(len(scoped)),
         "min_ts": ts.iloc[0].isoformat(),
         "max_ts": ts.iloc[-1].isoformat(),
         "gap_threshold_hours": _GAP_THRESHOLD_H,
@@ -495,6 +616,8 @@ def verify_code_and_environment() -> bool:
                 print(f"  {entry['file']}: manifest {was} != working tree "
                       f"{entry['sha256']}", file=sys.stderr)
 
+    # A different interpreter must fail both checks, not just the write path:
+    # verifying under 3.12 an artifact produced on 3.13 proves nothing.
     fresh_env = environment_fingerprint()
     if committed.get("environment") != fresh_env:
         ok = False
@@ -865,6 +988,15 @@ def verify_artifacts() -> bool:
 
     manifest = build_manifest()
     results = run_results(manifest)
+
+    # code_commit is an INFORMATIONAL label, not identity. Comparing it made
+    # verification fail after any history rewrite even though every content hash
+    # matched — the exact fragility content-addressing was introduced to remove.
+    # The committed value is carried over so the rest of the manifest is
+    # compared byte-for-byte.
+    committed_m = json.loads(m_path.read_text(encoding="utf-8"))
+    manifest["code_commit"] = committed_m.get("code_commit", manifest["code_commit"])
+
     fresh_m = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     fresh_r = json.dumps(results, indent=2, sort_keys=True) + "\n"
 
