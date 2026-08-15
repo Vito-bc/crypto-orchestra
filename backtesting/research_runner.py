@@ -188,11 +188,31 @@ class ProvenanceError(RuntimeError):
 
 
 def sha256_file(path: Path) -> str:
+    """Byte-exact hash. For DATA files, where every byte is the artifact."""
     h = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_source(path: Path) -> str:
+    """
+    Hash of a SOURCE file with line endings normalised to LF.
+
+    Byte-exact hashing is wrong for source. This repository has
+    `core.autocrlf=true` and no `.gitattributes`, so a fresh clone checks the
+    same commit out with CRLF while the authoring tree holds LF — the identical
+    file hashed to two different values depending on the client's git config,
+    and `--verify-code` failed on a clean clone of its own commit.
+
+    A Python file's identity for reproducibility is its text, not its newline
+    convention: CRLF and LF forms compile to the same program and produce the
+    same numbers. Data files keep byte-exact hashing, where every byte matters.
+    """
+    raw = path.read_bytes()
+    normalised = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(normalised).hexdigest()
 
 
 # Files whose content determines the results. The recorded commit is the last
@@ -278,7 +298,7 @@ def code_fingerprint() -> dict:
         path = ROOT / rel
         if not path.exists():
             raise ProvenanceError(f"result-determining file missing: {rel}")
-        files.append({"file": rel, "sha256": sha256_file(path)})
+        files.append({"file": rel, "sha256": sha256_source(path)})
     files.sort(key=lambda d: d["file"])
     agg = hashlib.sha256()
     for entry in files:

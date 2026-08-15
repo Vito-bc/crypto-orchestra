@@ -89,6 +89,29 @@ def test_code_hashes_match_the_working_tree() -> None:
     assert _load(MANIFEST)["code"] == code_fingerprint()
 
 
+def test_code_hash_is_line_ending_independent(tmp_path) -> None:
+    """
+    The same source with CRLF and with LF must hash identically.
+
+    core.autocrlf=true and no .gitattributes means a fresh clone checks the same
+    commit out with CRLF while the authoring tree holds LF. Byte-exact hashing
+    made --verify-code fail on a clean clone of its own commit — the hash
+    identified the checkout, not the code.
+    """
+    from backtesting.research_runner import sha256_file, sha256_source
+
+    body = "def f():\n    return 1\n"
+    lf = tmp_path / "lf.py"
+    crlf = tmp_path / "crlf.py"
+    lf.write_bytes(body.encode())
+    crlf.write_bytes(body.replace("\n", "\r\n").encode())
+
+    assert sha256_source(lf) == sha256_source(crlf)
+    # And the byte-exact hash used for DATA still distinguishes them, so the two
+    # helpers have not been collapsed into one.
+    assert sha256_file(lf) != sha256_file(crlf)
+
+
 def test_code_verification_needs_neither_git_nor_candles(monkeypatch, tmp_path) -> None:
     """
     The cheap check has to run where the full replay cannot: shallow checkouts,
