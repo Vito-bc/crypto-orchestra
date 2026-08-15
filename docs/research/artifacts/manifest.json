@@ -1,5 +1,34 @@
 {
-  "code_commit": "b073c629221ad308544bbce48db7df374339b046",
+  "code": {
+    "code_sha256": "0247a952cd53dd123544eae8b9e8e104cc53c9ecdae9a88a2bba71fb87c46295",
+    "files": [
+      {
+        "file": "backtesting/backtest.py",
+        "sha256": "d89cc40425ffd99aa04035d2f3052e0f0523b415708af952c31f4ccd3cc64ac4"
+      },
+      {
+        "file": "backtesting/equity_report.py",
+        "sha256": "ac77f1ac0b314748782b63c1459e1cf970946dc5816994902c553734a4b8c013"
+      },
+      {
+        "file": "backtesting/oos_replay.py",
+        "sha256": "27e79ece368dda5ac0447b3f192f11b0158de81f7ad66a8ba2aca47f02362465"
+      },
+      {
+        "file": "backtesting/research_runner.py",
+        "sha256": "234a6ad677e55a112009a285b780123ceae6118ac717c370d0bc20024df0da7b"
+      },
+      {
+        "file": "backtesting/signal_scanner.py",
+        "sha256": "dfa36949c2d740b691028fc65e590ef29546e846e5837f6ca008bec508429449"
+      },
+      {
+        "file": "exchange/coinbase_candles.py",
+        "sha256": "cc31fde12e8547aa4bd0452c4d98365dd509f17f0b73844ed9ca0b9bd0e6953f"
+      }
+    ]
+  },
+  "code_commit": "6e554c24a24dbcf4d892138d3e0114961b2123a5",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
@@ -103,6 +132,15 @@
     }
   },
   "config_id": "2026-08-warmup-semantics.v1",
+  "environment": {
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "ta": "0.11.0"
+    },
+    "python": "3.13"
+  },
   "inputs": [
     {
       "file": "BTC_USD_1d.parquet",

@@ -16,11 +16,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13"
       - name: Install ruff
         # Only ruff — installing the full dependency tree would make linting
-        # several minutes slower for no benefit.
-        run: pip install ruff
+        # several minutes slower for no benefit. Version pinned to match
+        # requirements-dev.txt so a ruff release cannot turn unrelated PRs red.
+        run: pip install ruff==0.15.15
       - name: Lint
         run: ruff check .
 
@@ -32,15 +33,47 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          # Must match research_runner._CANONICAL_PYTHON. This job previously
+          # ran 3.11 while the artifacts were produced on 3.13, so any research
+          # check added here would have compared numbers computed under a
+          # different interpreter.
+          python-version: "3.13"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
       - name: Run test suite
         # No secrets are provided on purpose: the suite must pass on a clean
-        # checkout with no .env. Agents read ANTHROPIC_API_KEY in __init__ (not at
-        # import) and no test imports agents/, so nothing here needs credentials.
-        # pyproject sets testpaths=tests and deselects integration tests, which
-        # require a live Coinbase candle cache that CI does not have.
+        # checkout with no .env. The rootdir conftest pins safe configuration
+        # before the first project import and denies outbound network at the
+        # socket layer, so a test cannot depend on ambient credentials or reach
+        # the internet even by accident.
         run: python -m pytest -q
+
+      - name: Verify research code identity and environment
+        # Cheap and unconditional: content hashes plus library versions, no
+        # candle cache and no git history required. Catches "the artifact no
+        # longer describes this code" even if the replay below is skipped.
+        run: python backtesting/research_runner.py --verify-code
+
+  # ── The full byte-for-byte replay is NOT wired here yet, deliberately ───────
+  #
+  # backtesting/hydrate_research_data.py works: it materialises the candle cache
+  # from public Coinbase data with no credentials, and a local run from an empty
+  # data/candles regenerated results.json BYTE-IDENTICALLY. The research is
+  # reproducible from public data — that was measured, not assumed.
+  #
+  # What blocks the job is the manifest's input identity, not the download. The
+  # manifest hashes each parquet file WHOLE, including rows outside the
+  # evaluation window, and the exchange keeps completing and revising recent
+  # candles. A fresh public download therefore differs in 1-4 rows per dataset —
+  # every one of them AFTER the 2026-07-12 freeze, none inside the window, and
+  # results.json unchanged — yet all eight SHA-256s mismatch. A required job
+  # built on that comparison would fail on data the research never reads.
+  #
+  # Fixing it means changing what an input hash covers, which changes what
+  # --verify asserts. That is a registered-methodology decision, so it is being
+  # put up for review rather than made here. See docs/trial_registry.md.
+  #
+  # Until then --verify-code above is a required check and does enforce that the
+  # committed artifact describes the checked-out code and library versions.

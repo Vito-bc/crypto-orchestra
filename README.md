@@ -4,9 +4,34 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](update_obsidian.bat)
 [![AI](https://img.shields.io/badge/AI-Claude%20Sonnet%204.6-purple)](https://www.anthropic.com/)
-[![Status](https://img.shields.io/badge/status-live%20ready-brightgreen)](.env.example)
+[![Status](https://img.shields.io/badge/status-paper%2Fshadow%20only-orange)](docs/trial_registry.md)
+[![Live](https://img.shields.io/badge/live%20trading-NOT%20AUTHORIZED-red)](docs/trial_registry.md)
 
-A multi-agent AI trading system for BTC, ETH, SOL and ZEC on Coinbase Advanced Trade. Seven specialist Claude sub-agents run in parallel every hour, feed signals to an orchestrator, and autonomously place limit orders at support levels with trailing stop management and a full risk engine.
+A multi-agent AI trading system built for Coinbase Advanced Trade. Seven specialist Claude sub-agents run in parallel every hour, feed signals to an orchestrator, and produce limit-order decisions with ATR stop/target management and a full risk engine.
+
+> ### Status: paper / shadow only — live trading is NOT authorized
+>
+> The system runs with `DRY_RUN=true`. Orders are **simulated, not placed.**
+>
+> **No positive expectancy has been demonstrated.** The frozen V2 momentum
+> mechanism is unprofitable on the continuous evaluation window:
+>
+> | Result | Value |
+> |---|---|
+> | ZEC continuous (2021-06-26 → 2026-07-12), no filter | **PF 0.761**, −0.62%/trade, n=114 |
+> | ZEC continuous, integrated V3 ER-30 filter | **PF 0.706**, −0.83%/trade, n=71 |
+> | Frozen mechanism transferred to BTC / ETH / SOL | PF 0.359 / 0.476 / 0.718 — all < 1.0 |
+>
+> - **V3 ER-30 is RETIRED**, not pending: enforcement makes results *worse*, and
+>   there is no trade count that activates it.
+> - **Earlier walk-forward results in this repository are void.** The tool never
+>   attached the daily frame, so it always validated a weaker mechanism than it
+>   reported. It is disabled and raises.
+> - ZEC is the only enabled asset, and only in shadow mode.
+>
+> Every figure above is asserted against `docs/research/artifacts/results.json`
+> by `tests/test_research_provenance.py`. Read `docs/trial_registry.md` before
+> believing any number in this file.
 
 ## How It Works
 
@@ -43,14 +68,14 @@ Every 60 minutes:
 
 ## Per-Asset ATR Parameters
 
-Tuned from full-year signal scanner across 371 trades:
+Tuned in-sample from the full-year signal scanner across 371 trades. These are **selected** parameters, not validated ones — the registry counts ~25-30 trials before the freeze, so any single positive cell must be read against that multiple-testing budget.
 
 | Asset | Stop | Target | R:R | Rationale |
 |-------|------|--------|-----|-----------|
 | BTC-USD | 2.0x ATR | 3.5x ATR | 1.75 | Tighter stop — BTC has cleaner structure |
 | ETH-USD | 2.5x ATR | 4.5x ATR | 1.80 | Wider stop — absorbs intraday wicks |
 | SOL-USD | 2.5x ATR | 4.5x ATR | 1.80 | Wider stop — high volatility |
-| ZEC-USD | 2.0x ATR | 3.5x ATR | 1.75 | Best walk-forward edge (+0.30% avg OOS) |
+| ZEC-USD | 2.0x ATR | 3.5x ATR | 1.75 | Frozen at `v2-adx25-frozen`; selected in-sample, not validated |
 
 ## Drawdown Circuit Breakers
 
@@ -70,18 +95,22 @@ Tuned from full-year signal scanner across 371 trades:
 | Trail distance | 1.5% below high-water mark |
 | Hold extension | Up to 3×8h extensions if 3/5 conditions met + ADX ≥ 20 |
 
-## Walk-Forward Validation
+## Walk-Forward Validation — WITHDRAWN
 
-Out-of-sample results across 3 market regimes (Aug 2024 – Jun 2025):
+This section previously reported out-of-sample results across three market
+regimes and concluded that "ZEC is the only asset with genuine out-of-sample
+edge" (+0.30% avg OOS).
 
-| Asset | W1 Bull | W2 Bear | W3 Bear | Avg OOS | Verdict |
-|-------|---------|---------|---------|---------|---------|
-| ZEC-USD | +2.57% | −0.07% | −1.61% | **+0.30%** | ✅ EDGE |
-| ETH-USD | −0.05% | −1.72% | −0.50% | −0.89% | ⚠ MARGINAL |
-| BTC-USD | −0.01% | −2.53% | −1.06% | −1.20% | ❌ WEAK |
-| SOL-USD | −0.72% | −2.87% | −0.97% | −1.52% | ❌ WEAK |
+**Those numbers are void and have been removed.** `backtesting/walk_forward.py`
+never attached the daily frame, so `close_1d` / `ema*_1d` were absent from every
+row and the declared daily-EMA trend gate was skipped for every signal on every
+asset. Its scan loop also enumerated only three blocked reasons, so
+`daily_trend` and `btc_regime` blocks fell through and were traded. The tool
+therefore always validated a weaker mechanism than the one it reported on. It is
+disabled and raises; repairing it is tracked separately.
 
-ZEC is the only asset with genuine out-of-sample edge. Manual per-asset parameter tuning matched or outperformed walk-forward winners on OOS data.
+The current, reproducible evaluation is the continuous-window result in the
+status block above: **not profitable**.
 
 ## Quick Start
 
@@ -103,18 +132,20 @@ python pipeline/runner.py ZEC-USD
 python pipeline/scheduler.py
 ```
 
-## Going Live on Coinbase
+## Live Trading — not authorized
 
-1. Go to [coinbase.com/settings/api](https://www.coinbase.com/settings/api)
-2. Create a key with **Trade + View** permissions, **ECDSA algorithm**
-3. Download the JSON file → place at project root as `cdp_api_key.json`
-4. Set in `.env`:
-   ```
-   DRY_RUN=false
-   LIVE_BALANCE_USD=100    # bot will only use this amount, rest of account untouched
-   ```
+Live trading is **not** enabled and this README deliberately does not document
+how to switch it on. `DRY_RUN=true` is the safe default and the research does not
+currently support changing it: the strategy's measured expectancy is negative
+(see the status block above).
 
-The system places orders up to `LIVE_BALANCE_USD × position_size_pct` — your full account balance beyond this amount is never touched.
+Activation would require, in order: a repaired evaluation harness, a
+pre-registered strategy with an acceptance rule fixed in advance, a forward
+shadow trial that passes it, and an explicit human decision recorded in
+`docs/trial_registry.md`. None of those conditions is met.
+
+`LIVE_BALANCE_USD=100` is the *cap* that would apply if live trading were ever
+authorized — it is not evidence that money is at risk today.
 
 ## Obsidian Second Brain
 
@@ -155,7 +186,8 @@ pipeline/
 backtesting/
   signal_scanner.py     — full-year signal scanner with per-asset ATR params
   monte_carlo.py        — 10,000-sim Monte Carlo per asset
-  walk_forward.py       — 3-window walk-forward optimization (OOS validation)
+  walk_forward.py       — DISABLED / INVALID UNTIL REPAIRED (raises; see above)
+  research_runner.py    — deterministic research runner, byte-identical artifacts
   generate_journal.py   — Obsidian vault generator from all system data
   backtest.py           — core backtesting engine
 

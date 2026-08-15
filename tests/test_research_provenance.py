@@ -60,6 +60,107 @@ def test_manifest_records_code_commit_and_config() -> None:
     assert m["config"]["costs"], "fee/slippage assumptions must travel with results"
 
 
+# ── Content-addressed code identity (Phase 6.9) ──────────────────────────────
+
+def test_code_identity_is_content_addressed() -> None:
+    """
+    The PRIMARY identity of the research code is its content, not a commit.
+    code_commit went stale twice in this project's history — once after a squash
+    merge and once mid-PR when a refactor was left unstaged — each time needing
+    a follow-up commit purely to repoint a label.
+    """
+    from backtesting.research_runner import _CODE_PATHS
+
+    m = _load(MANIFEST)
+    code = m["code"]
+    assert len(code["code_sha256"]) == 64
+    recorded = {e["file"] for e in code["files"]}
+    assert recorded == set(_CODE_PATHS), (
+        f"manifest hashes {recorded}, _CODE_PATHS declares {set(_CODE_PATHS)}"
+    )
+    for entry in code["files"]:
+        assert len(entry["sha256"]) == 64, entry["file"]
+
+
+def test_code_hashes_match_the_working_tree() -> None:
+    """The committed artifact must describe the code that is checked out."""
+    from backtesting.research_runner import code_fingerprint
+
+    assert _load(MANIFEST)["code"] == code_fingerprint()
+
+
+def test_code_verification_needs_neither_git_nor_candles(monkeypatch, tmp_path) -> None:
+    """
+    The cheap check has to run where the full replay cannot: shallow checkouts,
+    source tarballs, and any environment without the candle cache. That is the
+    whole reason it exists separately from --verify.
+    """
+    import backtesting.research_runner as rr
+
+    monkeypatch.setattr(rr, "CANDLE_DIR", tmp_path / "no-candles-here")
+    assert rr.verify_code_and_environment() is True
+
+
+def test_changing_declared_research_code_invalidates_verification(monkeypatch) -> None:
+    """A source edit must be detected by content, with no git involved."""
+    import backtesting.research_runner as rr
+
+    real = rr.code_fingerprint()
+    tampered = {
+        "code_sha256": "0" * 64,
+        "files": [{**real["files"][0], "sha256": "1" * 64}, *real["files"][1:]],
+    }
+    monkeypatch.setattr(rr, "code_fingerprint", lambda: tampered)
+    assert rr.verify_code_and_environment() is False
+
+
+# ── The computational environment travels with the results ───────────────────
+
+def test_manifest_records_the_result_determining_environment() -> None:
+    """
+    numpy/pandas/ta/pyarrow compute every indicator, so their versions are as
+    result-determining as the source. requirements.txt pinned nothing at all, so
+    an upgrade could move every headline number with the artifact still green.
+    """
+    from backtesting.research_runner import (
+        _CANONICAL_PYTHON,
+        _RESULT_DETERMINING_PACKAGES,
+    )
+
+    env = _load(MANIFEST)["environment"]
+    assert env["python"] == _CANONICAL_PYTHON
+    assert set(env["packages"]) == set(_RESULT_DETERMINING_PACKAGES)
+    for name, version in env["packages"].items():
+        assert version and version[0].isdigit(), f"{name}: {version!r}"
+
+
+def test_pinned_requirements_match_the_recorded_environment() -> None:
+    """
+    The pins and the artifact must agree. If they drift, a clean install
+    reproduces neither the recorded environment nor, potentially, the numbers.
+    """
+    import re
+
+    env = _load(MANIFEST)["environment"]["packages"]
+    text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    pinned = dict(re.findall(r"^([A-Za-z0-9_.\-]+)==([^\s#]+)", text, re.M))
+    for name, version in env.items():
+        assert pinned.get(name) == version, (
+            f"{name}: manifest says {version}, requirements.txt pins "
+            f"{pinned.get(name)}"
+        )
+
+
+def test_every_direct_requirement_is_pinned_exactly() -> None:
+    """A range or a bare name reintroduces exactly the drift this phase closed."""
+    for fname in ("requirements.txt", "requirements-dev.txt"):
+        for line in (ROOT / fname).read_text(encoding="utf-8").splitlines():
+            line = line.split("#")[0].strip()
+            if not line or line.startswith("-r "):
+                continue
+            assert "==" in line, f"{fname}: {line!r} is not pinned exactly"
+
+
 def test_manifest_hashes_every_input() -> None:
     m = _load(MANIFEST)
     assert m["inputs"], "no input datasets recorded"

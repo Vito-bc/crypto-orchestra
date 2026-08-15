@@ -42,6 +42,10 @@ venv\Scripts\python.exe backtesting/monte_carlo.py --scanner
 # Regenerate + verify the research artifacts (local candle cache, no network):
 venv\Scripts\python.exe backtesting/research_runner.py
 venv\Scripts\python.exe backtesting/research_runner.py --verify
+venv\Scripts\python.exe backtesting/research_runner.py --verify-code  # cheap: no candles/git
+
+# Rebuild the candle cache from PUBLIC Coinbase data (no credentials):
+venv\Scripts\python.exe backtesting/hydrate_research_data.py
 
 # Regenerate Obsidian vault:
 venv\Scripts\python.exe backtesting/generate_journal.py
@@ -168,17 +172,21 @@ Immediate implementation brief:
    semantics were fixed in PR #4; equity calendar-duration accounting and the
    reproducible research runner plus data/result manifests shipped in the same
    PR. Warm-up semantics were corrected on 2026-08-13 — see the trial registry.
-2. **Next (Phase 6.8):** make `_check_entry_filters` fail closed. Filters 4 and
-   5 in `runner.py` still skip silently when velocity or daily data is missing,
-   the same defect class the scanner just fixed, and the function has no direct
-   test coverage in `tests/` — the one integration test that drives
-   `run_pipeline` mocks it out entirely. Also pin test-env values before module
-   import and block unmocked network in the suite.
-3. **Then (Phase 6.9):** pin dependencies (`requirements.txt` has no versions at
-   all, so `ta`/`pandas` upgrades silently move every research number), add
-   content hashes for result-determining code alongside `code_commit`, run
-   `research_runner.py --verify` in CI, and clear the "live ready" badge and
-   stale OOS-edge table from `README.md`.
+2. ~~Phase 6.8~~ **DONE (PR #7).** `_check_entry_filters` fails closed on every
+   unreadable input, funding has a typed applicable/not-applicable/unavailable
+   contract, and the suite is hermetic: safe config pinned before the first
+   project import, outbound network denied at the socket layer.
+3. **Phase 6.9 — IN PROGRESS.** Dependencies pinned exactly (canonical Python
+   3.13; `numpy`/`pandas`/`ta`/`pyarrow` recorded in the manifest), code
+   identity content-addressed with `code_commit` demoted to a label,
+   `--verify-code` required in CI, README corrected.
+   **Open decision:** the full `--verify` replay is not yet a required check.
+   Public hydration works and reproduces `results.json` byte-identically, but
+   the manifest hashes each parquet WHOLE — including rows past the freeze that
+   the exchange keeps revising — so all eight input hashes mismatch on data the
+   research never reads. Changing what an input hash covers changes what
+   `--verify` asserts, so it needs a registered decision. See
+   `docs/trial_registry.md`.
 4. Repair `backtesting/walk_forward.py`: it never attached the daily frame, so
    it has always validated a weaker mechanism. It currently raises.
 5. If pursuing a new edge: a slow trend-following trial would have to be
