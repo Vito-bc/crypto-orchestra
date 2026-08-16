@@ -42,6 +42,10 @@ venv\Scripts\python.exe backtesting/monte_carlo.py --scanner
 # Regenerate + verify the research artifacts (local candle cache, no network):
 venv\Scripts\python.exe backtesting/research_runner.py
 venv\Scripts\python.exe backtesting/research_runner.py --verify
+venv\Scripts\python.exe backtesting/research_runner.py --verify-code  # cheap: no candles/git
+
+# Rebuild the candle cache from PUBLIC Coinbase data (no credentials):
+venv\Scripts\python.exe backtesting/hydrate_research_data.py
 
 # Regenerate Obsidian vault:
 venv\Scripts\python.exe backtesting/generate_journal.py
@@ -124,7 +128,7 @@ Response objects use attribute access, not `.get()` — see `_parse_balance()`.
 ## Obsidian Vault
 
 Auto-generated nightly from logs via `backtesting/generate_journal.py`.
-Windows Task Scheduler runs `update_obsidian.bat` every night at 23:00.
+Windows Task Scheduler runs `scripts/update_obsidian.bat` every night at 23:00.
 The vault is a growing knowledge base — future goal is RAG for the orchestrator.
 
 ## Validation Status — read `docs/trial_registry.md` before believing any number
@@ -168,17 +172,19 @@ Immediate implementation brief:
    semantics were fixed in PR #4; equity calendar-duration accounting and the
    reproducible research runner plus data/result manifests shipped in the same
    PR. Warm-up semantics were corrected on 2026-08-13 — see the trial registry.
-2. **Next (Phase 6.8):** make `_check_entry_filters` fail closed. Filters 4 and
-   5 in `runner.py` still skip silently when velocity or daily data is missing,
-   the same defect class the scanner just fixed, and the function has no direct
-   test coverage in `tests/` — the one integration test that drives
-   `run_pipeline` mocks it out entirely. Also pin test-env values before module
-   import and block unmocked network in the suite.
-3. **Then (Phase 6.9):** pin dependencies (`requirements.txt` has no versions at
-   all, so `ta`/`pandas` upgrades silently move every research number), add
-   content hashes for result-determining code alongside `code_commit`, run
-   `research_runner.py --verify` in CI, and clear the "live ready" badge and
-   stale OOS-edge table from `README.md`.
+2. ~~Phase 6.8~~ **DONE (PR #7).** `_check_entry_filters` fails closed on every
+   unreadable input, funding has a typed applicable/not-applicable/unavailable
+   contract, and the suite is hermetic: safe config pinned before the first
+   project import, outbound network denied at the socket layer.
+3. ~~Phase 6.9~~ **DONE.** Dependencies pinned exactly (canonical Python
+   **3.13.5**, exact — `write_artifacts` and both verify paths refuse any other
+   interpreter; `numpy`/`pandas`/`ta`/`pyarrow` recorded in the manifest). Code
+   identity is content-addressed with `code_commit` demoted to an informational
+   label. Input identity is the window-scoped logical OHLCV hash
+   (`ohlcv-logical-v1`, scope `2020-01-01` → `2026-07-12`, both inclusive), so
+   the tail the exchange keeps revising no longer breaks verification. Both
+   `--verify-code` and the full `--verify` run in CI, the latter fed by
+   credential-free public hydration. README corrected.
 4. Repair `backtesting/walk_forward.py`: it never attached the daily frame, so
    it has always validated a weaker mechanism. It currently raises.
 5. If pursuing a new edge: a slow trend-following trial would have to be

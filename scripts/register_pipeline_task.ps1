@@ -4,7 +4,8 @@
 # Runs python.exe directly (no cmd/bat wrapper) to avoid PATH issues in Task Scheduler.
 # Trigger: every 30 minutes, StartWhenAvailable so missed runs catch up on next boot.
 
-$repoRoot  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot  = Split-Path -Parent $scriptDir
 $python    = Join-Path $repoRoot "venv\Scripts\pythonw.exe"
 $taskName  = "CryptoOrchestra-AgentPipeline"
 

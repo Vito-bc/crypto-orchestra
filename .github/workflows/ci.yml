@@ -16,11 +16,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.13.5"
       - name: Install ruff
         # Only ruff — installing the full dependency tree would make linting
-        # several minutes slower for no benefit.
-        run: pip install ruff
+        # several minutes slower for no benefit. Version pinned to match
+        # requirements-dev.txt so a ruff release cannot turn unrelated PRs red.
+        run: pip install ruff==0.15.15
       - name: Lint
         run: ruff check .
 
@@ -32,15 +33,64 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          # Must match research_runner._CANONICAL_PYTHON. This job previously
+          # ran 3.11 while the artifacts were produced on 3.13, so any research
+          # check added here would have compared numbers computed under a
+          # different interpreter.
+          python-version: "3.13.5"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
       - name: Run test suite
         # No secrets are provided on purpose: the suite must pass on a clean
-        # checkout with no .env. Agents read ANTHROPIC_API_KEY in __init__ (not at
-        # import) and no test imports agents/, so nothing here needs credentials.
-        # pyproject sets testpaths=tests and deselects integration tests, which
-        # require a live Coinbase candle cache that CI does not have.
+        # checkout with no .env. The rootdir conftest pins safe configuration
+        # before the first project import and denies outbound network at the
+        # socket layer, so a test cannot depend on ambient credentials or reach
+        # the internet even by accident.
         run: python -m pytest -q
+
+      - name: Verify research code identity and environment
+        # Cheap and unconditional: content hashes plus library versions, no
+        # candle cache and no git history required. Catches "the artifact no
+        # longer describes this code" even if the replay below is skipped.
+        run: python backtesting/research_runner.py --verify-code
+
+  research-verify:
+    # Full byte-for-byte regeneration of the committed research artifacts.
+    #
+    # A REQUIRED check, not an optional extra. Until now the only proof the
+    # headline numbers could be reproduced was someone remembering to run
+    # --verify locally, and the one provenance test that existed skipped itself
+    # on shallow checkouts — so nothing was enforced anywhere.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13.5"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Cache research candles
+        uses: actions/cache@v4
+        with:
+          path: data/candles
+          # Keyed on the manifest, which carries the logical hash of every
+          # input. Changing a declared input therefore misses the cache and
+          # forces a fresh public download rather than reusing stale parquet.
+          key: candles-${{ hashFiles('docs/research/artifacts/manifest.json') }}
+
+      - name: Materialise candles from public Coinbase data
+        # No credentials: RESTClient() is built with no key material and only
+        # get_public_candles is called, so this path cannot place an order.
+        # Datasets and their expected shape come from the committed manifest,
+        # candidates land in .partial and are validated for schema, coverage and
+        # logical hash before atomically replacing anything. A corrupt or
+        # truncated fetch fails here rather than producing a shorter scan.
+        run: python backtesting/hydrate_research_data.py
+
+      - name: Verify artifacts reproduce byte-for-byte
+        run: python backtesting/research_runner.py --verify

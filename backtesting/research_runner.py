@@ -19,9 +19,20 @@ Contract:
   * Coverage is checked and the run FAILS CLOSED on missing or short input. A
     registered run never silently falls back to a different data provider.
 
+  * Identity of the CODE is content-addressed (SHA-256 per file plus an
+    aggregate). `code_commit` is retained as an informational label only: it
+    goes stale whenever history is rewritten, whereas the hashes survive any
+    squash or rebase that does not change file contents.
+  * The computational environment travels with the results. numpy/pandas/ta/
+    pyarrow compute the indicators, so their versions determine the numbers as
+    surely as the source does.
+
 Usage:
     python backtesting/research_runner.py                 # write artifacts
-    python backtesting/research_runner.py --check         # verify, do not write
+    python backtesting/research_runner.py --check         # inputs only, no write
+    python backtesting/research_runner.py --verify        # full byte-for-byte replay
+    python backtesting/research_runner.py --verify-code   # code+env only (no candles,
+                                                          # no git history needed)
 
 Artifacts (committed; raw parquet is NOT):
     docs/research/artifacts/manifest.json    inputs + hashes + coverage
@@ -32,11 +43,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,13 +165,20 @@ RESEARCH_CONFIG: dict = {
     # Coverage gaps that are KNOWN and accepted. Any gap not listed here fails
     # the run: checking only the first and last timestamp let interior holes
     # through, and a 2-5h hole silently removes signals.
-    # Measured 2026-08-09; exchange-side outages, not download errors. Daily
-    # series are complete. Raising a budget must be a deliberate, reviewed edit.
+    #
+    # RE-MEASURED 2026-08-15 INSIDE THE REGISTERED SCOPE. The previous budgets
+    # counted the whole parquet including the tail past the freeze, so a hole in
+    # data the research never reads consumed budget, and a hole inside the window
+    # could hide behind a clean tail. ZEC drops 16 -> 15 because one of its gaps
+    # was entirely in the tail.
+    #
+    # Exchange-side outages, not download errors. Daily series are complete.
+    # Raising a budget must be a deliberate, reviewed edit.
     "accepted_gap_bars": {
-        "BTC_USD_1h.parquet": 16,   # 6 gaps
-        "ETH_USD_1h.parquet": 16,   # 6 gaps
-        "SOL_USD_1h.parquet": 15,   # 3 gaps
-        "ZEC_USD_1h.parquet": 16,   # 5 gaps
+        "BTC_USD_1h.parquet": 16,   # 6 gaps in scope
+        "ETH_USD_1h.parquet": 16,   # 6 gaps in scope
+        "SOL_USD_1h.parquet": 15,   # 3 gaps in scope
+        "ZEC_USD_1h.parquet": 15,   # 4 gaps in scope
         "BTC_USD_1d.parquet": 0,
         "ETH_USD_1d.parquet": 0,
         "SOL_USD_1d.parquet": 0,
@@ -177,11 +197,31 @@ class ProvenanceError(RuntimeError):
 
 
 def sha256_file(path: Path) -> str:
+    """Byte-exact hash. For DATA files, where every byte is the artifact."""
     h = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_source(path: Path) -> str:
+    """
+    Hash of a SOURCE file with line endings normalised to LF.
+
+    Byte-exact hashing is wrong for source. This repository has
+    `core.autocrlf=true` and no `.gitattributes`, so a fresh clone checks the
+    same commit out with CRLF while the authoring tree holds LF — the identical
+    file hashed to two different values depending on the client's git config,
+    and `--verify-code` failed on a clean clone of its own commit.
+
+    A Python file's identity for reproducibility is its text, not its newline
+    convention: CRLF and LF forms compile to the same program and produce the
+    same numbers. Data files keep byte-exact hashing, where every byte matters.
+    """
+    raw = path.read_bytes()
+    normalised = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(normalised).hexdigest()
 
 
 # Files whose content determines the results. The recorded commit is the last
@@ -197,6 +237,121 @@ _CODE_PATHS = [
     "backtesting/backtest.py",
     "exchange/coinbase_candles.py",
 ]
+
+
+# ── Computational environment ────────────────────────────────────────────────
+#
+# These libraries compute the indicators, so their versions are as
+# result-determining as the scanner source. requirements.txt pinned nothing at
+# all, which meant a `ta` or `pandas` release could move every headline number
+# with the artifact still verifying green.
+#
+# Python is declared as an EXACT version. Major.minor was too loose: the
+# manifest records the interpreter it actually ran on, so a looser declaration
+# would let the recorded and the required versions disagree. Moving to a new
+# patch release is therefore a deliberate re-registration, which is the same
+# rule every other result-determining dependency follows.
+_CANONICAL_PYTHON = "3.13.5"
+_RESULT_DETERMINING_PACKAGES = ("numpy", "pandas", "ta", "pyarrow")
+
+
+class EnvironmentError_(ProvenanceError):
+    """The interpreter or libraries differ from the registered environment."""
+
+
+def environment_fingerprint() -> dict:
+    """
+    Versions that determine the numbers, recorded alongside them.
+
+    Reports the ACTUALLY RUNNING interpreter, not the declared constant. Writing
+    `_CANONICAL_PYTHON` here made the field self-fulfilling: a run under 3.12
+    still stamped "3.13", so the one thing the field existed to detect was the
+    one thing it could not.
+    """
+    import importlib.metadata as md
+
+    packages = {}
+    for name in _RESULT_DETERMINING_PACKAGES:
+        try:
+            packages[name] = md.version(name)
+        except md.PackageNotFoundError:
+            raise ProvenanceError(
+                f"{name} is not installed but is result-determining. Install "
+                "the pinned requirements before running a registered scan."
+            ) from None
+    return {"python": platform.python_version(), "packages": packages}
+
+
+def assert_canonical_python() -> None:
+    """
+    Refuse to WRITE artifacts from a non-canonical interpreter.
+
+    Without this, regenerating under a different version would silently rewrite
+    the committed numbers and present them as the same experiment.
+    """
+    running = platform.python_version()
+    if running != _CANONICAL_PYTHON:
+        raise EnvironmentError_(
+            f"registered environment is Python {_CANONICAL_PYTHON}, this is "
+            f"{running}. Re-register deliberately rather than regenerating here."
+        )
+
+
+# ── Content-addressed code identity ──────────────────────────────────────────
+
+def code_fingerprint() -> dict:
+    """
+    SHA-256 of every result-determining source file, plus an aggregate.
+
+    This is the PRIMARY identity of the code that produced the results, and it
+    is independent of git entirely. `code_commit` below is a convenience label:
+    it goes stale on squash/rebase (twice already in this project's history,
+    each time needing a follow-up commit), whereas these hashes survive any
+    history rewrite that does not change file contents.
+    """
+    files = []
+    for rel in _CODE_PATHS:
+        path = ROOT / rel
+        if not path.exists():
+            raise ProvenanceError(f"result-determining file missing: {rel}")
+        files.append({"file": rel, "sha256": sha256_source(path)})
+    files.sort(key=lambda d: d["file"])
+    agg = hashlib.sha256()
+    for entry in files:
+        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
+    return {"files": files, "code_sha256": agg.hexdigest()}
+
+
+def assert_code_is_committed() -> None:
+    """
+    Refuse to write artifacts from a dirty working tree.
+
+    A manifest generated from uncommitted edits describes code that exists
+    nowhere but one laptop. Absence of git is not an excuse to skip the check
+    silently — it is reported — but it is not a failure either, because a
+    source tarball is a legitimate way to run this.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--", *_CODE_PATHS],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=30, check=False,
+        )
+    except Exception:
+        print("note: git unavailable; cannot check for uncommitted research code",
+              file=sys.stderr)
+        return
+    if out.returncode != 0:
+        print("note: not a git checkout; skipping the dirty-tree check",
+              file=sys.stderr)
+        return
+    dirty = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    if dirty:
+        raise ProvenanceError(
+            "result-determining code has uncommitted changes:\n  "
+            + "\n  ".join(dirty)
+            + "\nCommit them first: an artifact must describe code that exists "
+              "outside this working tree."
+        )
 
 
 def _git_commit() -> str:
@@ -221,6 +376,97 @@ def _git_commit() -> str:
         return "unknown"
 
 
+# ── Logical input identity ───────────────────────────────────────────────────
+#
+# The physical parquet SHA-256 is NOT an identity for the data. It covers the
+# whole file, including rows past the freeze that the exchange keeps completing
+# and revising, so a fresh public download of identical research data mismatched
+# on all eight inputs while results.json stayed byte-identical. The hash
+# asserted more than what determines the results.
+#
+# What determines the results is the OHLCV the registered runner can actually
+# read, so that is what is hashed:
+#
+#   start  _DAILY_HISTORY_START, inclusive. Not asset_effective_start: warm-up
+#          rows determine the EMAs and therefore gate availability itself, so
+#          they are part of the input, not context.
+#   end    the frozen evaluation boundary, INCLUSIVE — coinbase_candles.download
+#          slices `(time >= start) & (time <= end)`, so the boundary bar is read.
+#
+# Rows after the end are ignored; any change to a row inside the scope, and any
+# insertion or deletion, must break verification.
+_HASH_SCHEME = "ohlcv-logical-v1"
+_SCOPE_START = "2020-01-01T00:00:00+00:00"
+_OHLCV_COLUMNS = ("open", "high", "low", "close", "volume")
+
+
+def _scope_end() -> str:
+    """
+    Widest end boundary any registered scan reads.
+
+    Every registered window ends at or before the continuous window's end, so
+    that single boundary bounds them all.
+    """
+    return (pd.Timestamp(RESEARCH_CONFIG["continuous_window"]["end"], tz="UTC")
+            .isoformat())
+
+
+def scoped_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows inside the registered scope, sorted, validated. Fails closed."""
+    if "time" not in df.columns:
+        raise ProvenanceError("dataset has no 'time' column")
+    out = df.copy()
+    out["time"] = pd.to_datetime(out["time"], utc=True)
+    lo = pd.Timestamp(_SCOPE_START)
+    hi = pd.Timestamp(_scope_end())
+    out = out[(out["time"] >= lo) & (out["time"] <= hi)]
+    out = out.sort_values("time").reset_index(drop=True)
+
+    if out.empty:
+        raise ProvenanceError(f"no rows inside scope {lo.isoformat()}..{hi.isoformat()}")
+    if out["time"].duplicated().any():
+        dupes = out.loc[out["time"].duplicated(), "time"].head(3).tolist()
+        raise ProvenanceError(f"duplicate timestamps in scope: {dupes}")
+
+    missing = [c for c in _OHLCV_COLUMNS if c not in out.columns]
+    if missing:
+        raise ProvenanceError(f"dataset is missing OHLCV columns: {missing}")
+    values = out[list(_OHLCV_COLUMNS)]
+    try:
+        values = values.astype("float64")
+    except (TypeError, ValueError) as exc:
+        raise ProvenanceError(f"OHLCV column is not numeric: {exc}") from None
+    if not np.isfinite(values.to_numpy()).all():
+        bad = out.loc[~np.isfinite(values.to_numpy()).all(axis=1), "time"].head(3).tolist()
+        raise ProvenanceError(f"non-finite OHLCV inside scope at {bad}")
+
+    out[list(_OHLCV_COLUMNS)] = values
+    return out
+
+
+def logical_sha256(df: pd.DataFrame) -> str:
+    """
+    Canonical, encoder-independent hash of the in-scope OHLCV rows.
+
+    Fixed schema and byte order so the value cannot depend on the parquet
+    writer, the pyarrow version, column order, or the index. Versioned by
+    _HASH_SCHEME: changing the encoding must be a visible, deliberate change of
+    what verification means, not a silent re-derivation.
+    """
+    scoped = scoped_frame(df)
+    h = hashlib.sha256()
+    h.update(f"{_HASH_SCHEME}\n{_SCOPE_START}\n{_scope_end()}\n".encode())
+    h.update(f"rows={len(scoped)}\n".encode())
+    # int64 epoch nanoseconds, big-endian — exact for the millisecond-resolution
+    # timestamps the exchange returns.
+    times = scoped["time"].to_numpy(dtype="datetime64[ns]").astype(">i8")
+    h.update(times.tobytes())
+    for col in _OHLCV_COLUMNS:
+        h.update(f"{col}\n".encode())
+        h.update(scoped[col].to_numpy(dtype=">f8").tobytes())
+    return h.hexdigest()
+
+
 def describe_dataset(path: Path) -> dict:
     """Hash + coverage description for one candle file. Fails closed."""
     if not path.exists():
@@ -231,7 +477,13 @@ def describe_dataset(path: Path) -> dict:
     if "time" not in df.columns:
         raise ProvenanceError(f"input dataset has no 'time' column: {path}")
 
-    ts = pd.to_datetime(df["time"], utc=True).sort_values().reset_index(drop=True)
+    # Everything below describes the SCOPE — the rows a registered scan can
+    # actually read. Coverage and gap statistics used to be measured over the
+    # whole file, so a hole in the tail past the freeze counted against a budget
+    # for data the research never touches, and a hole inside the window could be
+    # offset by a clean tail.
+    scoped = scoped_frame(df)
+    ts = scoped["time"]
     gaps: list[dict] = []
     total_missing_h = 0.0
     if len(ts) > 1 and path.stem.endswith("_1h"):
@@ -246,8 +498,17 @@ def describe_dataset(path: Path) -> dict:
             })
     return {
         "file": path.name,
-        "sha256": sha256_file(path),
-        "rows": int(len(df)),
+        # PRIMARY input identity: the in-scope OHLCV, canonically encoded.
+        "hash_scheme": _HASH_SCHEME,
+        "logical_sha256": logical_sha256(df),
+        "scope_start_inclusive": _SCOPE_START,
+        "scope_end_inclusive": _scope_end(),
+        # Informational only. The physical bytes move whenever the exchange
+        # completes a candle past the freeze, or a different parquet writer is
+        # used, neither of which changes a single number.
+        "physical_sha256": sha256_file(path),
+        "physical_rows": int(len(df)),
+        "rows": int(len(scoped)),
         "min_ts": ts.iloc[0].isoformat(),
         "max_ts": ts.iloc[-1].isoformat(),
         "gap_threshold_hours": _GAP_THRESHOLD_H,
@@ -316,10 +577,90 @@ def build_manifest(assets: Optional[list[str]] = None) -> dict:
             inputs.append(describe_dataset(CANDLE_DIR / f"{stem}_{interval}.parquet"))
     return {
         "config_id": RESEARCH_CONFIG["config_id"],
+        # PRIMARY code identity: content-addressed, git-independent.
+        "code": code_fingerprint(),
+        # Informational provenance label only. Kept because it is useful for
+        # "where did this come from", not relied on for identity: it goes stale
+        # on squash/rebase while the hashes above do not.
         "code_commit": _git_commit(),
+        "environment": environment_fingerprint(),
         "config": RESEARCH_CONFIG,
         "inputs": sorted(inputs, key=lambda d: d["file"]),
     }
+
+
+# Fields recorded for humans and diagnostics that must NOT participate in
+# identity. Each of them moves for reasons that change no number, so comparing
+# them makes verification fail on things the research never reads:
+#
+#   code_commit      goes stale on any squash or rebase.
+#   physical_sha256  moves whenever the exchange completes a candle past the
+#   physical_rows    freeze, or a different parquet writer is used.
+#
+# Identity is code_sha256, environment, and the per-input logical_sha256.
+# Treating "informational" as an explicit category — rather than special-casing
+# one field at a time — is what stops the next volatile field reintroducing this.
+_INFORMATIONAL_MANIFEST_FIELDS = ("code_commit",)
+_INFORMATIONAL_INPUT_FIELDS = ("physical_sha256", "physical_rows")
+
+
+def carry_over_informational(fresh: dict, committed: dict) -> dict:
+    """Take informational fields from the committed artifact, keep the rest."""
+    out = dict(fresh)
+    for key in _INFORMATIONAL_MANIFEST_FIELDS:
+        if key in committed:
+            out[key] = committed[key]
+
+    by_file = {i["file"]: i for i in committed.get("inputs", [])}
+    merged = []
+    for entry in fresh.get("inputs", []):
+        entry = dict(entry)
+        old = by_file.get(entry["file"], {})
+        for key in _INFORMATIONAL_INPUT_FIELDS:
+            if key in old:
+                entry[key] = old[key]
+        merged.append(entry)
+    out["inputs"] = merged
+    return out
+
+
+def verify_code_and_environment() -> bool:
+    """
+    Cheap identity check: code hashes + environment, nothing else.
+
+    Runs in milliseconds with NO candle cache and NO git history, so CI can
+    assert that the committed artifact describes the checked-out code even where
+    the full replay is impractical. The full --verify remains the stronger
+    guarantee; this is the one that can run anywhere.
+    """
+    m_path = ARTIFACT_DIR / "manifest.json"
+    if not m_path.exists():
+        raise ProvenanceError("manifest is not committed — nothing to verify")
+    committed = json.loads(m_path.read_text(encoding="utf-8"))
+
+    ok = True
+    fresh_code = code_fingerprint()
+    old_code = committed.get("code") or {}
+    if old_code.get("code_sha256") != fresh_code["code_sha256"]:
+        ok = False
+        print("MISMATCH: result-determining code differs from the artifact",
+              file=sys.stderr)
+        old_by_file = {e["file"]: e["sha256"] for e in old_code.get("files", [])}
+        for entry in fresh_code["files"]:
+            was = old_by_file.get(entry["file"])
+            if was != entry["sha256"]:
+                print(f"  {entry['file']}: manifest {was} != working tree "
+                      f"{entry['sha256']}", file=sys.stderr)
+
+    # A different interpreter must fail both checks, not just the write path:
+    # verifying under 3.12 an artifact produced on 3.13 proves nothing.
+    fresh_env = environment_fingerprint()
+    if committed.get("environment") != fresh_env:
+        ok = False
+        print(f"MISMATCH: environment differs\n  manifest: "
+              f"{committed.get('environment')}\n  running : {fresh_env}",
+              file=sys.stderr)
+    return ok
 
 
 def _round(value, digits: int = 6):
@@ -650,6 +991,12 @@ def run_results(manifest: Optional[dict] = None) -> dict:
 
 
 def write_artifacts(out_dir: Optional[Path] = None) -> tuple[Path, Path]:
+    # Writing is the moment provenance is claimed, so both guards live here and
+    # not in verify: verifying a tarball with no git history is legitimate,
+    # publishing numbers from uncommitted code on an unregistered interpreter is
+    # not.
+    assert_canonical_python()
+    assert_code_is_committed()
     out_dir = out_dir or ARTIFACT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = build_manifest()
@@ -677,6 +1024,10 @@ def verify_artifacts() -> bool:
 
     manifest = build_manifest()
     results = run_results(manifest)
+
+    committed_m = json.loads(m_path.read_text(encoding="utf-8"))
+    manifest = carry_over_informational(manifest, committed_m)
+
     fresh_m = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     fresh_r = json.dumps(results, indent=2, sort_keys=True) + "\n"
 
@@ -697,8 +1048,17 @@ def _cli() -> None:
             print(json.dumps(manifest, indent=2, sort_keys=True))
             print(f"\nOK: {len(manifest['inputs'])} input datasets hashed.")
             return
+        if "--verify-code" in sys.argv:
+            # Cheap identity check — no candle cache, no git history needed.
+            if verify_code_and_environment():
+                print("OK: code hashes and environment match the artifact.")
+                return
+            sys.exit(1)
         if "--verify" in sys.argv:
-            if verify_artifacts():
+            # Code identity first: when both are wrong, "the code changed" is
+            # the useful message and "the numbers changed" is its consequence.
+            code_ok = verify_code_and_environment()
+            if verify_artifacts() and code_ok:
                 print("OK: committed artifacts reproduce byte-for-byte.")
                 return
             sys.exit(1)

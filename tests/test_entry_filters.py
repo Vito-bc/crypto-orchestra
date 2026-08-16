@@ -485,3 +485,24 @@ def test_interface_shape_is_preserved_on_every_path(kwargs) -> None:
     assert isinstance(allowed, bool)
     assert isinstance(reason, str) and reason
     assert isinstance(size, float)
+
+
+def main() -> None:
+    """Run the original live entry-filter smoke review manually."""
+    print("=== Entry filter test (current market conditions) ===")
+    for asset in ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]:
+        allowed, reason, size_mod = _check_entry_filters(asset)
+        if not allowed:
+            status = "BLOCK"
+            message = reason
+        elif size_mod < 1.0:
+            status = f"ALLOW ({size_mod:.0%} size)"
+            message = reason or "partial correlation veto — size reduced"
+        else:
+            status = "ALLOW"
+            message = "all filters passed"
+        print(f"  {asset}: [{status}]  {message}")
+
+
+if __name__ == "__main__":
+    main()

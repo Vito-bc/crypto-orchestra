@@ -26,7 +26,9 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
+from time import perf_counter
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -859,7 +861,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
     the reconciliation gate so we do not call it a second time per tick.
     """
     print(f"\n[Orchestra] Starting pipeline for {asset} …")
-    t0 = time.time()
+    t0 = perf_counter()
 
     # ── 1. Check open positions + pending limit orders ────────────────────────
     snap0 = get_snapshot(asset)
@@ -989,26 +991,39 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
         BreakoutAgent(),
     ]
     signals: list[AgentSignal] = []
+    agent_durations: dict = {}
 
+    def _run_timed(agent):
+        started = perf_counter()
+        signal = agent.run(asset)
+        return signal, perf_counter() - started
+
+    agents_started = perf_counter()
     with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = {pool.submit(agent.run, asset): agent.name for agent in sub_agents}
+        futures = {pool.submit(_run_timed, agent): agent.name for agent in sub_agents}
         for future in as_completed(futures):
             agent_name = futures[future]
             try:
-                signal = future.result()
+                signal, agent_elapsed = future.result()
                 signals.append(signal)
-                print(f"  [{agent_name.value:<12}] {signal.signal.value:<7}  conf={signal.confidence:.0%}")
+                agent_durations[agent_name] = agent_elapsed
+                print(f"  [{agent_name.value:<12}] {signal.signal.value:<7}  "
+                      f"conf={signal.confidence:.0%}  time={agent_elapsed:.2f}s")
             except Exception as exc:
                 print(f"  [{agent_name.value:<12}] ERROR: {exc}")
 
-    elapsed_agents = time.time() - t0
+    elapsed_agents = perf_counter() - agents_started
+    sequential_agents = sum(agent_durations.values())
     print(f"[Orchestra] All agents done in {elapsed_agents:.1f}s — calling orchestrator …")
+    print(f"[Timing] Agent stage: {elapsed_agents:.2f}s concurrent; "
+          f"{sequential_agents:.2f}s estimated sequential "
+          f"(sum of {len(agent_durations)} measured agent runtimes)")
 
     # ── 3. Orchestrator final decision ────────────────────────────────────────
     orchestrator = OrchestratorAgent()
     decision     = orchestrator.decide(asset, signals)
 
-    elapsed_total = time.time() - t0
+    elapsed_total = perf_counter() - t0
     print(f"[Orchestra] Decision ready in {elapsed_total:.1f}s total")
 
     # ── 3.5 Scanner elevation — upgrade HOLD to BUY if no macro veto ─────────
@@ -1503,6 +1518,24 @@ def _get_open_position_assets() -> list[str] | None:
         return None
 
 
+def _time_full_cycle(func):
+    """Print wall-clock time for a complete scheduler/CLI pipeline cycle."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        started = perf_counter()
+        outcome = "FAILED"
+        try:
+            result = func(*args, **kwargs)
+            outcome = "completed"
+            return result
+        finally:
+            print(f"[Timing] Full pipeline cycle {outcome} in "
+                  f"{perf_counter() - started:.2f}s")
+
+    return wrapped
+
+
+@_time_full_cycle
 def run_all_assets(target_asset: str | None = None) -> dict[str, TradeDecision]:
     """
     Startup reconciliation then EXIT executor then ENTRY pipeline.
