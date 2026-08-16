@@ -1,7 +1,7 @@
 """
 End-to-end proof that an unreadable entry filter never reaches placement.
 
-The direct tests in test_entry_filters.py assert what _check_entry_filters
+The direct tests in tests/test_entry_filters.py assert what _check_entry_filters
 returns. They cannot prove that run_pipeline HONOURS it — and that is the gap
 that mattered: the only pre-existing integration test patched
 _check_entry_filters out entirely, so the wiring between the filter verdict and

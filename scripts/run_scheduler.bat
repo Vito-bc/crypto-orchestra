@@ -1,6 +1,6 @@
 @echo off
 title Crypto Orchestra Scheduler
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo ============================================================
 echo  CRYPTO ORCHESTRA — Starting scheduler

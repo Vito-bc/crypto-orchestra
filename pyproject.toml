@@ -1,8 +1,7 @@
 [tool.pytest.ini_options]
-# Restrict collection to tests/. The root-level test_*.py files are smoke
-# scripts with import-time side effects (they fetch live market data at module
-# scope), so collecting them makes a bare `pytest` — and therefore CI — fail on
-# a network hiccup or an offline runner.
+# Keep all test and smoke modules under tests/. Live smoke entry points guard
+# their network calls behind `if __name__ == "__main__"`, so ordinary pytest
+# collection remains hermetic.
 testpaths = ["tests"]
 addopts = ["-m", "not integration"]
 markers = [

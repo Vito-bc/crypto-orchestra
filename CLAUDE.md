@@ -128,7 +128,7 @@ Response objects use attribute access, not `.get()` — see `_parse_balance()`.
 ## Obsidian Vault
 
 Auto-generated nightly from logs via `backtesting/generate_journal.py`.
-Windows Task Scheduler runs `update_obsidian.bat` every night at 23:00.
+Windows Task Scheduler runs `scripts/update_obsidian.bat` every night at 23:00.
 The vault is a growing knowledge base — future goal is RAG for the orchestrator.
 
 ## Validation Status — read `docs/trial_registry.md` before believing any number

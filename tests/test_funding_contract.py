@@ -1,7 +1,7 @@
 """
 Direct tests of the REAL get_okx_funding_rate parser.
 
-Every funding test in test_entry_filters.py mocks the finished result, so it
+Every funding test in tests/test_entry_filters.py mocks the finished result, so it
 verifies how the CALLER treats a status and proves nothing about how that status
 is produced. The parser is where "malformed body reads as funding 0.0" lived, so
 it needs its own coverage with only the HTTP boundary (`_get`) replaced.
