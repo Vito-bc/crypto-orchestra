@@ -588,6 +588,41 @@ def build_manifest(assets: Optional[list[str]] = None) -> dict:
     }
 
 
+# Fields recorded for humans and diagnostics that must NOT participate in
+# identity. Each of them moves for reasons that change no number, so comparing
+# them makes verification fail on things the research never reads:
+#
+#   code_commit      goes stale on any squash or rebase.
+#   physical_sha256  moves whenever the exchange completes a candle past the
+#   physical_rows    freeze, or a different parquet writer is used.
+#
+# Identity is code_sha256, environment, and the per-input logical_sha256.
+# Treating "informational" as an explicit category — rather than special-casing
+# one field at a time — is what stops the next volatile field reintroducing this.
+_INFORMATIONAL_MANIFEST_FIELDS = ("code_commit",)
+_INFORMATIONAL_INPUT_FIELDS = ("physical_sha256", "physical_rows")
+
+
+def carry_over_informational(fresh: dict, committed: dict) -> dict:
+    """Take informational fields from the committed artifact, keep the rest."""
+    out = dict(fresh)
+    for key in _INFORMATIONAL_MANIFEST_FIELDS:
+        if key in committed:
+            out[key] = committed[key]
+
+    by_file = {i["file"]: i for i in committed.get("inputs", [])}
+    merged = []
+    for entry in fresh.get("inputs", []):
+        entry = dict(entry)
+        old = by_file.get(entry["file"], {})
+        for key in _INFORMATIONAL_INPUT_FIELDS:
+            if key in old:
+                entry[key] = old[key]
+        merged.append(entry)
+    out["inputs"] = merged
+    return out
+
+
 def verify_code_and_environment() -> bool:
     """
     Cheap identity check: code hashes + environment, nothing else.
@@ -989,13 +1024,8 @@ def verify_artifacts() -> bool:
     manifest = build_manifest()
     results = run_results(manifest)
 
-    # code_commit is an INFORMATIONAL label, not identity. Comparing it made
-    # verification fail after any history rewrite even though every content hash
-    # matched — the exact fragility content-addressing was introduced to remove.
-    # The committed value is carried over so the rest of the manifest is
-    # compared byte-for-byte.
     committed_m = json.loads(m_path.read_text(encoding="utf-8"))
-    manifest["code_commit"] = committed_m.get("code_commit", manifest["code_commit"])
+    manifest = carry_over_informational(manifest, committed_m)
 
     fresh_m = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     fresh_r = json.dumps(results, indent=2, sort_keys=True) + "\n"

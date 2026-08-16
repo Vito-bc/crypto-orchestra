@@ -615,9 +615,42 @@ def test_verification_survives_a_rewritten_code_commit(monkeypatch) -> None:
     # Identity does not.
     assert fresh["code"] == committed["code"]
     assert fresh["environment"] == committed["environment"]
-    assert fresh["inputs"] == committed["inputs"]
-    # And the cheap check, which never consults git at all, still passes.
+    assert ({i["file"]: i["logical_sha256"] for i in fresh["inputs"]}
+            == {i["file"]: i["logical_sha256"] for i in committed["inputs"]})
+    # And once informational fields are carried over, the whole manifest matches.
+    assert rr.carry_over_informational(fresh, committed) == committed
+    # The cheap check, which never consults git at all, still passes.
     assert rr.verify_code_and_environment() is True
+
+
+def test_informational_fields_do_not_participate_in_identity() -> None:
+    """
+    physical_sha256 moves whenever the exchange completes a candle past the
+    freeze or a different parquet writer is used, and code_commit moves on any
+    squash. Both are recorded for humans; neither may fail verification, or the
+    logical hash buys nothing.
+    """
+    import backtesting.research_runner as rr
+
+    committed = _load(MANIFEST)
+    drifted = json.loads(json.dumps(committed))
+    drifted["code_commit"] = "f" * 40
+    for entry in drifted["inputs"]:
+        entry["physical_sha256"] = "0" * 64
+        entry["physical_rows"] = entry["physical_rows"] + 500
+
+    assert rr.carry_over_informational(drifted, committed) == committed
+
+
+def test_a_logical_hash_change_is_NOT_carried_over() -> None:
+    """The carry-over must not become a way to launder a real input change."""
+    import backtesting.research_runner as rr
+
+    committed = _load(MANIFEST)
+    tampered = json.loads(json.dumps(committed))
+    tampered["inputs"][0]["logical_sha256"] = "9" * 64
+
+    assert rr.carry_over_informational(tampered, committed) != committed
 
 
 def test_non_reproducible_probes_are_declared_not_invented() -> None:
