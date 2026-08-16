@@ -157,6 +157,52 @@ def test_manifest_records_the_result_determining_environment() -> None:
         assert version and version[0].isdigit(), f"{name}: {version!r}"
 
 
+def test_environment_reports_the_running_interpreter_not_the_constant() -> None:
+    """
+    environment_fingerprint stamped _CANONICAL_PYTHON instead of the version it
+    was running on, which made the field self-fulfilling: a run under 3.12 still
+    recorded "3.13", so the one thing the field existed to detect was the one
+    thing it could not.
+    """
+    import platform
+
+    from backtesting.research_runner import environment_fingerprint
+
+    assert environment_fingerprint()["python"] == platform.python_version()
+
+
+def test_a_different_interpreter_fails_verification(monkeypatch) -> None:
+    """Verifying under another interpreter proves nothing, so it must fail."""
+    import backtesting.research_runner as rr
+
+    monkeypatch.setattr(rr.platform, "python_version", lambda: "3.12.9")
+    assert rr.verify_code_and_environment() is False
+
+
+def test_a_different_interpreter_refuses_to_write(monkeypatch) -> None:
+    """
+    Regenerating on the wrong interpreter would silently rewrite the committed
+    numbers and present them as the same experiment.
+    """
+    import backtesting.research_runner as rr
+
+    monkeypatch.setattr(rr.platform, "python_version", lambda: "3.12.9")
+    with pytest.raises(rr.ProvenanceError, match="3.12.9"):
+        rr.assert_canonical_python()
+
+
+def test_canonical_python_is_a_full_version() -> None:
+    """
+    Major.minor was too loose: patch releases of CPython have changed
+    floating-point-adjacent behaviour before, and the artifact records an exact
+    version, so the declared one must be exact too.
+    """
+    from backtesting.research_runner import _CANONICAL_PYTHON
+
+    assert len(_CANONICAL_PYTHON.split(".")) == 3, _CANONICAL_PYTHON
+    assert _load(MANIFEST)["environment"]["python"] == _CANONICAL_PYTHON
+
+
 def test_pinned_requirements_match_the_recorded_environment() -> None:
     """
     The pins and the artifact must agree. If they drift, a clean install
@@ -188,7 +234,7 @@ def test_manifest_hashes_every_input() -> None:
     m = _load(MANIFEST)
     assert m["inputs"], "no input datasets recorded"
     for inp in m["inputs"]:
-        assert len(inp["sha256"]) == 64, f"{inp['file']}: not a SHA-256"
+        assert len(inp["logical_sha256"]) == 64, f"{inp['file']}: not a SHA-256"
         assert inp["rows"] > 0
         assert _utc(inp["min_ts"]) < _utc(inp["max_ts"])
 
@@ -532,50 +578,46 @@ def test_period_selection_artifact_is_visible() -> None:
     assert _row(r, "V2-continuous")["pf"] < 1.0
 
 
-def test_code_commit_is_stable_across_artifact_commits() -> None:
+def test_code_commit_is_informational_not_identity() -> None:
     """
-    code_commit must pin the CODE, not HEAD. A HEAD-based stamp goes stale the
-    moment the artifact commit lands, which made the committed manifest
-    unverifiable from the final branch state.
+    Replaces the old assertion that code_commit must equal the last commit
+    touching _CODE_PATHS.
+
+    That test could only pass on a full checkout whose history had never been
+    rewritten, so it skipped itself on every CI run (shallow) and failed on
+    every squash. Worse, it asserted the wrong property: after content-addressing
+    landed, a stale label with matching hashes is CORRECT, not a failure. The
+    label is still recorded — it answers "where did this come from" — but
+    identity is the hashes, and that is what is asserted here.
     """
-    import subprocess
-
-    from backtesting.research_runner import _CODE_PATHS
-
-    def _git(*args: str) -> str:
-        out = subprocess.run(["git", *args], cwd=str(ROOT),
-                             capture_output=True, text=True, check=False)
-        return out.stdout.strip()
-
     m = _load(MANIFEST)
+    assert m["code_commit"], "the label must still be recorded"
+    assert m["code"]["code_sha256"], "identity must be the content hash"
 
-    # CI checks out a SHALLOW merge ref (actions/checkout defaults to depth 1),
-    # so `git log -1 -- <paths>` resolves to the single synthetic commit present
-    # rather than the real code commit. The property is unverifiable there — skip
-    # rather than assert something the environment cannot answer. The stronger
-    # guarantee (`research_runner.py --verify`, byte-for-byte regeneration) does
-    # not depend on git history at all.
-    import os
 
-    if not _git("rev-parse", "--git-dir"):
-        pytest.skip("not a git checkout")
-    if _git("rev-parse", "--is-shallow-repository") == "true":
-        pytest.skip("shallow checkout: full history unavailable")
-    if os.environ.get("GITHUB_ACTIONS") and os.environ.get("GITHUB_EVENT_NAME") == "pull_request":
-        # PR builds run against a synthetic merge ref that exists in neither
-        # branch, so "last commit touching the code" is not meaningful here.
-        pytest.skip("PR merge ref: code_commit is not resolvable")
+def test_verification_survives_a_rewritten_code_commit(monkeypatch) -> None:
+    """
+    Simulates squash/rebase: history is rewritten so the commit label no longer
+    resolves, while every file's content is untouched.
 
-    # NOTE: deliberately no "commit not found" escape hatch. A manifest naming a
-    # commit that does not exist in full history is a REAL failure, and skipping
-    # on it made this assertion vacuous.
-    expected = _git("log", "-1", "--format=%H", "--", *_CODE_PATHS)
-    if not expected:
-        pytest.skip("no history for the code paths in this checkout")
-    assert m["code_commit"] == expected, (
-        "manifest code_commit does not match the last commit touching the "
-        "result-determining code — the artifact cannot be reproduced from here"
-    )
+    verify_artifacts() rebuilt code_commit from git and compared the whole
+    manifest, so it failed after any rewrite even though all content hashes
+    matched — reintroducing exactly the fragility content-addressing removed.
+    """
+    import backtesting.research_runner as rr
+
+    monkeypatch.setattr(rr, "_git_commit", lambda: "0" * 40)
+    fresh = rr.build_manifest()
+    committed = _load(MANIFEST)
+
+    # The label differs — that is the point of the simulation.
+    assert fresh["code_commit"] != committed["code_commit"]
+    # Identity does not.
+    assert fresh["code"] == committed["code"]
+    assert fresh["environment"] == committed["environment"]
+    assert fresh["inputs"] == committed["inputs"]
+    # And the cheap check, which never consults git at all, still passes.
+    assert rr.verify_code_and_environment() is True
 
 
 def test_non_reproducible_probes_are_declared_not_invented() -> None:

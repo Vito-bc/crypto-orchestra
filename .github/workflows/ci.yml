@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: "3.13.5"
       - name: Install ruff
         # Only ruff — installing the full dependency tree would make linting
         # several minutes slower for no benefit. Version pinned to match
@@ -37,7 +37,7 @@ jobs:
           # ran 3.11 while the artifacts were produced on 3.13, so any research
           # check added here would have compared numbers computed under a
           # different interpreter.
-          python-version: "3.13"
+          python-version: "3.13.5"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -56,24 +56,41 @@ jobs:
         # longer describes this code" even if the replay below is skipped.
         run: python backtesting/research_runner.py --verify-code
 
-  # ── The full byte-for-byte replay is NOT wired here yet, deliberately ───────
-  #
-  # backtesting/hydrate_research_data.py works: it materialises the candle cache
-  # from public Coinbase data with no credentials, and a local run from an empty
-  # data/candles regenerated results.json BYTE-IDENTICALLY. The research is
-  # reproducible from public data — that was measured, not assumed.
-  #
-  # What blocks the job is the manifest's input identity, not the download. The
-  # manifest hashes each parquet file WHOLE, including rows outside the
-  # evaluation window, and the exchange keeps completing and revising recent
-  # candles. A fresh public download therefore differs in 1-4 rows per dataset —
-  # every one of them AFTER the 2026-07-12 freeze, none inside the window, and
-  # results.json unchanged — yet all eight SHA-256s mismatch. A required job
-  # built on that comparison would fail on data the research never reads.
-  #
-  # Fixing it means changing what an input hash covers, which changes what
-  # --verify asserts. That is a registered-methodology decision, so it is being
-  # put up for review rather than made here. See docs/trial_registry.md.
-  #
-  # Until then --verify-code above is a required check and does enforce that the
-  # committed artifact describes the checked-out code and library versions.
+  research-verify:
+    # Full byte-for-byte regeneration of the committed research artifacts.
+    #
+    # A REQUIRED check, not an optional extra. Until now the only proof the
+    # headline numbers could be reproduced was someone remembering to run
+    # --verify locally, and the one provenance test that existed skipped itself
+    # on shallow checkouts — so nothing was enforced anywhere.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13.5"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Cache research candles
+        uses: actions/cache@v4
+        with:
+          path: data/candles
+          # Keyed on the manifest, which carries the logical hash of every
+          # input. Changing a declared input therefore misses the cache and
+          # forces a fresh public download rather than reusing stale parquet.
+          key: candles-${{ hashFiles('docs/research/artifacts/manifest.json') }}
+
+      - name: Materialise candles from public Coinbase data
+        # No credentials: RESTClient() is built with no key material and only
+        # get_public_candles is called, so this path cannot place an order.
+        # Datasets and their expected shape come from the committed manifest,
+        # candidates land in .partial and are validated for schema, coverage and
+        # logical hash before atomically replacing anything. A corrupt or
+        # truncated fetch fails here rather than producing a shorter scan.
+        run: python backtesting/hydrate_research_data.py
+
+      - name: Verify artifacts reproduce byte-for-byte
+        run: python backtesting/research_runner.py --verify

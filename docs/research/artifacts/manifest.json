@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "53fe2913fab1cf0ce6e456179a2e5b3dedd8dc1036db9711944143dc12345301",
+    "code_sha256": "3e58dcbc25489768b512743cb0b446fe5550646a62a531a241e86ec2921bbf93",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -16,7 +16,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "3e7cd99936186559813929919ba2262615d2d008df9abd9648992e6d00711398"
+        "sha256": "e164e64bba5646d03e4c030e315f3d0f12f614d83a4fc7499d70ffa5d35e3875"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -28,7 +28,7 @@
       }
     ]
   },
-  "code_commit": "e6a107aae414c0c8a24e35dc12d496c40f30dc4b",
+  "code_commit": "de298caf8353d7c1210ee878a73c8fd8e354bd1f",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
@@ -38,7 +38,7 @@
       "SOL_USD_1d.parquet": 0,
       "SOL_USD_1h.parquet": 15,
       "ZEC_USD_1d.parquet": 0,
-      "ZEC_USD_1h.parquet": 16
+      "ZEC_USD_1h.parquet": 15
     },
     "asset_effective_start": {
       "BTC-USD": "2020-07-20T00:00:00+00:00",
@@ -139,19 +139,24 @@
       "pyarrow": "24.0.0",
       "ta": "0.11.0"
     },
-    "python": "3.13"
+    "python": "3.13.5"
   },
   "inputs": [
     {
       "file": "BTC_USD_1d.parquet",
       "gap_threshold_hours": 1,
       "gaps_sample": [],
-      "max_ts": "2026-08-09T00:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "14bc0da98eb93a3bc2ee3b1689f56ca48dca60f0f2297c8bd883042ef5c947a0",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2020-01-02T00:00:00+00:00",
       "missing_bars_est": 0,
       "n_gaps": 0,
-      "rows": 2412,
-      "sha256": "12516629df95e1d5c796ee2f45b2bceaa81bd02f86f0053a55571303d7016928"
+      "physical_rows": 2412,
+      "physical_sha256": "12516629df95e1d5c796ee2f45b2bceaa81bd02f86f0053a55571303d7016928",
+      "rows": 2384,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     },
     {
       "file": "BTC_USD_1h.parquet",
@@ -182,23 +187,33 @@
           "gap_hours": 6.0
         }
       ],
-      "max_ts": "2026-08-09T16:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "12d624969c228f50af8411fbc0a0285eb25c2273b37bf26b6ac824143693f3a3",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2020-01-01T01:00:00+00:00",
       "missing_bars_est": 16,
       "n_gaps": 6,
-      "rows": 57888,
-      "sha256": "8153bd70e90ad25864b28cd7f46dcdaaf3a4bae0448814f3934038d0251fee9c"
+      "physical_rows": 57888,
+      "physical_sha256": "8153bd70e90ad25864b28cd7f46dcdaaf3a4bae0448814f3934038d0251fee9c",
+      "rows": 57200,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     },
     {
       "file": "ETH_USD_1d.parquet",
       "gap_threshold_hours": 1,
       "gaps_sample": [],
-      "max_ts": "2026-08-09T00:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "f8355b6cdc590fbf9134fcdccb4bc96c4dc757697f536fab36dc3fae53299389",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2020-01-02T00:00:00+00:00",
       "missing_bars_est": 0,
       "n_gaps": 0,
-      "rows": 2412,
-      "sha256": "58bb0e0d3510cb84b477b6f674cac2eff305d7fee31876e47830087a913bd824"
+      "physical_rows": 2412,
+      "physical_sha256": "58bb0e0d3510cb84b477b6f674cac2eff305d7fee31876e47830087a913bd824",
+      "rows": 2384,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     },
     {
       "file": "ETH_USD_1h.parquet",
@@ -229,23 +244,33 @@
           "gap_hours": 6.0
         }
       ],
-      "max_ts": "2026-08-09T16:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "eacfa0a5a2512f99ac047cbba0451a969e35b384b19968bfbb6635b2a8c58bf4",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2020-01-01T01:00:00+00:00",
       "missing_bars_est": 16,
       "n_gaps": 6,
-      "rows": 57888,
-      "sha256": "55842ab050a481a553a1e7ffcf0b6e99004d74fa3242973e9ccfe29188c6a9aa"
+      "physical_rows": 57888,
+      "physical_sha256": "55842ab050a481a553a1e7ffcf0b6e99004d74fa3242973e9ccfe29188c6a9aa",
+      "rows": 57200,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     },
     {
       "file": "SOL_USD_1d.parquet",
       "gap_threshold_hours": 1,
       "gaps_sample": [],
-      "max_ts": "2026-08-09T00:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "7cc7766a3095e888963a2dcb9555752d795bc455733815e323fe58306ee7c39b",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2021-06-17T00:00:00+00:00",
       "missing_bars_est": 0,
       "n_gaps": 0,
-      "rows": 1880,
-      "sha256": "4b0b7dc401a37b37a4e74b09b5e769a6c73138194165d3a28805d775ba6d4082"
+      "physical_rows": 1880,
+      "physical_sha256": "4b0b7dc401a37b37a4e74b09b5e769a6c73138194165d3a28805d775ba6d4082",
+      "rows": 1852,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     },
     {
       "file": "SOL_USD_1h.parquet",
@@ -264,23 +289,33 @@
           "gap_hours": 6.0
         }
       ],
-      "max_ts": "2026-08-09T16:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "3b7d5882a61226fe3cbcad33210f1ee39d657618764892301704dcd6202030bd",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2021-06-17T16:00:00+00:00",
       "missing_bars_est": 15,
       "n_gaps": 3,
-      "rows": 45082,
-      "sha256": "befcb47e55984d956180dbf43403126edd94d79a815c96dbb6967dde192ad26b"
+      "physical_rows": 45082,
+      "physical_sha256": "befcb47e55984d956180dbf43403126edd94d79a815c96dbb6967dde192ad26b",
+      "rows": 44394,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     },
     {
       "file": "ZEC_USD_1d.parquet",
       "gap_threshold_hours": 1,
       "gaps_sample": [],
-      "max_ts": "2026-08-09T00:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "025cf812338fb5c591fb726a540d9e863146adeacb037e93e3752868aa9cdd97",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2020-12-08T00:00:00+00:00",
       "missing_bars_est": 0,
       "n_gaps": 0,
-      "rows": 2071,
-      "sha256": "3e4bd2ca64bf63f0d79cae5872338d6e94a9d4e7896cffee31e2d4767c61d8ed"
+      "physical_rows": 2071,
+      "physical_sha256": "3e4bd2ca64bf63f0d79cae5872338d6e94a9d4e7896cffee31e2d4767c61d8ed",
+      "rows": 2043,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     },
     {
       "file": "ZEC_USD_1h.parquet",
@@ -301,18 +336,19 @@
         {
           "after": "2026-05-08T01:00:00+00:00",
           "gap_hours": 6.0
-        },
-        {
-          "after": "2026-07-17T00:00:00+00:00",
-          "gap_hours": 2.0
         }
       ],
-      "max_ts": "2026-08-09T16:00:00+00:00",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "097895c9eea2af3a3f509f9f4f19476deb7099a92ca0dbc18f27dcc1eb1d77b8",
+      "max_ts": "2026-07-12T00:00:00+00:00",
       "min_ts": "2020-12-08T17:00:00+00:00",
-      "missing_bars_est": 16,
-      "n_gaps": 5,
-      "rows": 49664,
-      "sha256": "6b981614724eb2c6a5ab43f2e57f50b9e6510b6733a10d1e411ad9a7aa169b93"
+      "missing_bars_est": 15,
+      "n_gaps": 4,
+      "physical_rows": 49664,
+      "physical_sha256": "6b981614724eb2c6a5ab43f2e57f50b9e6510b6733a10d1e411ad9a7aa169b93",
+      "rows": 48977,
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     }
   ]
 }

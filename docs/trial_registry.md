@@ -433,7 +433,34 @@ provenance artifact asserts.
 3. **`--verify-code`**: code hashes plus environment, in milliseconds, with no
    candle cache and no git history. It is a required CI check.
 
-### Open decision — input identity vs re-materialisable data
+### Input identity — RESOLVED 2026-08-15, option (a)
+
+Adopted: **window-scoped canonical logical hash**, `ohlcv-logical-v1`.
+
+An input's identity is the OHLCV a registered scan can actually read:
+
+| Field | Value |
+|---|---|
+| `scope_start_inclusive` | `2020-01-01T00:00:00+00:00` (`_DAILY_HISTORY_START`) |
+| `scope_end_inclusive` | `2026-07-12T00:00:00+00:00` |
+| Encoding | schema `time, open, high, low, close, volume`; int64 UTC epoch ns big-endian; OHLCV IEEE-754 float64 big-endian; sorted by time |
+| Fails closed on | duplicate timestamps, NaN/±Inf, non-numeric, missing column, no rows in scope |
+
+The start is the daily history start, **not** `asset_effective_start`: warm-up
+rows determine the EMAs and therefore gate availability itself, so they are
+input, not context. The end is **inclusive** because
+`coinbase_candles.download` slices `time >= start & time <= end`, so the
+boundary bar is read.
+
+The physical parquet SHA-256 is retained as `physical_sha256`, informational
+only. Gap budgets were re-measured inside the scope: ZEC 1h drops 16 → 15,
+because one of its gaps lay entirely in the tail and had been consuming budget
+for data the research never reads.
+
+Consequence: the full `research_runner.py --verify` is now a **required CI
+check**, fed by credential-free public hydration.
+
+### Superseded analysis — why whole-file hashing failed
 
 The full `--verify` replay is still **not** a required check, and the reason is
 a methodology question rather than a plumbing one.
@@ -465,21 +492,10 @@ exchange keeps revising.** The hash therefore asserts more than what determines
 the results, and a required job built on it would fail on data the research
 never reads.
 
-Options, for decision — this changes what `--verify` asserts, so it is not being
-made unilaterally:
-
-- **(a) Window-scoped content hash.** Hash a canonical serialisation of the rows
-  inside `[listing_start, window_end]` only. Stable against tail revisions;
-  requires defining a canonical row encoding.
-- **(b) Freeze the inputs as released artifacts.** Publish the exact parquet
-  files once (release asset / LFS) and have CI fetch those rather than
-  re-download. Preserves whole-file hashing; adds a hosting dependency.
-- **(c) Keep whole-file hashing and re-baseline deliberately** whenever the tail
-  moves. Simplest, but makes every stale tail a manual step and invites exactly
-  the "regenerate until green" habit this work exists to prevent.
-
-Recommendation: **(a)**, with the window boundary taken from the registered
-`asset_effective_start` / `continuous_window.end` already in the config.
+Option **(a)** was chosen and is implemented above. (b) release-pinned inputs and
+(c) deliberate re-baselining were rejected: the first adds a hosting dependency,
+the second makes every stale tail a manual step and invites exactly the
+"regenerate until green" habit this work exists to prevent.
 
 ### Professional review addendum (2026-08-09)
 
