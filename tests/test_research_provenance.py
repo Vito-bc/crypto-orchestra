@@ -603,23 +603,30 @@ def test_verification_survives_a_rewritten_code_commit(monkeypatch) -> None:
     verify_artifacts() rebuilt code_commit from git and compared the whole
     manifest, so it failed after any rewrite even though all content hashes
     matched — reintroducing exactly the fragility content-addressing removed.
+
+    Deliberately does NOT call build_manifest(): that reads the parquet cache,
+    which is git-ignored, so this test failed in any clean checkout — the very
+    environment whose behaviour it claims to describe. The inputs are taken from
+    the committed manifest and only the git label is simulated.
     """
     import backtesting.research_runner as rr
 
-    monkeypatch.setattr(rr, "_git_commit", lambda: "0" * 40)
-    fresh = rr.build_manifest()
     committed = _load(MANIFEST)
 
-    # The label differs — that is the point of the simulation.
-    assert fresh["code_commit"] != committed["code_commit"]
-    # Identity does not.
-    assert fresh["code"] == committed["code"]
-    assert fresh["environment"] == committed["environment"]
-    assert ({i["file"]: i["logical_sha256"] for i in fresh["inputs"]}
-            == {i["file"]: i["logical_sha256"] for i in committed["inputs"]})
-    # And once informational fields are carried over, the whole manifest matches.
-    assert rr.carry_over_informational(fresh, committed) == committed
-    # The cheap check, which never consults git at all, still passes.
+    # A rewritten history: the label resolves to something new, file contents
+    # are untouched.
+    monkeypatch.setattr(rr, "_git_commit", lambda: "0" * 40)
+    rewritten = json.loads(json.dumps(committed))
+    rewritten["code_commit"] = rr._git_commit()
+
+    assert rewritten["code_commit"] != committed["code_commit"]
+    # Identity is unaffected, and is computed from the working tree — no candles
+    # and no git needed for either of these.
+    assert rr.code_fingerprint() == committed["code"]
+    assert rr.environment_fingerprint() == committed["environment"]
+    # Carrying informational fields over restores full equality.
+    assert rr.carry_over_informational(rewritten, committed) == committed
+    # And the cheap check, which never consults git at all, still passes.
     assert rr.verify_code_and_environment() is True
 
 
