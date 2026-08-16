@@ -1,8 +1,9 @@
 # Runtime dependencies — EXACT pins.
 #
-# Canonical interpreter: Python 3.13 (see backtesting/research_runner.py
-# _CANONICAL_PYTHON). research_runner refuses to WRITE artifacts on any other
-# minor version, because results are not comparable across them.
+# Canonical interpreter: Python 3.13.5 EXACTLY (see
+# backtesting/research_runner.py _CANONICAL_PYTHON). research_runner refuses to
+# write artifacts on any other version, and both --verify and --verify-code fail
+# on one, because the manifest records the interpreter it actually ran on.
 #
 # Why exact rather than ranges: numpy/pandas/ta/pyarrow compute every indicator
 # in the research pipeline, so an unpinned upgrade silently moves every headline

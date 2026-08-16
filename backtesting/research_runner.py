@@ -246,10 +246,11 @@ _CODE_PATHS = [
 # all, which meant a `ta` or `pandas` release could move every headline number
 # with the artifact still verifying green.
 #
-# Python is declared to MAJOR.MINOR only. A patch release does not change
-# floating-point semantics here, and pinning 3.13.5 exactly would break
-# verification on 3.13.6 for no reproducibility gain. A minor-version change
-# does matter and must be a deliberate re-registration.
+# Python is declared as an EXACT version. Major.minor was too loose: the
+# manifest records the interpreter it actually ran on, so a looser declaration
+# would let the recorded and the required versions disagree. Moving to a new
+# patch release is therefore a deliberate re-registration, which is the same
+# rule every other result-determining dependency follows.
 _CANONICAL_PYTHON = "3.13.5"
 _RESULT_DETERMINING_PACKAGES = ("numpy", "pandas", "ta", "pyarrow")
 

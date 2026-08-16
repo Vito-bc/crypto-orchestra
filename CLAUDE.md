@@ -176,17 +176,15 @@ Immediate implementation brief:
    unreadable input, funding has a typed applicable/not-applicable/unavailable
    contract, and the suite is hermetic: safe config pinned before the first
    project import, outbound network denied at the socket layer.
-3. **Phase 6.9 — IN PROGRESS.** Dependencies pinned exactly (canonical Python
-   3.13; `numpy`/`pandas`/`ta`/`pyarrow` recorded in the manifest), code
-   identity content-addressed with `code_commit` demoted to a label,
-   `--verify-code` required in CI, README corrected.
-   **Open decision:** the full `--verify` replay is not yet a required check.
-   Public hydration works and reproduces `results.json` byte-identically, but
-   the manifest hashes each parquet WHOLE — including rows past the freeze that
-   the exchange keeps revising — so all eight input hashes mismatch on data the
-   research never reads. Changing what an input hash covers changes what
-   `--verify` asserts, so it needs a registered decision. See
-   `docs/trial_registry.md`.
+3. ~~Phase 6.9~~ **DONE.** Dependencies pinned exactly (canonical Python
+   **3.13.5**, exact — `write_artifacts` and both verify paths refuse any other
+   interpreter; `numpy`/`pandas`/`ta`/`pyarrow` recorded in the manifest). Code
+   identity is content-addressed with `code_commit` demoted to an informational
+   label. Input identity is the window-scoped logical OHLCV hash
+   (`ohlcv-logical-v1`, scope `2020-01-01` → `2026-07-12`, both inclusive), so
+   the tail the exchange keeps revising no longer breaks verification. Both
+   `--verify-code` and the full `--verify` run in CI, the latter fed by
+   credential-free public hydration. README corrected.
 4. Repair `backtesting/walk_forward.py`: it never attached the daily frame, so
    it has always validated a weaker mechanism. It currently raises.
 5. If pursuing a new edge: a slow trend-following trial would have to be

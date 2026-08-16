@@ -2,7 +2,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](update_obsidian.bat)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey?logo=windows)](scripts/update_obsidian.bat)
 [![AI](https://img.shields.io/badge/AI-Claude%20Sonnet%204.6-purple)](https://www.anthropic.com/)
 [![Status](https://img.shields.io/badge/status-paper%2Fshadow%20only-orange)](docs/trial_registry.md)
 [![Live](https://img.shields.io/badge/live%20trading-NOT%20AUTHORIZED-red)](docs/trial_registry.md)
@@ -153,10 +153,10 @@ The system auto-generates an Obsidian knowledge vault from all trading data:
 
 ```bash
 python backtesting/generate_journal.py   # generate vault manually
-update_obsidian.bat                      # one-click Windows shortcut
+scripts/update_obsidian.bat              # one-click Windows shortcut
 ```
 
-A Windows Task Scheduler job runs `update_obsidian.bat` every night at 23:00 automatically. The vault includes trade notes, agent decision logs, backtest summaries, and strategy changelogs — designed to grow into a RAG knowledge base for the orchestrator.
+A Windows Task Scheduler job runs `scripts/update_obsidian.bat` every night at 23:00 automatically. The vault includes trade notes, agent decision logs, backtest summaries, and strategy changelogs — designed to grow into a RAG knowledge base for the orchestrator.
 
 ## Repository Layout
 
@@ -199,7 +199,10 @@ tools/
 notifications/
   telegram.py           — alerts for all trade lifecycle events
 
-update_obsidian.bat     — regenerate Obsidian vault (runs nightly via Task Scheduler)
+scripts/
+  update_obsidian.bat   — regenerate Obsidian vault (runs nightly via Task Scheduler)
+  run_scheduler.bat     — start the continuous scheduler
+  view_pnl.bat          — P&L dashboard shortcut
 
 logs/                   — runtime logs (git-ignored)
   agent_decisions.jsonl

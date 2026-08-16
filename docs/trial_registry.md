@@ -462,8 +462,10 @@ check**, fed by credential-free public hydration.
 
 ### Superseded analysis — why whole-file hashing failed
 
-The full `--verify` replay is still **not** a required check, and the reason is
-a methodology question rather than a plumbing one.
+> Historical. This records the measurement that motivated the decision above.
+> The full `--verify` replay **is** now a required check; at the time of this
+> analysis it was not, and the reason was a methodology question rather than a
+> plumbing one.
 
 `backtesting/hydrate_research_data.py` was written and works: it materialises
 the candle cache from Coinbase's **public** endpoint with no credentials
