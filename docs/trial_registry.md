@@ -403,6 +403,77 @@ logs the missing inputs. Covered by `tests/test_gate_availability.py`.
    move every number above with no artifact change.
 4. `research_runner.py --verify` is not run in CI.
 
+## Methodology repair — `2026-08-walkforward-repair.v1` (2026-08-18)
+
+**Registered BEFORE any result was produced.** Phase 6.10. This is a tool
+repair, not a search for edge, and it is pre-registered precisely so that the
+numbers it eventually emits cannot be presented as a discovery.
+
+### Status of everything this tool ever produced
+
+**VOID.** `backtesting/walk_forward.py` has been disabled since the warm-up
+trial. Its defects were not marginal:
+
+1. `_load_asset` never attached the daily frame, so `close_1d` / `ema*_1d` were
+   absent from every row and the declared daily-EMA trend gate was skipped for
+   every signal on every asset.
+2. The scan loop enumerated only three blocked reasons, so `daily_trend` and
+   `btc_regime` blocks fell through and were **traded**.
+3. It used `FEE_RATE = 0.006` for entry *and* exit, while the registered
+   mechanism is maker 0.4% entry / 0.4% take-profit / taker 0.6% stop. Entry was
+   overcharged and take-profit exits were overcharged by 50%.
+4. An unfilled max-hold horizon at the right edge of the data was reported as a
+   completed `MAX_HOLD` trade — an invented outcome.
+5. Unknown assets silently fell back to the ETH strategy config and an empty
+   `ASSET_CONFIG`, i.e. a different mechanism under the asset's own name.
+
+The README table that claimed "ZEC-USD +0.30% avg OOS — ✅ EDGE / the only asset
+with genuine out-of-sample edge" came from this tool. It is withdrawn and must
+not be revived.
+
+### What the repair may and may not conclude
+
+The windows below were **inspected repeatedly during the original development**
+and are recorded in this registry's trial count. Re-running them on a corrected
+tool produces **historical diagnostics only**:
+
+- it may establish that the tool now measures the mechanism it declares;
+- it may **not** be called clean OOS;
+- it may **not** be cited as evidence of edge, in either direction, for
+  activation purposes.
+
+A genuine out-of-sample claim requires a new pre-registered hypothesis and
+forward data that has never been examined. That is Phase 7 and is not
+authorised by this entry.
+
+### Frozen protocol
+
+| Item | Value |
+|---|---|
+| Windows | 3 rolling, unchanged from the original tool (2024-09-01 → 2025-06-28) |
+| Train / test split | half-open `[train_start, test_start)` and `[test_start, test_end)`, non-overlapping within a window |
+| Stop candidates | `[1.5, 2.0, 2.5, 3.0]` — **frozen, not extended** |
+| R:R | 1.75, fixed |
+| Selection rule | highest train avg P&L with n >= 3 resolved trades |
+| Fees | the registered model: entry 0.4%, take-profit 0.4%, stop/max-hold 0.6% |
+| Censoring | an unobservable horizon is PENDING and excluded from every statistic |
+| Gates | all declared gates enforced; any blocked reason means no trade |
+
+No new sweep parameter, asset, window or threshold is introduced. Adding one
+would make this a search rather than a repair.
+
+### Provenance
+
+Output is a deterministic artifact under
+`docs/research/artifacts/walk_forward/`, carrying content hashes of the
+result-determining code, the pinned environment, and the window-scoped logical
+hash of every input — the same scheme as the main research runner
+(`ohlcv-logical-v1`). It is verifiable with
+`python backtesting/walk_forward.py --verify`.
+
+Live status is unchanged and cannot be changed by this work: **LIVE NO-GO**,
+`DRY_RUN=true`, V3 off.
+
 ## Infrastructure change — Phase 6.9 reproducibility (2026-08-15)
 
 Not a trial: no scan was run, no parameter changed, and `results.json` is
