@@ -1,0 +1,2222 @@
+{
+  "code": {
+    "code_sha256": "50eb3df7f1998264c9621cade0df245f3a7258377602e7e584feebc772e384ec",
+    "files": [
+      {
+        "file": "backtesting/backtest.py",
+        "sha256": "65a843244e460bfa9d1f4025d98c5596fd7baed52a227303e9a55b4fb5ea3f80"
+      },
+      {
+        "file": "backtesting/research_runner.py",
+        "sha256": "608ef728189477723aff091af002a9e9a097b574bccf14cfe5865eb1a4ff42c6"
+      },
+      {
+        "file": "backtesting/signal_scanner.py",
+        "sha256": "b7c7ea90c2ea8d5b7684873a98d6369265416d9167a610280e70287461becf4d"
+      },
+      {
+        "file": "backtesting/walk_forward.py",
+        "sha256": "5dbc4009b5271bbcdf0dbfd6a53dbdee4b4240e85370a13275e3a391394663e9"
+      },
+      {
+        "file": "exchange/coinbase_candles.py",
+        "sha256": "cc31fde12e8547aa4bd0452c4d98365dd509f17f0b73844ed9ca0b9bd0e6953f"
+      }
+    ]
+  },
+  "environment": {
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "ta": "0.11.0"
+    },
+    "python": "3.13.5"
+  },
+  "inputs": [
+    {
+      "file": "BTC_USD_1h.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "f1083e11ca671e639e52c8dac8af950a001b5aadd79a3198b735b9edea7b4757",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2024-05-04"
+    },
+    {
+      "file": "BTC_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "07da8cced09472ef0fa8eeec9c564c64115e7849e1f95ffc6d354a0a47521a6d",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2020-01-01"
+    },
+    {
+      "file": "ETH_USD_1h.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "ff68765d94b2f89b249d3b59eaddd7be1031bc60737d4089824bdb0a0459c849",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2024-05-04"
+    },
+    {
+      "file": "ETH_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "45dcd0198628eeca9257566fc43dc39249e364634b40fcc0c07033f0fd22794c",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2020-01-01"
+    },
+    {
+      "file": "SOL_USD_1h.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "0ddc004a1d992e6e3518ff74c62b3c4ae14386bdbecfb23d9be774646a087c52",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2024-05-04"
+    },
+    {
+      "file": "SOL_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "f077596123d1daee3b960e3de04afaaa744470f872dbf9bdb97b173afc042ceb",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2020-01-01"
+    },
+    {
+      "file": "ZEC_USD_1h.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "e4f8a158de0f08119387eac6f371401d53ee5eaa1995420b9bd3a9452946430e",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2024-05-04"
+    },
+    {
+      "file": "ZEC_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "3e933a0360ebf9a6da3c679b93a6f504d68a9b2dbeb7f17c8e5865ed2ed18fe9",
+      "scope_bounds": "both inclusive",
+      "scope_end_inclusive": "2025-06-28",
+      "scope_start_inclusive": "2020-01-01"
+    }
+  ],
+  "protocol": {
+    "assets": [
+      "BTC-USD",
+      "ETH-USD",
+      "SOL-USD",
+      "ZEC-USD"
+    ],
+    "censoring": "each slice is truncated at its own end before simulation; an outcome needing a later candle is PENDING and enters no statistic",
+    "data_source": "local Coinbase parquet cache, STRICT (no fallback)",
+    "end": "2025-06-28",
+    "fees": "signal_scanner: entry 0.4%, take-profit 0.4%, stop/max-hold 0.6%",
+    "input_scopes": {
+      "1d": {
+        "end": "2025-06-28",
+        "start": "2020-01-01"
+      },
+      "1h": {
+        "end": "2025-06-28",
+        "start": "2024-05-04"
+      }
+    },
+    "min_train_trades": 3,
+    "rr_ratio": 1.75,
+    "scope_bounds": "both inclusive",
+    "stop_candidates": [
+      1.5,
+      2.0,
+      2.5,
+      3.0
+    ],
+    "warmup": "2024-05-04",
+    "windows": [
+      {
+        "label": "Window 1",
+        "test_end": "2025-01-20",
+        "test_regime": "Trump rally",
+        "test_start": "2024-11-15",
+        "train_regime": "Aug crash recovery",
+        "train_start": "2024-09-01"
+      },
+      {
+        "label": "Window 2",
+        "test_end": "2025-04-01",
+        "test_regime": "Q1 2025 bear",
+        "test_start": "2025-01-20",
+        "train_regime": "Trump rally",
+        "train_start": "2024-11-01"
+      },
+      {
+        "label": "Window 3",
+        "test_end": "2025-06-28",
+        "test_regime": "Current bear",
+        "test_start": "2025-04-01",
+        "train_regime": "Q1 2025 bear",
+        "train_start": "2025-01-20"
+      }
+    ]
+  },
+  "rows": [
+    {
+      "asset": "BTC-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25,
+        "avg_pnl": 0.094,
+        "blocked": {
+          "4h_trend": 37,
+          "conditions": 13,
+          "daily_trend": 1,
+          "vol_gate": 56
+        },
+        "last_exit_ts": "2025-01-17T15:00:00+00:00",
+        "max_hold_hours": 48,
+        "n": 10,
+        "n_pending": 0,
+        "profit_factor": 1.103867,
+        "signal_ts": [
+          "2024-11-15T19:00:00+00:00",
+          "2024-11-18T01:00:00+00:00",
+          "2024-11-24T22:00:00+00:00",
+          "2024-11-27T16:00:00+00:00",
+          "2024-12-04T20:00:00+00:00",
+          "2024-12-06T14:00:00+00:00",
+          "2024-12-12T20:00:00+00:00",
+          "2024-12-24T16:00:00+00:00",
+          "2025-01-05T14:00:00+00:00",
+          "2025-01-16T15:00:00+00:00"
+        ],
+        "total_pnl": 0.94,
+        "win_rate": 0.5,
+        "wins": 5
+      },
+      "test_end": "2025-01-20",
+      "test_regime": "Trump rally",
+      "test_start": "2024-11-15",
+      "train": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25,
+        "avg_pnl": -0.0825,
+        "blocked": {
+          "4h_trend": 29,
+          "conditions": 14,
+          "daily_trend": 5,
+          "vol_gate": 52
+        },
+        "last_exit_ts": "2024-11-01T15:00:00+00:00",
+        "max_hold_hours": 48,
+        "n": 8,
+        "n_pending": 0,
+        "profit_factor": 0.928494,
+        "signal_ts": [
+          "2024-09-18T18:00:00+00:00",
+          "2024-09-22T19:00:00+00:00",
+          "2024-09-23T14:00:00+00:00",
+          "2024-10-07T19:00:00+00:00",
+          "2024-10-14T03:00:00+00:00",
+          "2024-10-17T13:00:00+00:00",
+          "2024-10-24T13:00:00+00:00",
+          "2024-11-01T13:00:00+00:00"
+        ],
+        "total_pnl": -0.66,
+        "win_rate": 0.5,
+        "wins": 4
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -1.29,
+          "blocked": {
+            "4h_trend": 31,
+            "conditions": 23,
+            "daily_trend": 5,
+            "vol_gate": 56,
+            "whipsaw": 2
+          },
+          "last_exit_ts": "2024-11-01T15:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.141431,
+          "signal_ts": [
+            "2024-09-18T18:00:00+00:00",
+            "2024-09-22T19:00:00+00:00",
+            "2024-09-23T14:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-14T03:00:00+00:00",
+            "2024-10-17T13:00:00+00:00",
+            "2024-10-24T13:00:00+00:00",
+            "2024-11-01T13:00:00+00:00"
+          ],
+          "total_pnl": -10.32,
+          "win_rate": 0.25,
+          "wins": 2
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": -0.93875,
+          "blocked": {
+            "4h_trend": 31,
+            "conditions": 19,
+            "daily_trend": 5,
+            "vol_gate": 53
+          },
+          "last_exit_ts": "2024-11-01T15:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.360307,
+          "signal_ts": [
+            "2024-09-18T18:00:00+00:00",
+            "2024-09-22T19:00:00+00:00",
+            "2024-09-23T14:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-14T03:00:00+00:00",
+            "2024-10-17T13:00:00+00:00",
+            "2024-10-24T13:00:00+00:00",
+            "2024-11-01T13:00:00+00:00"
+          ],
+          "total_pnl": -7.51,
+          "win_rate": 0.375,
+          "wins": 3
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -0.3875,
+          "blocked": {
+            "4h_trend": 31,
+            "conditions": 17,
+            "daily_trend": 5,
+            "vol_gate": 52
+          },
+          "last_exit_ts": "2024-11-01T15:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.697856,
+          "signal_ts": [
+            "2024-09-18T18:00:00+00:00",
+            "2024-09-22T19:00:00+00:00",
+            "2024-09-23T14:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-14T03:00:00+00:00",
+            "2024-10-17T13:00:00+00:00",
+            "2024-10-24T13:00:00+00:00",
+            "2024-11-01T13:00:00+00:00"
+          ],
+          "total_pnl": -3.1,
+          "win_rate": 0.375,
+          "wins": 3
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -0.0825,
+          "blocked": {
+            "4h_trend": 29,
+            "conditions": 14,
+            "daily_trend": 5,
+            "vol_gate": 52
+          },
+          "last_exit_ts": "2024-11-01T15:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.928494,
+          "signal_ts": [
+            "2024-09-18T18:00:00+00:00",
+            "2024-09-22T19:00:00+00:00",
+            "2024-09-23T14:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-14T03:00:00+00:00",
+            "2024-10-17T13:00:00+00:00",
+            "2024-10-24T13:00:00+00:00",
+            "2024-11-01T13:00:00+00:00"
+          ],
+          "total_pnl": -0.66,
+          "win_rate": 0.5,
+          "wins": 4
+        }
+      ],
+      "train_regime": "Aug crash recovery",
+      "train_start": "2024-09-01",
+      "trial": "walkforward:BTC-USD:Window 1",
+      "window": "Window 1"
+    },
+    {
+      "asset": "ETH-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25,
+        "avg_pnl": -0.31875,
+        "blocked": {
+          "4h_trend": 40,
+          "conditions": 21,
+          "daily_trend": 3,
+          "vol_gate": 51
+        },
+        "last_exit_ts": "2025-01-18T05:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 8,
+        "n_pending": 0,
+        "profit_factor": 0.777487,
+        "signal_ts": [
+          "2024-11-18T06:00:00+00:00",
+          "2024-11-19T19:00:00+00:00",
+          "2024-11-24T23:00:00+00:00",
+          "2024-12-02T15:00:00+00:00",
+          "2024-12-04T00:00:00+00:00",
+          "2024-12-08T21:00:00+00:00",
+          "2024-12-15T23:00:00+00:00",
+          "2025-01-16T17:00:00+00:00"
+        ],
+        "total_pnl": -2.55,
+        "win_rate": 0.25,
+        "wins": 2
+      },
+      "test_end": "2025-01-20",
+      "test_regime": "Trump rally",
+      "test_start": "2024-11-15",
+      "train": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25,
+        "avg_pnl": -0.94,
+        "blocked": {
+          "4h_trend": 74,
+          "btc_regime": 2,
+          "conditions": 14,
+          "daily_trend": 15,
+          "vol_gate": 71
+        },
+        "last_exit_ts": "2024-11-13T19:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 3,
+        "n_pending": 0,
+        "profit_factor": 0.557994,
+        "signal_ts": [
+          "2024-09-22T22:00:00+00:00",
+          "2024-10-17T15:00:00+00:00",
+          "2024-11-13T14:00:00+00:00"
+        ],
+        "total_pnl": -2.82,
+        "win_rate": 0.333333,
+        "wins": 1
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -2.643333,
+          "blocked": {
+            "4h_trend": 74,
+            "btc_regime": 2,
+            "conditions": 17,
+            "daily_trend": 16,
+            "vol_gate": 73
+          },
+          "last_exit_ts": "2024-11-13T19:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.0,
+          "signal_ts": [
+            "2024-09-22T22:00:00+00:00",
+            "2024-10-17T15:00:00+00:00",
+            "2024-11-13T14:00:00+00:00"
+          ],
+          "total_pnl": -7.93,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": -3.193333,
+          "blocked": {
+            "4h_trend": 74,
+            "btc_regime": 2,
+            "conditions": 17,
+            "daily_trend": 16,
+            "vol_gate": 73
+          },
+          "last_exit_ts": "2024-11-13T19:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.0,
+          "signal_ts": [
+            "2024-09-22T22:00:00+00:00",
+            "2024-10-17T15:00:00+00:00",
+            "2024-11-13T14:00:00+00:00"
+          ],
+          "total_pnl": -9.58,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -1.773333,
+          "blocked": {
+            "4h_trend": 74,
+            "btc_regime": 2,
+            "conditions": 17,
+            "daily_trend": 15,
+            "vol_gate": 73
+          },
+          "last_exit_ts": "2024-11-13T19:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.347239,
+          "signal_ts": [
+            "2024-09-22T22:00:00+00:00",
+            "2024-10-17T15:00:00+00:00",
+            "2024-11-13T14:00:00+00:00"
+          ],
+          "total_pnl": -5.32,
+          "win_rate": 0.333333,
+          "wins": 1
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -0.94,
+          "blocked": {
+            "4h_trend": 74,
+            "btc_regime": 2,
+            "conditions": 14,
+            "daily_trend": 15,
+            "vol_gate": 71
+          },
+          "last_exit_ts": "2024-11-13T19:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.557994,
+          "signal_ts": [
+            "2024-09-22T22:00:00+00:00",
+            "2024-10-17T15:00:00+00:00",
+            "2024-11-13T14:00:00+00:00"
+          ],
+          "total_pnl": -2.82,
+          "win_rate": 0.333333,
+          "wins": 1
+        }
+      ],
+      "train_regime": "Aug crash recovery",
+      "train_start": "2024-09-01",
+      "trial": "walkforward:ETH-USD:Window 1",
+      "window": "Window 1"
+    },
+    {
+      "asset": "SOL-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 2.0,
+        "atr_target": 3.5
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 2.0,
+        "atr_target": 3.5,
+        "avg_pnl": -0.254286,
+        "blocked": {
+          "4h_trend": 51,
+          "conditions": 19,
+          "vol_gate": 63
+        },
+        "last_exit_ts": "2025-01-06T14:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 7,
+        "n_pending": 0,
+        "profit_factor": 0.86276,
+        "signal_ts": [
+          "2024-11-15T12:00:00+00:00",
+          "2024-11-15T19:00:00+00:00",
+          "2024-11-21T04:00:00+00:00",
+          "2024-11-24T22:00:00+00:00",
+          "2024-11-27T16:00:00+00:00",
+          "2024-12-06T01:00:00+00:00",
+          "2025-01-06T01:00:00+00:00"
+        ],
+        "total_pnl": -1.78,
+        "win_rate": 0.428571,
+        "wins": 3
+      },
+      "test_end": "2025-01-20",
+      "test_regime": "Trump rally",
+      "test_start": "2024-11-15",
+      "train": {
+        "atr_stop": 2.0,
+        "atr_target": 3.5,
+        "avg_pnl": 1.13,
+        "blocked": {
+          "4h_trend": 39,
+          "conditions": 19,
+          "daily_trend": 9,
+          "vol_gate": 70
+        },
+        "last_exit_ts": "2024-11-11T16:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 12,
+        "n_pending": 1,
+        "profit_factor": 2.678218,
+        "signal_ts": [
+          "2024-09-23T00:00:00+00:00",
+          "2024-09-29T13:00:00+00:00",
+          "2024-10-01T06:00:00+00:00",
+          "2024-10-07T19:00:00+00:00",
+          "2024-10-15T12:00:00+00:00",
+          "2024-10-15T15:00:00+00:00",
+          "2024-10-18T14:00:00+00:00",
+          "2024-10-23T12:00:00+00:00",
+          "2024-10-23T20:00:00+00:00",
+          "2024-10-26T18:00:00+00:00",
+          "2024-10-28T19:00:00+00:00",
+          "2024-11-10T21:00:00+00:00"
+        ],
+        "total_pnl": 13.56,
+        "win_rate": 0.666667,
+        "wins": 8
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -0.078667,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 17,
+            "daily_trend": 9,
+            "vol_gate": 72
+          },
+          "last_exit_ts": "2024-11-14T22:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 15,
+          "n_pending": 0,
+          "profit_factor": 0.934735,
+          "signal_ts": [
+            "2024-09-23T00:00:00+00:00",
+            "2024-09-24T02:00:00+00:00",
+            "2024-09-29T13:00:00+00:00",
+            "2024-10-01T06:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-15T12:00:00+00:00",
+            "2024-10-15T15:00:00+00:00",
+            "2024-10-18T14:00:00+00:00",
+            "2024-10-23T12:00:00+00:00",
+            "2024-10-23T20:00:00+00:00",
+            "2024-10-26T18:00:00+00:00",
+            "2024-10-28T19:00:00+00:00",
+            "2024-11-10T21:00:00+00:00",
+            "2024-11-13T13:00:00+00:00",
+            "2024-11-14T16:00:00+00:00"
+          ],
+          "total_pnl": -1.18,
+          "win_rate": 0.533333,
+          "wins": 8
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": 1.13,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 19,
+            "daily_trend": 9,
+            "vol_gate": 70
+          },
+          "last_exit_ts": "2024-11-11T16:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 12,
+          "n_pending": 1,
+          "profit_factor": 2.678218,
+          "signal_ts": [
+            "2024-09-23T00:00:00+00:00",
+            "2024-09-29T13:00:00+00:00",
+            "2024-10-01T06:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-15T12:00:00+00:00",
+            "2024-10-15T15:00:00+00:00",
+            "2024-10-18T14:00:00+00:00",
+            "2024-10-23T12:00:00+00:00",
+            "2024-10-23T20:00:00+00:00",
+            "2024-10-26T18:00:00+00:00",
+            "2024-10-28T19:00:00+00:00",
+            "2024-11-10T21:00:00+00:00"
+          ],
+          "total_pnl": 13.56,
+          "win_rate": 0.666667,
+          "wins": 8
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": 0.392,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 19,
+            "daily_trend": 9,
+            "vol_gate": 72
+          },
+          "last_exit_ts": "2024-11-12T09:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 10,
+          "n_pending": 1,
+          "profit_factor": 1.382812,
+          "signal_ts": [
+            "2024-09-23T00:00:00+00:00",
+            "2024-09-29T13:00:00+00:00",
+            "2024-10-01T06:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-15T12:00:00+00:00",
+            "2024-10-18T14:00:00+00:00",
+            "2024-10-23T12:00:00+00:00",
+            "2024-10-26T18:00:00+00:00",
+            "2024-10-28T19:00:00+00:00",
+            "2024-11-10T21:00:00+00:00"
+          ],
+          "total_pnl": 3.92,
+          "win_rate": 0.6,
+          "wins": 6
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": 0.021,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 19,
+            "daily_trend": 9,
+            "vol_gate": 72
+          },
+          "last_exit_ts": "2024-11-12T09:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 10,
+          "n_pending": 1,
+          "profit_factor": 1.017995,
+          "signal_ts": [
+            "2024-09-23T00:00:00+00:00",
+            "2024-09-29T13:00:00+00:00",
+            "2024-10-01T06:00:00+00:00",
+            "2024-10-07T19:00:00+00:00",
+            "2024-10-15T12:00:00+00:00",
+            "2024-10-18T14:00:00+00:00",
+            "2024-10-23T12:00:00+00:00",
+            "2024-10-26T18:00:00+00:00",
+            "2024-10-28T19:00:00+00:00",
+            "2024-11-10T21:00:00+00:00"
+          ],
+          "total_pnl": 0.21,
+          "win_rate": 0.6,
+          "wins": 6
+        }
+      ],
+      "train_regime": "Aug crash recovery",
+      "train_start": "2024-09-01",
+      "trial": "walkforward:SOL-USD:Window 1",
+      "window": "Window 1"
+    },
+    {
+      "asset": "ZEC-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 1.5,
+        "atr_target": 2.625
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 1.5,
+        "atr_target": 2.625,
+        "avg_pnl": -3.671429,
+        "blocked": {
+          "4h_trend": 45,
+          "conditions": 31,
+          "vol_gate": 77,
+          "whipsaw": 2
+        },
+        "last_exit_ts": "2025-01-18T02:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 7,
+        "n_pending": 0,
+        "profit_factor": 0.0,
+        "signal_ts": [
+          "2024-11-22T15:00:00+00:00",
+          "2024-11-29T15:00:00+00:00",
+          "2024-12-01T08:00:00+00:00",
+          "2024-12-26T11:00:00+00:00",
+          "2024-12-29T04:00:00+00:00",
+          "2025-01-06T16:00:00+00:00",
+          "2025-01-17T20:00:00+00:00"
+        ],
+        "total_pnl": -25.7,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "test_end": "2025-01-20",
+      "test_regime": "Trump rally",
+      "test_start": "2024-11-15",
+      "train": {
+        "atr_stop": 1.5,
+        "atr_target": 2.625,
+        "avg_pnl": -0.725,
+        "blocked": {
+          "4h_trend": 38,
+          "conditions": 21,
+          "daily_trend": 7,
+          "vol_gate": 115,
+          "whipsaw": 1
+        },
+        "last_exit_ts": "2024-11-11T05:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 8,
+        "n_pending": 0,
+        "profit_factor": 0.546166,
+        "signal_ts": [
+          "2024-10-13T02:00:00+00:00",
+          "2024-10-18T12:00:00+00:00",
+          "2024-10-19T14:00:00+00:00",
+          "2024-10-21T04:00:00+00:00",
+          "2024-10-23T13:00:00+00:00",
+          "2024-10-23T18:00:00+00:00",
+          "2024-11-01T13:00:00+00:00",
+          "2024-11-11T01:00:00+00:00"
+        ],
+        "total_pnl": -5.8,
+        "win_rate": 0.5,
+        "wins": 4
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -0.725,
+          "blocked": {
+            "4h_trend": 38,
+            "conditions": 21,
+            "daily_trend": 7,
+            "vol_gate": 115,
+            "whipsaw": 1
+          },
+          "last_exit_ts": "2024-11-11T05:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.546166,
+          "signal_ts": [
+            "2024-10-13T02:00:00+00:00",
+            "2024-10-18T12:00:00+00:00",
+            "2024-10-19T14:00:00+00:00",
+            "2024-10-21T04:00:00+00:00",
+            "2024-10-23T13:00:00+00:00",
+            "2024-10-23T18:00:00+00:00",
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00"
+          ],
+          "total_pnl": -5.8,
+          "win_rate": 0.5,
+          "wins": 4
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": -1.31125,
+          "blocked": {
+            "4h_trend": 38,
+            "conditions": 20,
+            "daily_trend": 7,
+            "vol_gate": 112
+          },
+          "last_exit_ts": "2024-11-11T05:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.439936,
+          "signal_ts": [
+            "2024-10-13T02:00:00+00:00",
+            "2024-10-18T12:00:00+00:00",
+            "2024-10-19T14:00:00+00:00",
+            "2024-10-21T04:00:00+00:00",
+            "2024-10-23T13:00:00+00:00",
+            "2024-10-25T00:00:00+00:00",
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00"
+          ],
+          "total_pnl": -10.49,
+          "win_rate": 0.375,
+          "wins": 3
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -1.90125,
+          "blocked": {
+            "4h_trend": 38,
+            "conditions": 17,
+            "daily_trend": 7,
+            "vol_gate": 109
+          },
+          "last_exit_ts": "2024-11-11T05:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.332602,
+          "signal_ts": [
+            "2024-10-13T02:00:00+00:00",
+            "2024-10-18T12:00:00+00:00",
+            "2024-10-19T14:00:00+00:00",
+            "2024-10-21T04:00:00+00:00",
+            "2024-10-23T13:00:00+00:00",
+            "2024-10-25T00:00:00+00:00",
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00"
+          ],
+          "total_pnl": -15.21,
+          "win_rate": 0.25,
+          "wins": 2
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -2.0975,
+          "blocked": {
+            "4h_trend": 38,
+            "conditions": 17,
+            "daily_trend": 7,
+            "vol_gate": 109
+          },
+          "last_exit_ts": "2024-11-11T14:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.359786,
+          "signal_ts": [
+            "2024-10-13T02:00:00+00:00",
+            "2024-10-18T12:00:00+00:00",
+            "2024-10-19T14:00:00+00:00",
+            "2024-10-21T04:00:00+00:00",
+            "2024-10-23T13:00:00+00:00",
+            "2024-10-25T00:00:00+00:00",
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00"
+          ],
+          "total_pnl": -16.78,
+          "win_rate": 0.25,
+          "wins": 2
+        }
+      ],
+      "train_regime": "Aug crash recovery",
+      "train_start": "2024-09-01",
+      "trial": "walkforward:ZEC-USD:Window 1",
+      "window": "Window 1"
+    },
+    {
+      "asset": "BTC-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": -1.426667,
+        "blocked": {
+          "4h_trend": 65,
+          "conditions": 11,
+          "daily_trend": 12,
+          "vol_gate": 94
+        },
+        "last_exit_ts": "2025-01-31T20:00:00+00:00",
+        "max_hold_hours": 48,
+        "n": 3,
+        "n_pending": 0,
+        "profit_factor": 0.081545,
+        "signal_ts": [
+          "2025-01-21T15:00:00+00:00",
+          "2025-01-23T16:00:00+00:00",
+          "2025-01-29T20:00:00+00:00"
+        ],
+        "total_pnl": -4.28,
+        "win_rate": 0.333333,
+        "wins": 1
+      },
+      "test_end": "2025-04-01",
+      "test_regime": "Q1 2025 bear",
+      "test_start": "2025-01-20",
+      "train": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": -0.099091,
+        "blocked": {
+          "4h_trend": 39,
+          "conditions": 17,
+          "daily_trend": 1,
+          "vol_gate": 63
+        },
+        "last_exit_ts": "2025-01-17T12:00:00+00:00",
+        "max_hold_hours": 48,
+        "n": 11,
+        "n_pending": 0,
+        "profit_factor": 0.901625,
+        "signal_ts": [
+          "2024-11-01T13:00:00+00:00",
+          "2024-11-15T19:00:00+00:00",
+          "2024-11-18T01:00:00+00:00",
+          "2024-11-24T22:00:00+00:00",
+          "2024-11-27T16:00:00+00:00",
+          "2024-12-04T20:00:00+00:00",
+          "2024-12-06T14:00:00+00:00",
+          "2024-12-12T20:00:00+00:00",
+          "2024-12-24T16:00:00+00:00",
+          "2025-01-05T14:00:00+00:00",
+          "2025-01-16T15:00:00+00:00"
+        ],
+        "total_pnl": -1.09,
+        "win_rate": 0.454545,
+        "wins": 5
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -0.904167,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 18,
+            "daily_trend": 1,
+            "vol_gate": 73,
+            "whipsaw": 2
+          },
+          "last_exit_ts": "2025-01-17T01:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 12,
+          "n_pending": 0,
+          "profit_factor": 0.29362,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-15T19:00:00+00:00",
+            "2024-11-18T01:00:00+00:00",
+            "2024-11-18T15:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-04T20:00:00+00:00",
+            "2024-12-06T14:00:00+00:00",
+            "2024-12-12T20:00:00+00:00",
+            "2024-12-24T16:00:00+00:00",
+            "2025-01-05T14:00:00+00:00",
+            "2025-01-16T15:00:00+00:00"
+          ],
+          "total_pnl": -10.85,
+          "win_rate": 0.333333,
+          "wins": 4
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": -0.786667,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 17,
+            "daily_trend": 1,
+            "vol_gate": 69,
+            "whipsaw": 2
+          },
+          "last_exit_ts": "2025-01-17T09:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 12,
+          "n_pending": 0,
+          "profit_factor": 0.385016,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-15T19:00:00+00:00",
+            "2024-11-18T01:00:00+00:00",
+            "2024-11-18T15:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-04T20:00:00+00:00",
+            "2024-12-06T14:00:00+00:00",
+            "2024-12-12T20:00:00+00:00",
+            "2024-12-24T16:00:00+00:00",
+            "2025-01-05T14:00:00+00:00",
+            "2025-01-16T15:00:00+00:00"
+          ],
+          "total_pnl": -9.44,
+          "win_rate": 0.333333,
+          "wins": 4
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -0.099091,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 17,
+            "daily_trend": 1,
+            "vol_gate": 63
+          },
+          "last_exit_ts": "2025-01-17T12:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 11,
+          "n_pending": 0,
+          "profit_factor": 0.901625,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-15T19:00:00+00:00",
+            "2024-11-18T01:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-04T20:00:00+00:00",
+            "2024-12-06T14:00:00+00:00",
+            "2024-12-12T20:00:00+00:00",
+            "2024-12-24T16:00:00+00:00",
+            "2025-01-05T14:00:00+00:00",
+            "2025-01-16T15:00:00+00:00"
+          ],
+          "total_pnl": -1.09,
+          "win_rate": 0.454545,
+          "wins": 5
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -0.200909,
+          "blocked": {
+            "4h_trend": 39,
+            "conditions": 17,
+            "daily_trend": 1,
+            "vol_gate": 63
+          },
+          "last_exit_ts": "2025-01-17T15:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 11,
+          "n_pending": 0,
+          "profit_factor": 0.818852,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-15T19:00:00+00:00",
+            "2024-11-18T01:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-04T20:00:00+00:00",
+            "2024-12-06T14:00:00+00:00",
+            "2024-12-12T20:00:00+00:00",
+            "2024-12-24T16:00:00+00:00",
+            "2025-01-05T14:00:00+00:00",
+            "2025-01-16T15:00:00+00:00"
+          ],
+          "total_pnl": -2.21,
+          "win_rate": 0.454545,
+          "wins": 5
+        }
+      ],
+      "train_regime": "Trump rally",
+      "train_start": "2024-11-01",
+      "trial": "walkforward:BTC-USD:Window 2",
+      "window": "Window 2"
+    },
+    {
+      "asset": "ETH-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": null,
+        "blocked": {
+          "4h_trend": 65,
+          "btc_regime": 22,
+          "daily_trend": 13,
+          "vol_gate": 124
+        },
+        "last_exit_ts": null,
+        "max_hold_hours": 36,
+        "n": 0,
+        "n_pending": 0,
+        "profit_factor": null,
+        "signal_ts": [],
+        "total_pnl": 0.0,
+        "win_rate": null,
+        "wins": 0
+      },
+      "test_end": "2025-04-01",
+      "test_regime": "Q1 2025 bear",
+      "test_start": "2025-01-20",
+      "train": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": -0.555556,
+        "blocked": {
+          "4h_trend": 56,
+          "conditions": 23,
+          "daily_trend": 3,
+          "vol_gate": 62
+        },
+        "last_exit_ts": "2025-01-17T20:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 9,
+        "n_pending": 0,
+        "profit_factor": 0.737808,
+        "signal_ts": [
+          "2024-11-13T14:00:00+00:00",
+          "2024-11-18T06:00:00+00:00",
+          "2024-11-18T16:00:00+00:00",
+          "2024-11-24T23:00:00+00:00",
+          "2024-12-02T15:00:00+00:00",
+          "2024-12-04T00:00:00+00:00",
+          "2024-12-08T21:00:00+00:00",
+          "2024-12-15T23:00:00+00:00",
+          "2025-01-16T17:00:00+00:00"
+        ],
+        "total_pnl": -5.0,
+        "win_rate": 0.444444,
+        "wins": 4
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -2.175,
+          "blocked": {
+            "4h_trend": 56,
+            "conditions": 24,
+            "daily_trend": 5,
+            "vol_gate": 70,
+            "whipsaw": 2
+          },
+          "last_exit_ts": "2025-01-16T22:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 10,
+          "n_pending": 0,
+          "profit_factor": 0.068123,
+          "signal_ts": [
+            "2024-11-13T14:00:00+00:00",
+            "2024-11-18T06:00:00+00:00",
+            "2024-11-18T16:00:00+00:00",
+            "2024-11-24T23:00:00+00:00",
+            "2024-12-02T15:00:00+00:00",
+            "2024-12-04T00:00:00+00:00",
+            "2024-12-08T21:00:00+00:00",
+            "2024-12-15T23:00:00+00:00",
+            "2024-12-16T14:00:00+00:00",
+            "2025-01-16T17:00:00+00:00"
+          ],
+          "total_pnl": -21.75,
+          "win_rate": 0.1,
+          "wins": 1
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": -0.781,
+          "blocked": {
+            "4h_trend": 56,
+            "conditions": 23,
+            "daily_trend": 3,
+            "vol_gate": 64,
+            "whipsaw": 2
+          },
+          "last_exit_ts": "2025-01-17T20:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 10,
+          "n_pending": 0,
+          "profit_factor": 0.585456,
+          "signal_ts": [
+            "2024-11-13T14:00:00+00:00",
+            "2024-11-18T06:00:00+00:00",
+            "2024-11-18T16:00:00+00:00",
+            "2024-11-24T23:00:00+00:00",
+            "2024-12-02T15:00:00+00:00",
+            "2024-12-04T00:00:00+00:00",
+            "2024-12-08T21:00:00+00:00",
+            "2024-12-15T23:00:00+00:00",
+            "2024-12-16T14:00:00+00:00",
+            "2025-01-16T17:00:00+00:00"
+          ],
+          "total_pnl": -7.81,
+          "win_rate": 0.4,
+          "wins": 4
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -0.555556,
+          "blocked": {
+            "4h_trend": 56,
+            "conditions": 23,
+            "daily_trend": 3,
+            "vol_gate": 62
+          },
+          "last_exit_ts": "2025-01-17T20:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 9,
+          "n_pending": 0,
+          "profit_factor": 0.737808,
+          "signal_ts": [
+            "2024-11-13T14:00:00+00:00",
+            "2024-11-18T06:00:00+00:00",
+            "2024-11-18T16:00:00+00:00",
+            "2024-11-24T23:00:00+00:00",
+            "2024-12-02T15:00:00+00:00",
+            "2024-12-04T00:00:00+00:00",
+            "2024-12-08T21:00:00+00:00",
+            "2024-12-15T23:00:00+00:00",
+            "2025-01-16T17:00:00+00:00"
+          ],
+          "total_pnl": -5.0,
+          "win_rate": 0.444444,
+          "wins": 4
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -0.947778,
+          "blocked": {
+            "4h_trend": 50,
+            "conditions": 23,
+            "daily_trend": 3,
+            "vol_gate": 57
+          },
+          "last_exit_ts": "2025-01-18T05:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 9,
+          "n_pending": 0,
+          "profit_factor": 0.510894,
+          "signal_ts": [
+            "2024-11-13T14:00:00+00:00",
+            "2024-11-18T06:00:00+00:00",
+            "2024-11-19T19:00:00+00:00",
+            "2024-11-24T23:00:00+00:00",
+            "2024-12-02T15:00:00+00:00",
+            "2024-12-04T00:00:00+00:00",
+            "2024-12-08T21:00:00+00:00",
+            "2024-12-15T23:00:00+00:00",
+            "2025-01-16T17:00:00+00:00"
+          ],
+          "total_pnl": -8.53,
+          "win_rate": 0.222222,
+          "wins": 2
+        }
+      ],
+      "train_regime": "Trump rally",
+      "train_start": "2024-11-01",
+      "trial": "walkforward:ETH-USD:Window 2",
+      "window": "Window 2"
+    },
+    {
+      "asset": "SOL-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25,
+        "avg_pnl": -2.41,
+        "blocked": {
+          "4h_trend": 81,
+          "conditions": 5,
+          "daily_trend": 7,
+          "vol_gate": 76
+        },
+        "last_exit_ts": "2025-01-26T22:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 3,
+        "n_pending": 0,
+        "profit_factor": 0.0,
+        "signal_ts": [
+          "2025-01-21T17:00:00+00:00",
+          "2025-01-23T14:00:00+00:00",
+          "2025-01-25T18:00:00+00:00"
+        ],
+        "total_pnl": -7.23,
+        "win_rate": 0.0,
+        "wins": 0
+      },
+      "test_end": "2025-04-01",
+      "test_regime": "Q1 2025 bear",
+      "test_start": "2025-01-20",
+      "train": {
+        "atr_stop": 3.0,
+        "atr_target": 5.25,
+        "avg_pnl": 0.53625,
+        "blocked": {
+          "4h_trend": 52,
+          "conditions": 22,
+          "vol_gate": 64
+        },
+        "last_exit_ts": "2025-01-06T16:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 8,
+        "n_pending": 0,
+        "profit_factor": 1.417722,
+        "signal_ts": [
+          "2024-11-10T21:00:00+00:00",
+          "2024-11-13T13:00:00+00:00",
+          "2024-11-15T12:00:00+00:00",
+          "2024-11-21T04:00:00+00:00",
+          "2024-11-24T22:00:00+00:00",
+          "2024-11-27T16:00:00+00:00",
+          "2024-12-06T01:00:00+00:00",
+          "2025-01-06T01:00:00+00:00"
+        ],
+        "total_pnl": 4.29,
+        "win_rate": 0.5,
+        "wins": 4
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -1.1675,
+          "blocked": {
+            "4h_trend": 59,
+            "conditions": 29,
+            "vol_gate": 78,
+            "whipsaw": 5
+          },
+          "last_exit_ts": "2025-01-06T14:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.490453,
+          "signal_ts": [
+            "2024-11-10T21:00:00+00:00",
+            "2024-11-13T13:00:00+00:00",
+            "2024-11-14T16:00:00+00:00",
+            "2024-11-21T04:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-06T01:00:00+00:00",
+            "2025-01-06T01:00:00+00:00"
+          ],
+          "total_pnl": -9.34,
+          "win_rate": 0.375,
+          "wins": 3
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": 0.227778,
+          "blocked": {
+            "4h_trend": 54,
+            "conditions": 23,
+            "vol_gate": 72
+          },
+          "last_exit_ts": "2025-01-06T14:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 9,
+          "n_pending": 0,
+          "profit_factor": 1.133899,
+          "signal_ts": [
+            "2024-11-10T21:00:00+00:00",
+            "2024-11-13T13:00:00+00:00",
+            "2024-11-15T12:00:00+00:00",
+            "2024-11-15T19:00:00+00:00",
+            "2024-11-21T04:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-06T01:00:00+00:00",
+            "2025-01-06T01:00:00+00:00"
+          ],
+          "total_pnl": 2.05,
+          "win_rate": 0.444444,
+          "wins": 4
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -0.06375,
+          "blocked": {
+            "4h_trend": 54,
+            "conditions": 24,
+            "vol_gate": 68
+          },
+          "last_exit_ts": "2025-01-06T14:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 0.960829,
+          "signal_ts": [
+            "2024-11-10T21:00:00+00:00",
+            "2024-11-13T13:00:00+00:00",
+            "2024-11-15T12:00:00+00:00",
+            "2024-11-21T04:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-06T01:00:00+00:00",
+            "2025-01-06T01:00:00+00:00"
+          ],
+          "total_pnl": -0.51,
+          "win_rate": 0.5,
+          "wins": 4
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": 0.53625,
+          "blocked": {
+            "4h_trend": 52,
+            "conditions": 22,
+            "vol_gate": 64
+          },
+          "last_exit_ts": "2025-01-06T16:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 8,
+          "n_pending": 0,
+          "profit_factor": 1.417722,
+          "signal_ts": [
+            "2024-11-10T21:00:00+00:00",
+            "2024-11-13T13:00:00+00:00",
+            "2024-11-15T12:00:00+00:00",
+            "2024-11-21T04:00:00+00:00",
+            "2024-11-24T22:00:00+00:00",
+            "2024-11-27T16:00:00+00:00",
+            "2024-12-06T01:00:00+00:00",
+            "2025-01-06T01:00:00+00:00"
+          ],
+          "total_pnl": 4.29,
+          "win_rate": 0.5,
+          "wins": 4
+        }
+      ],
+      "train_regime": "Trump rally",
+      "train_start": "2024-11-01",
+      "trial": "walkforward:SOL-USD:Window 2",
+      "window": "Window 2"
+    },
+    {
+      "asset": "ZEC-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": null,
+        "blocked": {
+          "4h_trend": 61,
+          "daily_trend": 15,
+          "vol_gate": 107
+        },
+        "last_exit_ts": null,
+        "max_hold_hours": 36,
+        "n": 0,
+        "n_pending": 0,
+        "profit_factor": null,
+        "signal_ts": [],
+        "total_pnl": 0.0,
+        "win_rate": null,
+        "wins": 0
+      },
+      "test_end": "2025-04-01",
+      "test_regime": "Q1 2025 bear",
+      "test_start": "2025-01-20",
+      "train": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": -0.884,
+        "blocked": {
+          "4h_trend": 52,
+          "conditions": 30,
+          "vol_gate": 93
+        },
+        "last_exit_ts": "2025-01-18T03:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 10,
+        "n_pending": 0,
+        "profit_factor": 0.757276,
+        "signal_ts": [
+          "2024-11-01T13:00:00+00:00",
+          "2024-11-11T01:00:00+00:00",
+          "2024-11-22T15:00:00+00:00",
+          "2024-11-29T15:00:00+00:00",
+          "2024-12-01T08:00:00+00:00",
+          "2024-12-02T14:00:00+00:00",
+          "2024-12-26T11:00:00+00:00",
+          "2024-12-29T04:00:00+00:00",
+          "2025-01-06T16:00:00+00:00",
+          "2025-01-17T20:00:00+00:00"
+        ],
+        "total_pnl": -8.84,
+        "win_rate": 0.3,
+        "wins": 3
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -3.187778,
+          "blocked": {
+            "4h_trend": 52,
+            "conditions": 35,
+            "vol_gate": 98,
+            "whipsaw": 2
+          },
+          "last_exit_ts": "2025-01-18T02:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 9,
+          "n_pending": 0,
+          "profit_factor": 0.047477,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00",
+            "2024-11-22T15:00:00+00:00",
+            "2024-11-29T15:00:00+00:00",
+            "2024-12-01T08:00:00+00:00",
+            "2024-12-26T11:00:00+00:00",
+            "2024-12-29T04:00:00+00:00",
+            "2025-01-06T16:00:00+00:00",
+            "2025-01-17T20:00:00+00:00"
+          ],
+          "total_pnl": -28.69,
+          "win_rate": 0.111111,
+          "wins": 1
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": -2.126,
+          "blocked": {
+            "4h_trend": 52,
+            "conditions": 31,
+            "vol_gate": 96
+          },
+          "last_exit_ts": "2025-01-18T03:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 10,
+          "n_pending": 0,
+          "profit_factor": 0.408459,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00",
+            "2024-11-22T15:00:00+00:00",
+            "2024-11-29T15:00:00+00:00",
+            "2024-12-01T08:00:00+00:00",
+            "2024-12-02T14:00:00+00:00",
+            "2024-12-26T11:00:00+00:00",
+            "2024-12-29T04:00:00+00:00",
+            "2025-01-06T16:00:00+00:00",
+            "2025-01-17T20:00:00+00:00"
+          ],
+          "total_pnl": -21.26,
+          "win_rate": 0.2,
+          "wins": 2
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -0.884,
+          "blocked": {
+            "4h_trend": 52,
+            "conditions": 30,
+            "vol_gate": 93
+          },
+          "last_exit_ts": "2025-01-18T03:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 10,
+          "n_pending": 0,
+          "profit_factor": 0.757276,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00",
+            "2024-11-22T15:00:00+00:00",
+            "2024-11-29T15:00:00+00:00",
+            "2024-12-01T08:00:00+00:00",
+            "2024-12-02T14:00:00+00:00",
+            "2024-12-26T11:00:00+00:00",
+            "2024-12-29T04:00:00+00:00",
+            "2025-01-06T16:00:00+00:00",
+            "2025-01-17T20:00:00+00:00"
+          ],
+          "total_pnl": -8.84,
+          "win_rate": 0.3,
+          "wins": 3
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -1.268889,
+          "blocked": {
+            "4h_trend": 52,
+            "conditions": 29,
+            "vol_gate": 88
+          },
+          "last_exit_ts": "2025-01-18T03:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 9,
+          "n_pending": 0,
+          "profit_factor": 0.691101,
+          "signal_ts": [
+            "2024-11-01T13:00:00+00:00",
+            "2024-11-11T01:00:00+00:00",
+            "2024-11-22T15:00:00+00:00",
+            "2024-11-29T15:00:00+00:00",
+            "2024-12-01T08:00:00+00:00",
+            "2024-12-26T11:00:00+00:00",
+            "2024-12-29T04:00:00+00:00",
+            "2025-01-06T16:00:00+00:00",
+            "2025-01-17T20:00:00+00:00"
+          ],
+          "total_pnl": -11.42,
+          "win_rate": 0.333333,
+          "wins": 3
+        }
+      ],
+      "train_regime": "Trump rally",
+      "train_start": "2024-11-01",
+      "trial": "walkforward:ZEC-USD:Window 2",
+      "window": "Window 2"
+    },
+    {
+      "asset": "BTC-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": -0.9025,
+        "blocked": {
+          "4h_trend": 52,
+          "conditions": 20,
+          "daily_trend": 31,
+          "vol_gate": 96,
+          "whipsaw": 4
+        },
+        "last_exit_ts": "2025-06-09T17:00:00+00:00",
+        "max_hold_hours": 48,
+        "n": 8,
+        "n_pending": 0,
+        "profit_factor": 0.417272,
+        "signal_ts": [
+          "2025-04-24T12:00:00+00:00",
+          "2025-04-28T14:00:00+00:00",
+          "2025-05-12T12:00:00+00:00",
+          "2025-05-13T15:00:00+00:00",
+          "2025-05-19T16:00:00+00:00",
+          "2025-05-25T22:00:00+00:00",
+          "2025-05-27T09:00:00+00:00",
+          "2025-06-09T09:00:00+00:00"
+        ],
+        "total_pnl": -7.22,
+        "win_rate": 0.375,
+        "wins": 3
+      },
+      "test_end": "2025-06-28",
+      "test_regime": "Current bear",
+      "test_start": "2025-04-01",
+      "train": {
+        "atr_stop": 2.5,
+        "atr_target": 4.375,
+        "avg_pnl": -1.426667,
+        "blocked": {
+          "4h_trend": 65,
+          "conditions": 11,
+          "daily_trend": 12,
+          "vol_gate": 94
+        },
+        "last_exit_ts": "2025-01-31T20:00:00+00:00",
+        "max_hold_hours": 48,
+        "n": 3,
+        "n_pending": 0,
+        "profit_factor": 0.081545,
+        "signal_ts": [
+          "2025-01-21T15:00:00+00:00",
+          "2025-01-23T16:00:00+00:00",
+          "2025-01-29T20:00:00+00:00"
+        ],
+        "total_pnl": -4.28,
+        "win_rate": 0.333333,
+        "wins": 1
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -2.743333,
+          "blocked": {
+            "4h_trend": 67,
+            "conditions": 13,
+            "daily_trend": 12,
+            "vol_gate": 105
+          },
+          "last_exit_ts": "2025-01-31T18:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.0,
+          "signal_ts": [
+            "2025-01-21T15:00:00+00:00",
+            "2025-01-23T16:00:00+00:00",
+            "2025-01-29T20:00:00+00:00"
+          ],
+          "total_pnl": -8.23,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": -1.94,
+          "blocked": {
+            "4h_trend": 65,
+            "conditions": 13,
+            "daily_trend": 12,
+            "vol_gate": 105
+          },
+          "last_exit_ts": "2025-01-31T19:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.06129,
+          "signal_ts": [
+            "2025-01-21T15:00:00+00:00",
+            "2025-01-23T16:00:00+00:00",
+            "2025-01-29T20:00:00+00:00"
+          ],
+          "total_pnl": -5.82,
+          "win_rate": 0.333333,
+          "wins": 1
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -1.426667,
+          "blocked": {
+            "4h_trend": 65,
+            "conditions": 11,
+            "daily_trend": 12,
+            "vol_gate": 94
+          },
+          "last_exit_ts": "2025-01-31T20:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.081545,
+          "signal_ts": [
+            "2025-01-21T15:00:00+00:00",
+            "2025-01-23T16:00:00+00:00",
+            "2025-01-29T20:00:00+00:00"
+          ],
+          "total_pnl": -4.28,
+          "win_rate": 0.333333,
+          "wins": 1
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -1.533333,
+          "blocked": {
+            "4h_trend": 65,
+            "conditions": 11,
+            "daily_trend": 12,
+            "vol_gate": 94
+          },
+          "last_exit_ts": "2025-01-31T20:00:00+00:00",
+          "max_hold_hours": 48,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.076305,
+          "signal_ts": [
+            "2025-01-21T15:00:00+00:00",
+            "2025-01-23T16:00:00+00:00",
+            "2025-01-29T20:00:00+00:00"
+          ],
+          "total_pnl": -4.6,
+          "win_rate": 0.333333,
+          "wins": 1
+        }
+      ],
+      "train_regime": "Q1 2025 bear",
+      "train_start": "2025-01-20",
+      "trial": "walkforward:BTC-USD:Window 3",
+      "window": "Window 3"
+    },
+    {
+      "asset": "ETH-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "note": "no candidate reached 3 resolved train trades; nothing selected, so nothing is tested",
+      "selected": null,
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": null,
+      "test_end": "2025-06-28",
+      "test_regime": "Current bear",
+      "test_start": "2025-04-01",
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 65,
+            "btc_regime": 22,
+            "daily_trend": 13,
+            "vol_gate": 124
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 65,
+            "btc_regime": 22,
+            "daily_trend": 13,
+            "vol_gate": 124
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 65,
+            "btc_regime": 22,
+            "daily_trend": 13,
+            "vol_gate": 124
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 65,
+            "btc_regime": 22,
+            "daily_trend": 13,
+            "vol_gate": 124
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        }
+      ],
+      "train_regime": "Q1 2025 bear",
+      "train_start": "2025-01-20",
+      "trial": "walkforward:ETH-USD:Window 3",
+      "window": "Window 3"
+    },
+    {
+      "asset": "SOL-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "selected": {
+        "atr_stop": 2.0,
+        "atr_target": 3.5
+      },
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": {
+        "atr_stop": 2.0,
+        "atr_target": 3.5,
+        "avg_pnl": -1.345,
+        "blocked": {
+          "4h_trend": 89,
+          "conditions": 9,
+          "daily_trend": 41,
+          "vol_gate": 104
+        },
+        "last_exit_ts": "2025-05-26T17:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 4,
+        "n_pending": 0,
+        "profit_factor": 0.481196,
+        "signal_ts": [
+          "2025-05-18T08:00:00+00:00",
+          "2025-05-21T19:00:00+00:00",
+          "2025-05-23T13:00:00+00:00",
+          "2025-05-26T00:00:00+00:00"
+        ],
+        "total_pnl": -5.38,
+        "win_rate": 0.25,
+        "wins": 1
+      },
+      "test_end": "2025-06-28",
+      "test_regime": "Current bear",
+      "test_start": "2025-04-01",
+      "train": {
+        "atr_stop": 2.0,
+        "atr_target": 3.5,
+        "avg_pnl": 0.566667,
+        "blocked": {
+          "4h_trend": 81,
+          "conditions": 5,
+          "daily_trend": 7,
+          "vol_gate": 76
+        },
+        "last_exit_ts": "2025-01-26T21:00:00+00:00",
+        "max_hold_hours": 36,
+        "n": 3,
+        "n_pending": 0,
+        "profit_factor": 1.375276,
+        "signal_ts": [
+          "2025-01-21T17:00:00+00:00",
+          "2025-01-23T14:00:00+00:00",
+          "2025-01-25T18:00:00+00:00"
+        ],
+        "total_pnl": 1.7,
+        "win_rate": 0.333333,
+        "wins": 1
+      },
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": -0.08,
+          "blocked": {
+            "4h_trend": 81,
+            "conditions": 11,
+            "daily_trend": 7,
+            "vol_gate": 82
+          },
+          "last_exit_ts": "2025-01-26T02:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.965368,
+          "signal_ts": [
+            "2025-01-21T17:00:00+00:00",
+            "2025-01-23T14:00:00+00:00",
+            "2025-01-25T18:00:00+00:00"
+          ],
+          "total_pnl": -0.24,
+          "win_rate": 0.333333,
+          "wins": 1
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": 0.566667,
+          "blocked": {
+            "4h_trend": 81,
+            "conditions": 5,
+            "daily_trend": 7,
+            "vol_gate": 76
+          },
+          "last_exit_ts": "2025-01-26T21:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 1.375276,
+          "signal_ts": [
+            "2025-01-21T17:00:00+00:00",
+            "2025-01-23T14:00:00+00:00",
+            "2025-01-25T18:00:00+00:00"
+          ],
+          "total_pnl": 1.7,
+          "win_rate": 0.333333,
+          "wins": 1
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": -2.196667,
+          "blocked": {
+            "4h_trend": 81,
+            "conditions": 5,
+            "daily_trend": 7,
+            "vol_gate": 76
+          },
+          "last_exit_ts": "2025-01-26T21:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.0,
+          "signal_ts": [
+            "2025-01-21T17:00:00+00:00",
+            "2025-01-23T14:00:00+00:00",
+            "2025-01-25T18:00:00+00:00"
+          ],
+          "total_pnl": -6.59,
+          "win_rate": 0.0,
+          "wins": 0
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": -2.41,
+          "blocked": {
+            "4h_trend": 81,
+            "conditions": 5,
+            "daily_trend": 7,
+            "vol_gate": 76
+          },
+          "last_exit_ts": "2025-01-26T22:00:00+00:00",
+          "max_hold_hours": 36,
+          "n": 3,
+          "n_pending": 0,
+          "profit_factor": 0.0,
+          "signal_ts": [
+            "2025-01-21T17:00:00+00:00",
+            "2025-01-23T14:00:00+00:00",
+            "2025-01-25T18:00:00+00:00"
+          ],
+          "total_pnl": -7.23,
+          "win_rate": 0.0,
+          "wins": 0
+        }
+      ],
+      "train_regime": "Q1 2025 bear",
+      "train_start": "2025-01-20",
+      "trial": "walkforward:SOL-USD:Window 3",
+      "window": "Window 3"
+    },
+    {
+      "asset": "ZEC-USD",
+      "interval_semantics": "[train_start, test_start) / [test_start, test_end)",
+      "note": "no candidate reached 3 resolved train trades; nothing selected, so nothing is tested",
+      "selected": null,
+      "selection_rule": "max avg_pnl among candidates with n >= 3 resolved trades; ties -> lowest stop",
+      "test": null,
+      "test_end": "2025-06-28",
+      "test_regime": "Current bear",
+      "test_start": "2025-04-01",
+      "train_candidates": [
+        {
+          "atr_stop": 1.5,
+          "atr_target": 2.625,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 61,
+            "daily_trend": 15,
+            "vol_gate": 107
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        },
+        {
+          "atr_stop": 2.0,
+          "atr_target": 3.5,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 61,
+            "daily_trend": 15,
+            "vol_gate": 107
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        },
+        {
+          "atr_stop": 2.5,
+          "atr_target": 4.375,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 61,
+            "daily_trend": 15,
+            "vol_gate": 107
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        },
+        {
+          "atr_stop": 3.0,
+          "atr_target": 5.25,
+          "avg_pnl": null,
+          "blocked": {
+            "4h_trend": 61,
+            "daily_trend": 15,
+            "vol_gate": 107
+          },
+          "last_exit_ts": null,
+          "max_hold_hours": 36,
+          "n": 0,
+          "n_pending": 0,
+          "profit_factor": null,
+          "signal_ts": [],
+          "total_pnl": 0.0,
+          "win_rate": null,
+          "wins": 0
+        }
+      ],
+      "train_regime": "Q1 2025 bear",
+      "train_start": "2025-01-20",
+      "trial": "walkforward:ZEC-USD:Window 3",
+      "window": "Window 3"
+    }
+  ],
+  "status": "HISTORICAL DIAGNOSTIC \u2014 not clean OOS, not evidence of edge",
+  "trial_id": "2026-08-walkforward-repair.v1"
+}
