@@ -26,7 +26,8 @@ A multi-agent AI trading system built for Coinbase Advanced Trade. Seven special
 >   there is no trade count that activates it.
 > - **Earlier walk-forward results in this repository are void.** The tool never
 >   attached the daily frame, so it always validated a weaker mechanism than it
->   reported. It is disabled and raises.
+>   reported. It has been repaired, but its windows remain historical
+>   diagnostics — not out-of-sample evidence.
 > - ZEC is the only enabled asset, and only in shadow mode.
 >
 > Every figure above is asserted against `docs/research/artifacts/results.json`
@@ -105,9 +106,20 @@ edge" (+0.30% avg OOS).
 never attached the daily frame, so `close_1d` / `ema*_1d` were absent from every
 row and the declared daily-EMA trend gate was skipped for every signal on every
 asset. Its scan loop also enumerated only three blocked reasons, so
-`daily_trend` and `btc_regime` blocks fell through and were traded. The tool
-therefore always validated a weaker mechanism than the one it reported on. It is
-disabled and raises; repairing it is tracked separately.
+`daily_trend` and `btc_regime` blocks fell through and were traded, it charged
+the wrong fees, and it reported an unfinished holding period as a completed
+trade.
+
+The tool was **repaired** in trial `2026-08-walkforward-repair.v1` and now
+shares the scanner's frame assembly and trade simulator. Enforcing the gates it
+used to skip removed **475 `daily_trend`** and **118 `btc_regime`** signals it
+previously traded. Its output is a deterministic artifact under
+`docs/research/artifacts/walk_forward/`.
+
+Its windows are nonetheless **historical diagnostics, not out-of-sample
+evidence**: they were inspected repeatedly during development and are counted in
+the trial registry's multiple-testing budget. The repair establishes that the
+tool now measures the mechanism it declares — nothing more.
 
 The current, reproducible evaluation is the continuous-window result in the
 status block above: **not profitable**.
@@ -186,7 +198,7 @@ pipeline/
 backtesting/
   signal_scanner.py     — full-year signal scanner with per-asset ATR params
   monte_carlo.py        — 10,000-sim Monte Carlo per asset
-  walk_forward.py       — DISABLED / INVALID UNTIL REPAIRED (raises; see above)
+  walk_forward.py       — walk-forward diagnostic (historical windows only)
   research_runner.py    — deterministic research runner, byte-identical artifacts
   generate_journal.py   — Obsidian vault generator from all system data
   backtest.py           — core backtesting engine

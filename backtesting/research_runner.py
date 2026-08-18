@@ -411,14 +411,25 @@ def _scope_end() -> str:
             .isoformat())
 
 
-def scoped_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Rows inside the registered scope, sorted, validated. Fails closed."""
+def scoped_frame(df: pd.DataFrame, scope_start: str | None = None,
+                 scope_end: str | None = None) -> pd.DataFrame:
+    """
+    Rows inside a scope, sorted, validated. Fails closed.
+
+    The scope defaults to the registered research window, but is parameterised
+    so another registered tool can declare the span IT actually reads. A tool
+    that ends in 2025 must not be invalidated by a 2026 candle it never loads —
+    that is the same over-broad-hash defect Phase 6.9 removed.
+    """
     if "time" not in df.columns:
         raise ProvenanceError("dataset has no 'time' column")
     out = df.copy()
     out["time"] = pd.to_datetime(out["time"], utc=True)
-    lo = pd.Timestamp(_SCOPE_START)
-    hi = pd.Timestamp(_scope_end())
+    # _as_utc, not pd.Timestamp: a caller may declare its scope as a bare date
+    # (walk_forward does), and a tz-naive bound cannot be compared with the
+    # tz-aware candle index.
+    lo = _as_utc(scope_start or _SCOPE_START)
+    hi = _as_utc(scope_end or _scope_end())
     out = out[(out["time"] >= lo) & (out["time"] <= hi)]
     out = out.sort_values("time").reset_index(drop=True)
 
@@ -444,7 +455,8 @@ def scoped_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def logical_sha256(df: pd.DataFrame) -> str:
+def logical_sha256(df: pd.DataFrame, scope_start: str | None = None,
+                   scope_end: str | None = None) -> str:
     """
     Canonical, encoder-independent hash of the in-scope OHLCV rows.
 
@@ -452,10 +464,16 @@ def logical_sha256(df: pd.DataFrame) -> str:
     writer, the pyarrow version, column order, or the index. Versioned by
     _HASH_SCHEME: changing the encoding must be a visible, deliberate change of
     what verification means, not a silent re-derivation.
+
+    The scope is part of the hashed preamble, so two tools reading different
+    spans of the same file get different — and individually meaningful —
+    hashes.
     """
-    scoped = scoped_frame(df)
+    scope_start = scope_start or _SCOPE_START
+    scope_end = scope_end or _scope_end()
+    scoped = scoped_frame(df, scope_start, scope_end)
     h = hashlib.sha256()
-    h.update(f"{_HASH_SCHEME}\n{_SCOPE_START}\n{_scope_end()}\n".encode())
+    h.update(f"{_HASH_SCHEME}\n{scope_start}\n{scope_end}\n".encode())
     h.update(f"rows={len(scoped)}\n".encode())
     # int64 epoch nanoseconds, big-endian — exact for the millisecond-resolution
     # timestamps the exchange returns.

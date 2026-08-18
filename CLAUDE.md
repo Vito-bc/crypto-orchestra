@@ -37,7 +37,8 @@ venv\Scripts\python.exe pipeline/scheduler.py
 # Backtesting:
 venv\Scripts\python.exe backtesting/signal_scanner.py --period full_year
 venv\Scripts\python.exe backtesting/monte_carlo.py --scanner
-# walk_forward.py is DISABLED (raises) — see "What NOT to Touch" below.
+venv\Scripts\python.exe backtesting/walk_forward.py           # historical diagnostic only
+venv\Scripts\python.exe backtesting/walk_forward.py --verify  # reproduce its artifact
 
 # Regenerate + verify the research artifacts (local candle cache, no network):
 venv\Scripts\python.exe backtesting/research_runner.py
@@ -109,7 +110,7 @@ These read `LIVE_BALANCE_USD` as the baseline. Do not hardcode dollar amounts.
 | `pipeline/runner.py` | Main pipeline + all entry filters + circuit breakers |
 | `pipeline/limit_orders.py` | Order lifecycle — uses `LIVE_BALANCE_USD` for sizing |
 | `exchange/coinbase_client.py` | All Coinbase calls isolated here — ECDSA key file |
-| `backtesting/walk_forward.py` | **DISABLED / INVALID UNTIL REPAIRED** — raises. Never attached the daily frame, so it always validated a weaker mechanism than it reported. Do not run it; do not cite its past numbers. |
+| `backtesting/walk_forward.py` | REPAIRED (trial `2026-08-walkforward-repair.v1`). Uses the scanner's own frame assembly and simulator. **Historical diagnostic only** — its windows are in the registry's multiple-testing budget, so it is not clean OOS and cannot support activation. Its pre-repair numbers remain VOID. |
 | `backtesting/research_runner.py` | Deterministic research runner — frozen config, registered boundaries, byte-identical artifacts |
 
 ## What NOT to Touch Without Reason
@@ -185,8 +186,12 @@ Immediate implementation brief:
    the tail the exchange keeps revising no longer breaks verification. Both
    `--verify-code` and the full `--verify` run in CI, the latter fed by
    credential-free public hydration. README corrected.
-4. Repair `backtesting/walk_forward.py`: it never attached the daily frame, so
-   it has always validated a weaker mechanism. It currently raises.
+4. ~~Repair `backtesting/walk_forward.py`~~ **DONE (Phase 6.10).** It now builds
+   its frame with `build_merged_frame` and simulates with `_simulate_trade`, so
+   it cannot drift from the mechanism it validates. Enforcing the previously
+   skipped gates removed 475 `daily_trend` and 118 `btc_regime` signals the old
+   tool traded. Output is a deterministic artifact under
+   `docs/research/artifacts/walk_forward/`, verifiable with `--verify`.
 5. If pursuing a new edge: a slow trend-following trial would have to be
    pre-registered from scratch. The earlier "positive on all four assets"
    result is **LEGACY / UNVERIFIED** — its implementation is not in this

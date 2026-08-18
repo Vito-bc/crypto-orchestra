@@ -93,4 +93,10 @@ jobs:
         run: python backtesting/hydrate_research_data.py
 
       - name: Verify artifacts reproduce byte-for-byte
-        run: python backtesting/research_runner.py --verify
+        # BOTH registered artifacts. Verifying only the main one let a scanner
+        # change refresh it while the walk-forward artifact went stale, with CI
+        # still green — the walk-forward tool shares signal_scanner, so a change
+        # there moves both.
+        run: |
+          python backtesting/research_runner.py --verify
+          python backtesting/walk_forward.py --verify
