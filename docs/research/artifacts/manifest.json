@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "ee2198f19256db480f7df349059dbe9cc6631aa7237a7513dbb1797be8b4e173",
+    "code_sha256": "8854d2ecc79c0095104d8bf6c96655d8ac0fac532c67bf91a09f2c7877d069f2",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -16,7 +16,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "0284749b4be8e30c1abd2a3e5c092baa56375cde88fcd4325f03ed5ea897b758"
+        "sha256": "608ef728189477723aff091af002a9e9a097b574bccf14cfe5865eb1a4ff42c6"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -28,7 +28,7 @@
       }
     ]
   },
-  "code_commit": "160a73fdab0d942413db9e905dcf5b343f48785f",
+  "code_commit": "92271ddcb9ecc9df66933b945f991ec08486fa3a",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
