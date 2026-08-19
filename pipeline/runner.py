@@ -5,10 +5,10 @@ Flow:
   1. Check open positions — close any that hit stop/target/max-hold
   2. Check pending limit orders — fill or expire them against current price
      Filled orders → open a tracked position automatically
-  3. All 5 sub-agents run concurrently via ThreadPoolExecutor
+  3. Seven sub-agents run through a five-worker ThreadPoolExecutor
   4. Orchestrator produces a final TradeDecision
   5. BUY decisions → place a limit order at the nearest support level
-     (maker fee 0.2% vs taker 0.4% — saves 0.4% per round trip)
+     (modeled maker entry 0.4% vs taker entry 0.6% — saves 0.2 points)
   6. SELL decisions → Telegram alert (advisory)
   7. Decision logged to JSONL
 
@@ -1065,8 +1065,8 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
 
     # ── 4. BUY → place limit order at support ─────────────────────────────────
     # Instead of a market entry, we queue a limit order at the nearest support
-    # level. This earns the maker fee (0.2%) vs taker (0.4%), saving 0.4% per
-    # round trip — the margin that was blocking backtest profitability.
+    # level. This earns the modeled maker entry fee (0.4%) instead of the
+    # taker entry fee (0.6%), saving 0.2 percentage points on entry.
     if decision.action == TradeAction.BUY:
         # ── Drawdown circuit breaker (portfolio-level protection)
         _cb_halted, _cb_reason, _cb_size = _get_circuit_breaker_state()

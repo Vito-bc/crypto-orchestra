@@ -3,7 +3,7 @@ Limit Order Manager — tracks pending buy orders at support levels.
 
 When the orchestrator signals BUY, we place a limit order at the nearest
 support level rather than executing a market order. Benefits:
-  - Maker fee (0.2%) vs taker fee (0.4%) — saves 0.4% per round trip
+  - Modeled maker entry (0.4%) vs taker entry (0.6%) saves 0.2 percentage points
   - Better entry price at a proven support zone
   - Natural confirmation: price must return to support before we commit
 
@@ -17,7 +17,7 @@ Exchange integration (DRY_RUN=true by default):
     by price comparison (dry run).
   - cancel_open_orders() cancels on Coinbase before clearing locally.
 
-Fee note: Coinbase Advanced base tier: 0.4% maker (limit orders), 0.6% taker (market orders).
+Fee model: 0.4% maker (limit orders), 0.6% taker (market orders).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ ROOT        = Path(__file__).resolve().parents[1]
 ORDERS_FILE = ROOT / "logs" / "pending_orders.json"
 
 ORDER_TTL_HOURS = 24    # unfilled orders are cancelled after this
-MAKER_FEE_RATE  = 0.004  # 0.4% Coinbase Advanced base tier maker fee
+MAKER_FEE_RATE  = 0.004  # 0.4% modeled maker fee
 
 # Per-asset ATR multipliers — tuned from full_year signal scanner (371 trades).
 # ETH/SOL use wider stops to avoid intraday wick stop-outs while maintaining R:R ≥ 1.75.

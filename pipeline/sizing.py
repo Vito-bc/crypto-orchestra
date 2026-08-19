@@ -26,14 +26,23 @@ import, and that ordering is what makes the suite hermetic.
 from __future__ import annotations
 
 import os
+from math import isfinite
 
 # Matches `.env.example` and the value the root conftest pins for tests.
 DEFAULT_LIVE_BALANCE_USD = 100.0
 
 
 def live_balance_usd() -> float:
-    """Sizing baseline in USD, read from the environment at call time."""
+    """Return the positive, finite sizing baseline configured for this process."""
     raw = os.getenv("LIVE_BALANCE_USD")
     if raw is None or not raw.strip():
         return DEFAULT_LIVE_BALANCE_USD
-    return float(raw)
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "LIVE_BALANCE_USD must be a positive finite number"
+        ) from exc
+    if not isfinite(value) or value <= 0:
+        raise ValueError("LIVE_BALANCE_USD must be a positive finite number")
+    return value
