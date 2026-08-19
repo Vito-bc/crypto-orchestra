@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from pipeline.sizing import live_balance_usd
+from pipeline.sizing import DEFAULT_TRADE_SIZE_PCT, live_balance_usd
 
 ROOT           = Path(__file__).resolve().parents[1]
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
@@ -39,7 +39,7 @@ TRADE_HISTORY  = ROOT / "logs" / "trade_history.jsonl"
 MAKER_FEE_RATE       = 0.004   # 0.4% modeled maker entry fee
 TAKER_FEE_RATE       = 0.006   # 0.6% modeled taker exit fee
 PAPER_BALANCE        = live_balance_usd()  # set LIVE_BALANCE_USD in .env for live trading
-DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
+DEFAULT_POS_PCT      = DEFAULT_TRADE_SIZE_PCT
 
 # Per-asset max hold — extended to match crypto momentum duration (Liu & Tsyvinski 2021:
 # momentum lasts 1-4 weeks). Short 8-12h holds lost to 0.6% fee drag every trade.

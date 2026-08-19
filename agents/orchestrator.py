@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv(ROOT / ".env")
 
+from pipeline.sizing import MAX_TRADE_SIZE_PCT, trade_size_pct
 from schemas.signals import (
     AgentName,
     AgentSignal,
@@ -106,7 +107,7 @@ _SIZE_TIERS: list[tuple[float, float]] = [
     (0.55, 1.25),   # good alignment        → 1.25×
     (0.45, 1.00),   # threshold             → 1× (base)
 ]
-_MAX_POSITION_PCT = 0.12  # hard cap: never exceed 12% of portfolio per trade
+_MAX_POSITION_PCT = MAX_TRADE_SIZE_PCT
 
 
 class OrchestratorAgent:
@@ -351,7 +352,7 @@ Detect vetoes, explain key signals and conflicts, extract stop/target from risk 
         # Higher composite score → bigger position, up to 2× base, capped at 12%.
         # Then apply altcoin_multiplier from BTC dominance regime.
         if result.get("action") == "BUY":
-            base_size  = float(result.get("position_size_pct") or 0.05)
+            base_size  = float(result.get("position_size_pct") or trade_size_pct())
             multiplier = next(
                 (mult for min_s, mult in _SIZE_TIERS if composite_score >= min_s),
                 1.0,

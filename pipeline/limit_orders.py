@@ -155,6 +155,7 @@ def place_limit_order(
     """Create a limit buy order, send it to Coinbase, and persist it locally."""
     from exchange.coinbase_client import is_dry_run, place_limit_buy
     from pipeline.position_tracker import PAPER_BALANCE
+    from pipeline.sizing import trade_size_pct
 
     order = PendingOrder.create(
         asset=asset,
@@ -170,7 +171,7 @@ def place_limit_order(
             "Start an epoch with 'python pipeline/start_epoch.py' before going live."
         )
 
-    pct        = position_size_pct or 0.02
+    pct        = position_size_pct if position_size_pct is not None else trade_size_pct()
     quote_usd  = round(PAPER_BALANCE * pct, 2)
     exch_id    = place_limit_buy(
         product_id=asset,

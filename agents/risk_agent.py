@@ -11,7 +11,6 @@ Metrics always include: position_size_pct, stop_loss_price, take_profit_price, o
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -20,12 +19,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agents.base_agent import BaseAgent
+from pipeline.sizing import trade_size_pct
 from schemas.signals import AgentName, AgentSignal, SignalType
 from tools.price_data import get_snapshot
 
 _SYSTEM = """You are a risk management officer for a crypto trading system.
 
-You receive current market data and portfolio constraints. Your job is to
+You receive current market data and a configured base size. Your job is to
 determine whether it is safe to open a new position and, if so, at what size
 and with what stop-loss and take-profit levels.
 
@@ -39,8 +39,6 @@ Output a JSON object with exactly these keys:
 
 Rules:
 - Use ATR-based stops: stop = close - (2.5 x ATR), target = close + (4.0 x ATR)
-- If daily loss limit is already hit: ok_to_trade=false, size=0
-- If open positions >= max_positions: ok_to_trade=false, size=0
 - If ATR is very high (> 3% of price): reduce size to 1% to limit exposure
 - Normal conditions: position_size_pct = TRADE_SIZE_PCT from config
 - confidence reflects how clean the risk picture is
@@ -67,9 +65,7 @@ class RiskAgent(BaseAgent):
         snapshot = get_snapshot(asset)
         state    = _load_position_state(asset)
 
-        trade_size   = float(os.getenv("TRADE_SIZE_PCT",   "0.02"))
-        max_pos      = int(os.getenv("MAX_POSITIONS",       "5"))
-        daily_limit  = float(os.getenv("DAILY_LOSS_LIMIT", "0.05"))
+        trade_size = trade_size_pct()
 
         if snapshot is None:
             return AgentSignal(
@@ -93,10 +89,8 @@ class RiskAgent(BaseAgent):
 Current price: {close:.2f}
 ATR (1h):      {atr:.4f}  ({atr_pct*100:.2f}% of price)
 
-Portfolio constraints:
+Sizing input:
 - TRADE_SIZE_PCT:   {trade_size} ({trade_size*100:.0f}% per trade)
-- MAX_POSITIONS:    {max_pos}
-- DAILY_LOSS_LIMIT: {daily_limit} ({daily_limit*100:.0f}%)
 - Open positions:   {open_positions}
 - Position status:  {state.get('status', 'FLAT')}
 
