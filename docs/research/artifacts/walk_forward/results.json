@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "58c283ad0e817c64944967e64898d81807979e124519b691d609c68144d27134",
+    "code_sha256": "550fbaa88d731ef8b23e167b36f047b5b2b272357d60d6e773b2d2849eae7594",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -16,7 +16,7 @@
       },
       {
         "file": "backtesting/walk_forward.py",
-        "sha256": "e388f4311cd96474b9b08e039d54cb54bfe87177c0152889dc165a9f2d592a42"
+        "sha256": "af01acfb4bc2ffc398eff77d9ad744e02b84e40303f4b537416c8b2275c0c9d1"
       },
       {
         "file": "exchange/coinbase_candles.py",
