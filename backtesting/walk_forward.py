@@ -244,6 +244,12 @@ def run_scan(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp,
     recent_stop_ts: list[pd.Timestamp] = []
 
     start_idx = int(df.index.searchsorted(start_ts))
+    if start_idx >= len(df):
+        # Candles exist before the slice but none inside it. Returning n=0
+        # here reads as "the mechanism found nothing", which is a different
+        # claim from "there was nothing to look at".
+        raise WalkForwardError(
+            f"no candles inside [{start_ts.isoformat()}, {end_ts.isoformat()})")
     for i in range(start_idx, len(df)):
         ts = df.index[i]
         if i < skip_until:
@@ -497,7 +503,9 @@ def _assert_writable(assets: list[str]) -> None:
             f"the canonical artifact covers {sorted(ASSETS)}; refusing to write "
             f"a run of {sorted(assets)}. Use --asset for a report only.")
     assert_canonical_python()
-    assert_code_is_committed()
+    # THIS tool's paths. The shared default covers only the main runner's
+    # _CODE_PATHS, which omits walk_forward.py itself.
+    assert_code_is_committed(_CODE_PATHS)
 
 
 def write_artifact(assets: list[str]) -> Path:
@@ -569,11 +577,22 @@ def main() -> None:
                 print("OK: walk-forward artifact reproduces byte-for-byte.")
                 return
             sys.exit(1)
-        artifact = build_artifact(assets)
-        _print_report(artifact)
-        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-        ARTIFACT.write_text(_serialise(artifact), encoding="utf-8")
-        print(f"\nwrote {ARTIFACT.relative_to(ROOT)}")
+        if asset_arg:
+            # REPORT ONLY. A partial run is a debugging aid, never the
+            # record: `--asset ZEC-USD` used to overwrite the four-asset
+            # canonical artifact with a one-asset one.
+            _print_report(build_artifact(assets))
+            print("\n--asset is REPORT ONLY; the canonical artifact "
+                  "was not written. Run without --asset to regenerate it.")
+            return
+        # The ONLY write path. main() used to serialise the artifact itself,
+        # which bypassed every guard in write_artifact() - universe,
+        # interpreter and clean working tree alike.
+        _print_report(build_artifact(assets))
+        path = write_artifact(assets)
+        # Reporting a path must never be able to fail a completed write.
+        shown = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+        print(f"\nwrote {shown}")
     except WalkForwardError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(2)
