@@ -12,7 +12,7 @@ Trailing stop logic (percentage-based, no ATR needed in live system):
   TRAIL_ACTIVATION_PCT: once price rises this % above entry, begin trailing
   TRAIL_PCT           : trail stop stays this % below the high-water mark
 
-Fees (Coinbase Advanced base tier):
+Fees (the conservative model configured by this project):
   Entry: 0.4% maker (limit order)
   Exit:  0.6% taker (market order on stop/target/max-hold)
 
@@ -36,9 +36,9 @@ ROOT           = Path(__file__).resolve().parents[1]
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
 TRADE_HISTORY  = ROOT / "logs" / "trade_history.jsonl"
 
-MAKER_FEE_RATE       = 0.004   # 0.4% entry (Coinbase Advanced base tier maker)
-TAKER_FEE_RATE       = 0.006   # 0.6% exit  (Coinbase Advanced base tier taker)
-PAPER_BALANCE        = int(live_balance_usd())  # set LIVE_BALANCE_USD in .env for live trading
+MAKER_FEE_RATE       = 0.004   # 0.4% modeled maker entry fee
+TAKER_FEE_RATE       = 0.006   # 0.6% modeled taker exit fee
+PAPER_BALANCE        = live_balance_usd()  # set LIVE_BALANCE_USD in .env for live trading
 DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
 
 # Per-asset max hold — extended to match crypto momentum duration (Liu & Tsyvinski 2021:
