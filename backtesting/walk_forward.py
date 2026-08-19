@@ -508,11 +508,25 @@ def _assert_writable(assets: list[str]) -> None:
     assert_code_is_committed(_CODE_PATHS)
 
 
-def write_artifact(assets: list[str]) -> Path:
+def write_artifact(assets: list[str]) -> tuple[Path, dict]:
+    """
+    The single write path: guard once, build ONCE, write, and hand back the
+    very artifact that was written.
+
+    Returning it is the point. main() used to build for the report and then
+    call this, which built again — so the report described one computation and
+    the JSON stored another. They agreed only because the run is deterministic,
+    and a provenance contract should hold by construction rather than by that.
+    It also replayed every window twice.
+
+    Guards run before the build, so a rejected run fails in milliseconds
+    instead of after a full replay.
+    """
     _assert_writable(assets)
+    artifact = build_artifact(assets)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    ARTIFACT.write_text(_serialise(build_artifact(assets)), encoding="utf-8")
-    return ARTIFACT
+    ARTIFACT.write_text(_serialise(artifact), encoding="utf-8")
+    return ARTIFACT, artifact
 
 
 def verify_artifact(assets: list[str]) -> bool:
@@ -588,8 +602,10 @@ def main() -> None:
         # The ONLY write path. main() used to serialise the artifact itself,
         # which bypassed every guard in write_artifact() - universe,
         # interpreter and clean working tree alike.
-        _print_report(build_artifact(assets))
-        path = write_artifact(assets)
+        path, artifact = write_artifact(assets)
+        # Report the artifact that was actually saved, not a second computation
+        # of it.
+        _print_report(artifact)
         # Reporting a path must never be able to fail a completed write.
         shown = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
         print(f"\nwrote {shown}")

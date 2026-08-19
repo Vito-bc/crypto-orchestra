@@ -607,3 +607,51 @@ def test_a_slice_with_no_candles_inside_it_is_refused() -> None:
     with pytest.raises(WalkForwardError, match="no candles inside"):
         wf.run_scan(df, after_end, after_end + pd.Timedelta(hours=5),
                     ZEC, 2.0, 3.5)
+
+
+def test_the_full_run_builds_the_artifact_exactly_once(
+        canonical, monkeypatch, capsys) -> None:
+    """
+    main() built for the report and write_artifact() built again, so the report
+    described one computation and the JSON stored another. They agreed only
+    because the run is deterministic — and it also replayed every window twice.
+    """
+    import json
+
+    import backtesting.research_runner as rr
+
+    calls = {"n": 0}
+    reported: list = []
+
+    def counting_build(assets):
+        calls["n"] += 1
+        return {"trial_id": TRIAL, "build": calls["n"], "rows": []}
+
+    monkeypatch.setattr(wf, "build_artifact", counting_build)
+    monkeypatch.setattr(wf, "_print_report", lambda a: reported.append(a))
+    monkeypatch.setattr(rr, "assert_code_is_committed", lambda paths=None: None)
+
+    _run_main(monkeypatch, [])
+
+    assert calls["n"] == 1, f"built {calls['n']} times"
+    saved = json.loads(canonical.read_text(encoding="utf-8"))
+    assert reported == [saved], "the report and the saved artifact differ"
+
+
+def test_guards_run_before_the_expensive_build(canonical, monkeypatch) -> None:
+    """A rejected run must fail in milliseconds, not after a full replay."""
+    import backtesting.research_runner as rr
+
+    calls = {"n": 0}
+
+    def counting_build(assets):
+        calls["n"] += 1
+        return {"ok": True}
+
+    monkeypatch.setattr(wf, "build_artifact", counting_build)
+    monkeypatch.setattr(wf, "_print_report", lambda a: None)
+    monkeypatch.setattr(rr.platform, "python_version", lambda: "3.12.9")
+
+    with pytest.raises(rr.ProvenanceError):
+        _run_main(monkeypatch, [])
+    assert calls["n"] == 0, "the artifact was built before the guards ran"
