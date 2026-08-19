@@ -16,6 +16,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from pipeline.sizing import live_balance_usd
+
 _explicit_demo = "--demo" in sys.argv
 _live_trade_file = ROOT / "logs" / "trade_history.jsonl"
 DEMO_MODE = _explicit_demo or not _live_trade_file.exists()
@@ -24,7 +29,12 @@ TRADE_FILE     = ROOT / ("demo" if DEMO_MODE else "logs") / "trade_history.jsonl
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
 DECISIONS_FILE = ROOT / ("demo" if DEMO_MODE else "logs") / "agent_decisions.jsonl"
 
-PAPER_START = 10_000.0
+# The demo fixture is generated against its own $10k baseline (every synthetic
+# trade is qty_usd=200, i.e. 2% of 10k), so it has to be rendered against that
+# number rather than the live sizing baseline — otherwise the showcase draws
+# $200 positions on a $100 account.
+DEMO_PAPER_START = 10_000.0
+PAPER_START = DEMO_PAPER_START if DEMO_MODE else live_balance_usd()
 
 # ── Page config ───────────────────────────────────────────────────────────────
 

@@ -34,6 +34,9 @@ from backtesting.backtest import (
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SYMBOLS        = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
+# Simulation convention, NOT a spending cap and NOT related to LIVE_BALANCE_USD:
+# a round starting equity that turns per-trade percentages into readable dollars.
+# See pipeline/sizing.py for the live/paper sizing baseline.
 START_BALANCE  = 10_000.0
 TRADE_SIZE_PCT = 0.05
 FEE_RATE       = 0.006

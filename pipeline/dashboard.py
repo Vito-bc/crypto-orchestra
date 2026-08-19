@@ -22,9 +22,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from pipeline.sizing import live_balance_usd
+
 TRADE_HISTORY   = ROOT / "logs" / "trade_history.jsonl"
 POSITIONS_FILE  = ROOT / "logs" / "open_positions.json"
 DECISIONS_LOG   = ROOT / "logs" / "agent_decisions.jsonl"
+
+PAPER_START = live_balance_usd()
 
 SHORT_MODE = "--short" in sys.argv
 
@@ -89,7 +93,6 @@ def _equity_curve(trades: list[dict], width: int = W - 2) -> None:
         print("  (no closed trades yet)")
         return
 
-    PAPER_START = 10_000.0
     equity = [PAPER_START]
     for t in sorted(trades, key=lambda x: x.get("exit_time", "")):
         equity.append(equity[-1] + t["pnl_usd"])
@@ -133,20 +136,20 @@ def section_summary(trades: list[dict]) -> None:
     pf         = abs(avg_win / avg_loss) if avg_loss and avg_win else float("inf") if wins else 0
     avg_hold   = sum(t.get("hold_hours", 0) for t in trades) / len(trades)
 
-    paper_end  = 10_000 + total_pnl
-    total_ret  = total_pnl / 10_000 * 100
+    paper_end  = PAPER_START + total_pnl
+    total_ret  = total_pnl / PAPER_START * 100
 
     print(f"  Trades:        {len(trades):>4}    Wins: {len(wins)}  Losses: {len(losses)}")
     print(f"  Win rate:      {_pct(len(wins), len(trades)):>6}   Profit factor: {pf:.2f}")
     print(f"  Total P&L:   {_sign(total_pnl):>8}   Return: {total_ret:+.3f}%")
     print(f"  Total fees:  {_sign(-total_fees):>8}   Avg hold: {avg_hold:.1f}h")
-    print(f"  Paper equity: ${paper_end:,.2f}  (started $10,000.00)")
+    print(f"  Paper equity: ${paper_end:,.2f}  (started ${PAPER_START:,.2f})")
 
     # Simple max drawdown from equity curve
-    equity = [10_000.0]
+    equity = [PAPER_START]
     for t in sorted(trades, key=lambda x: x.get("exit_time", "")):
         equity.append(equity[-1] + t["pnl_usd"])
-    peak = 10_000.0; max_dd = 0.0
+    peak = PAPER_START; max_dd = 0.0
     for v in equity:
         if v > peak: peak = v
         dd = (peak - v) / peak * 100
@@ -155,7 +158,7 @@ def section_summary(trades: list[dict]) -> None:
 
 
 def section_equity_curve(trades: list[dict]) -> None:
-    _header("EQUITY CURVE  (paper $10,000)")
+    _header(f"EQUITY CURVE  (paper ${PAPER_START:,.0f})")
     _equity_curve(trades)
 
 
