@@ -93,6 +93,8 @@ Sizing is `LIVE_BALANCE_USD x position_size_pct`, defined once in
 [`pipeline/sizing.py`](pipeline/sizing.py) and defaulting to **$100**. The
 circuit breakers measure against the same baseline. It is not an aggregate
 spending cap: concurrent positions can add up to more than that baseline.
+`TRADE_SIZE_PCT` defaults to **2%** and cannot exceed the deterministic **12%**
+per-trade ceiling.
 
 ### Live trading
 
@@ -157,6 +159,7 @@ tests/           900+ tests — hermetic, network denied at the socket layer
 | `TELEGRAM_CHAT_ID` | No | Chat ID for alerts |
 | `DRY_RUN` | No | `true` (default) = paper · `false` = real orders |
 | `LIVE_BALANCE_USD` | No | Sizing baseline (default: 100) |
+| `TRADE_SIZE_PCT` | No | Per-trade fraction (default: 0.02; maximum: 0.12) |
 | `PIPELINE_INTERVAL_MINUTES` | No | Scheduler interval (default: 60) |
 | `SUBAGENT_MODEL` | No | Default `claude-haiku-4-5-20251001` |
 | `ORCHESTRATOR_MODEL` | No | Default `claude-sonnet-4-6` |
