@@ -18,6 +18,7 @@ import pandas as pd
 import pytest
 
 import backtesting.walk_forward as wf
+from backtesting.walk_forward import TRIAL_ID as TRIAL
 from backtesting.walk_forward import WalkForwardError
 
 ZEC = "ZEC-USD"          # btc_regime_filter=False, 200-day daily EMA
@@ -486,3 +487,123 @@ def test_the_loader_refuses_a_provider_fallback() -> None:
 
     src = inspect.getsource(wf.load_asset)
     assert "STRICT_COINBASE_ONLY = True" in src
+
+
+# ── The CLI is the real write path, so it is what must be guarded ────────────
+#
+# _assert_writable() existed and was correct, and main() did not call it: it
+# serialised the artifact itself, so `--asset ZEC-USD` overwrote the four-asset
+# canonical file and neither the interpreter nor the working tree was checked.
+# These tests drive main() rather than the helpers.
+
+@pytest.fixture
+def canonical(tmp_path, monkeypatch):
+    """Point the canonical artifact at a temp file and seed it."""
+    art = tmp_path / "results.json"
+    art.write_text('{"seeded": true}', encoding="utf-8")
+    monkeypatch.setattr(wf, "ARTIFACT", art)
+    monkeypatch.setattr(wf, "ARTIFACT_DIR", tmp_path)
+    return art
+
+
+def _run_main(monkeypatch, argv: list[str]):
+    monkeypatch.setattr(wf.sys, "argv", ["walk_forward.py", *argv])
+    return wf.main()
+
+
+def test_cli_asset_flag_does_not_write_the_canonical_artifact(
+        canonical, monkeypatch, capsys) -> None:
+    built = {"trial_id": "x", "rows": [], "status": "s"}
+    monkeypatch.setattr(wf, "build_artifact", lambda a: built)
+    monkeypatch.setattr(wf, "_print_report", lambda a: None)
+
+    _run_main(monkeypatch, ["--asset", ZEC])
+
+    assert canonical.read_text(encoding="utf-8") == '{"seeded": true}', (
+        "--asset overwrote the canonical artifact"
+    )
+    assert "REPORT ONLY" in capsys.readouterr().out
+
+
+def test_cli_refuses_to_write_on_the_wrong_interpreter(
+        canonical, monkeypatch, capsys) -> None:
+    import backtesting.research_runner as rr
+
+    monkeypatch.setattr(wf, "build_artifact", lambda a: {"ok": True})
+    monkeypatch.setattr(wf, "_print_report", lambda a: None)
+    monkeypatch.setattr(rr.platform, "python_version", lambda: "3.12.9")
+
+    with pytest.raises(rr.ProvenanceError, match="3.12.9"):
+        _run_main(monkeypatch, [])
+    assert canonical.read_text(encoding="utf-8") == '{"seeded": true}'
+
+
+def test_cli_refuses_to_write_from_a_dirty_walk_forward(
+        canonical, monkeypatch) -> None:
+    """
+    The shared dirty check covers only the main runner's _CODE_PATHS, which
+    omits walk_forward.py — so this artifact could be written from uncommitted
+    walk-forward code.
+    """
+    import backtesting.research_runner as rr
+
+    seen: dict = {}
+
+    def fake_status(cmd, **kw):
+        seen["paths"] = cmd[cmd.index("--") + 1:]
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=0, stdout=" M backtesting/walk_forward.py\n")
+
+    monkeypatch.setattr(wf, "build_artifact", lambda a: {"ok": True})
+    monkeypatch.setattr(wf, "_print_report", lambda a: None)
+    monkeypatch.setattr(rr.subprocess, "run", fake_status)
+
+    with pytest.raises(rr.ProvenanceError, match="uncommitted"):
+        _run_main(monkeypatch, [])
+    assert "backtesting/walk_forward.py" in seen["paths"], (
+        "the dirty check did not cover walk_forward's own paths"
+    )
+    assert canonical.read_text(encoding="utf-8") == '{"seeded": true}'
+
+
+def test_cli_writes_the_canonical_artifact_on_a_full_clean_run(
+        canonical, monkeypatch, capsys) -> None:
+    """The mirror case: without it the refusals above prove nothing."""
+    import backtesting.research_runner as rr
+
+    built = {"trial_id": TRIAL, "rows": []}
+    monkeypatch.setattr(wf, "build_artifact", lambda a: built)
+    monkeypatch.setattr(wf, "_print_report", lambda a: None)
+    monkeypatch.setattr(rr, "assert_code_is_committed", lambda paths=None: None)
+
+    _run_main(monkeypatch, [])
+
+    import json
+    assert json.loads(canonical.read_text(encoding="utf-8")) == built
+    assert "wrote" in capsys.readouterr().out
+
+
+def test_every_write_goes_through_write_artifact() -> None:
+    """
+    main() must not serialise the artifact itself. That is exactly how the
+    guards were bypassed.
+    """
+    import inspect
+
+    src = inspect.getsource(wf.main)
+    assert "write_artifact(assets)" in src
+    assert "ARTIFACT.write_text" not in src
+
+
+# ── An empty evaluation interval is not a result ────────────────────────────
+
+def test_a_slice_with_no_candles_inside_it_is_refused() -> None:
+    """
+    Data before the slice but none inside it returned n=0, which reads as "the
+    mechanism found nothing" rather than "there was nothing to look at".
+    """
+    df = _frame_for(ZEC, n=60)
+    after_end = df.index[-1] + pd.Timedelta(hours=1)
+    with pytest.raises(WalkForwardError, match="no candles inside"):
+        wf.run_scan(df, after_end, after_end + pd.Timedelta(hours=5),
+                    ZEC, 2.0, 3.5)

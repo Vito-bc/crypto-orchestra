@@ -322,7 +322,7 @@ def code_fingerprint() -> dict:
     return {"files": files, "code_sha256": agg.hexdigest()}
 
 
-def assert_code_is_committed() -> None:
+def assert_code_is_committed(paths: Optional[list[str]] = None) -> None:
     """
     Refuse to write artifacts from a dirty working tree.
 
@@ -331,9 +331,13 @@ def assert_code_is_committed() -> None:
     silently — it is reported — but it is not a failure either, because a
     source tarball is a legitimate way to run this.
     """
+    # Defaults to this runner's paths, but a second registered tool must be
+    # able to check ITS own: the shared list omits walk_forward.py, so the
+    # walk-forward artifact could be written from uncommitted code.
+    paths = paths or _CODE_PATHS
     try:
         out = subprocess.run(
-            ["git", "status", "--porcelain", "--", *_CODE_PATHS],
+            ["git", "status", "--porcelain", "--", *paths],
             cwd=str(ROOT), capture_output=True, text=True, timeout=30, check=False,
         )
     except Exception:
