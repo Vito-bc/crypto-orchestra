@@ -61,6 +61,7 @@ from pipeline.position_tracker import (
     get_open_positions,
     open_position_from_order,
 )
+from pipeline.sizing         import live_balance_usd
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
 from tools.price_data        import get_daily_trend, get_raw_df, get_snapshot
 from tools.price_levels      import get_levels_from_snapshot
@@ -780,7 +781,7 @@ def _get_circuit_breaker_state_inner() -> tuple[bool, str, float]:
 
     if epoch is None:
         # Legacy fallback: no epoch registered → use all trades, env-var balance
-        _paper_start = float(os.getenv("LIVE_BALANCE_USD", "10000.0"))
+        _paper_start = live_balance_usd()
         if not TRADE_HISTORY.exists():
             return False, "", 1.0
         try:
@@ -1174,7 +1175,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                     from pipeline.limit_orders import _atr_mults
 
                     _pct = _effective_size or 0.02
-                    _bal = float(os.getenv("LIVE_BALANCE_USD", "10000"))
+                    _bal = live_balance_usd()
                     _qty_usd = round(_bal * _pct, 2)
                     _stop_mult, _tgt_mult = _atr_mults(asset)
                     _stop_price   = round(support - _stop_mult * atr, 2)

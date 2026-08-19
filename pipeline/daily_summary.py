@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from notifications.telegram import send_telegram_message
+from pipeline.sizing import live_balance_usd
 
 TRADE_HISTORY  = ROOT / "logs" / "trade_history.jsonl"
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
@@ -73,7 +74,7 @@ def build_summary() -> str:
         wins      = [t for t in trades if t["pnl_usd"] > 0]
         total_pnl = sum(t["pnl_usd"] for t in trades)
         win_rate  = len(wins) / len(trades) * 100
-        equity    = 10_000 + total_pnl
+        equity    = live_balance_usd() + total_pnl
         lines += [
             f"Closed trades: {len(trades)}  |  Win rate: {win_rate:.0f}%",
             f"Total P&L:     {'+'if total_pnl>=0 else ''}{total_pnl:.2f} USD",

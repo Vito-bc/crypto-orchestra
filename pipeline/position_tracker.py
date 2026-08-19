@@ -30,13 +30,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from pipeline.sizing import live_balance_usd
+
 ROOT           = Path(__file__).resolve().parents[1]
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
 TRADE_HISTORY  = ROOT / "logs" / "trade_history.jsonl"
 
 MAKER_FEE_RATE       = 0.004   # 0.4% entry (Coinbase Advanced base tier maker)
 TAKER_FEE_RATE       = 0.006   # 0.6% exit  (Coinbase Advanced base tier taker)
-PAPER_BALANCE        = int(os.getenv("LIVE_BALANCE_USD", "10000"))  # set LIVE_BALANCE_USD in .env for live trading
+PAPER_BALANCE        = int(live_balance_usd())  # set LIVE_BALANCE_USD in .env for live trading
 DEFAULT_POS_PCT      = 0.05    # 5% of balance if risk agent omits size
 
 # Per-asset max hold — extended to match crypto momentum duration (Liu & Tsyvinski 2021:

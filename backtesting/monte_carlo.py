@@ -31,6 +31,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 N_SIMS        = 10_000
+# Simulation convention, NOT a spending cap and NOT related to LIVE_BALANCE_USD:
+# a round starting equity that turns per-trade percentages into readable dollars.
+# See pipeline/sizing.py for the live/paper sizing baseline.
 START_BALANCE = 10_000.0
 
 

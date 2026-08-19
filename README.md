@@ -49,7 +49,7 @@ Every 60 minutes:
        news        — asset-specific news headlines via web search
        breakout    — price structure breakout / breakdown detection
   4. Orchestrator (claude-sonnet-4-6) weighs all signals
-  5. BUY → limit order placed at nearest support level (maker fee 0.2%)
+  5. BUY → limit order placed at nearest support level (maker fee 0.4%)
   6. Telegram alert sent for every order, fill, open, and close
 ```
 
@@ -64,8 +64,8 @@ Every 60 minutes:
 | Velocity veto | asset down > 5% in 24h → no long entry |
 | Whipsaw guard | 2+ stops in 96h → block re-entry |
 | Bounce confirmation | must recover +1.5x ATR above last stop-exit |
-| Entry fee | 0.2% maker (limit order) |
-| Exit fee | 0.4% taker (market order) |
+| Entry fee | 0.4% maker (limit order) |
+| Exit fee | 0.6% taker (market order) |
 
 ## Per-Asset ATR Parameters
 
@@ -234,9 +234,14 @@ obsidian_vault/         — Obsidian knowledge base (git-ignored, local only)
 | `TELEGRAM_BOT_TOKEN` | Yes | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | Yes | Chat ID for alerts |
 | `DRY_RUN` | No | `true` (default) = paper trade · `false` = real orders |
-| `LIVE_BALANCE_USD` | No | Capital allocated to the bot (default: 10000) |
+| `LIVE_BALANCE_USD` | No | Sizing baseline for the bot (default: 100) |
 | `SUBAGENT_MODEL` | No | Model for sub-agents (default: claude-haiku-4-5) |
 | `ORCHESTRATOR_MODEL` | No | Model for orchestrator (default: claude-sonnet-4-6) |
+
+`LIVE_BALANCE_USD` has one definition, in `pipeline/sizing.py`. Do not confuse
+it with `START_BALANCE` in `backtesting/` — that is a simulation convention (a
+round starting equity so historical replays report readable dollars), not a cap,
+and the two have no reason to match.
 
 ## Security
 

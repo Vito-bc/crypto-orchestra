@@ -2,7 +2,10 @@
 # Run ONCE as Administrator.
 #
 # Runs python.exe directly (no cmd/bat wrapper) to avoid PATH issues in Task Scheduler.
-# Trigger: every 30 minutes, StartWhenAvailable so missed runs catch up on next boot.
+# Trigger: every 60 minutes, StartWhenAvailable so missed runs catch up on next boot.
+# 60 is the project-wide interval: it matches README, the scheduler loop and
+# PIPELINE_INTERVAL_MINUTES in .env.example. This script used to register 30,
+# so the Task Scheduler job ran at twice the documented rate.
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot  = Split-Path -Parent $scriptDir
@@ -16,7 +19,7 @@ $action = New-ScheduledTaskAction `
     -Argument         "pipeline\runner.py" `
     -WorkingDirectory $repoRoot
 
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30)
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 60)
 $trigger.Repetition.Duration = ""   # empty = indefinite
 
 $settings = New-ScheduledTaskSettingsSet `
@@ -42,5 +45,5 @@ Write-Host "Registered: $taskName"
 Write-Host "  State:    $((Get-ScheduledTask -TaskName $taskName).State)"
 Write-Host "  Next run: $($info.NextRunTime)"
 Write-Host ""
-Write-Host "Task will now run every 30 minutes and recover automatically after reboots."
+Write-Host "Task will now run every 60 minutes and recover automatically after reboots."
 Write-Host "To run immediately: Start-ScheduledTask -TaskName $taskName"
