@@ -1,5 +1,5 @@
 """
-Single source for the paper/live sizing baseline.
+Single source for paper/live sizing configuration.
 
 `LIVE_BALANCE_USD` is the capital the bot sizes against: order notional is
 `LIVE_BALANCE_USD x position_size_pct`, and the drawdown circuit breakers in
@@ -9,8 +9,11 @@ Why this module exists: the default used to be spelled `"10000"` at three call
 sites and hardcoded as `10_000.0` at three more (dashboard, daily summary,
 Streamlit app), while `.env.example` and the test bootstrap both said 100. A
 developer with no `.env` therefore got sizing and circuit-breaker thresholds
-computed from a balance 100x larger than the documented cap. The value now has
-one definition.
+computed from a balance 100x larger than the documented default. The value now
+has one definition.
+
+`TRADE_SIZE_PCT` is the per-order fraction of that baseline. It defaults to 2%
+and cannot exceed the orchestrator's deterministic 12% per-trade ceiling.
 
 NOT to be confused with `START_BALANCE` in `backtesting/` (backtest.py,
 monte_carlo.py, multi_period_backtest.py). That is a simulation convention — a
@@ -30,6 +33,8 @@ from math import isfinite
 
 # Matches `.env.example` and the value the root conftest pins for tests.
 DEFAULT_LIVE_BALANCE_USD = 100.0
+DEFAULT_TRADE_SIZE_PCT = 0.02
+MAX_TRADE_SIZE_PCT = 0.12
 
 
 def live_balance_usd() -> float:
@@ -45,4 +50,22 @@ def live_balance_usd() -> float:
         ) from exc
     if not isfinite(value) or value <= 0:
         raise ValueError("LIVE_BALANCE_USD must be a positive finite number")
+    return value
+
+
+def trade_size_pct() -> float:
+    """Return the configured per-trade fraction within the hard 12% ceiling."""
+    raw = os.getenv("TRADE_SIZE_PCT")
+    if raw is None or not raw.strip():
+        return DEFAULT_TRADE_SIZE_PCT
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "TRADE_SIZE_PCT must be a positive finite number no greater than 0.12"
+        ) from exc
+    if not isfinite(value) or value <= 0 or value > MAX_TRADE_SIZE_PCT:
+        raise ValueError(
+            "TRADE_SIZE_PCT must be a positive finite number no greater than 0.12"
+        )
     return value

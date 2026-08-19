@@ -21,7 +21,6 @@ Run for all assets (default):
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -61,7 +60,7 @@ from pipeline.position_tracker import (
     get_open_positions,
     open_position_from_order,
 )
-from pipeline.sizing         import live_balance_usd
+from pipeline.sizing         import live_balance_usd, trade_size_pct
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
 from tools.price_data        import get_daily_trend, get_raw_df, get_snapshot
 from tools.price_levels      import get_levels_from_snapshot
@@ -1041,7 +1040,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                 f"Scanner fired but macro SELL ({macro_vote.confidence:.0%}) blocks entry"
             )
         else:
-            _default_size = float(os.getenv("TRADE_SIZE_PCT", "0.05"))
+            _default_size = trade_size_pct()
             print("[Scanner] Elevating HOLD→BUY — scanner signal confirmed, no macro veto")
             decision = TradeDecision(
                 asset=asset, timestamp=decision.timestamp,
