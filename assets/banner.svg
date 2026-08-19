@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 360" width="1280" height="360" role="img" aria-label="Crypto Orchestra — multi-agent crypto research and paper-trading system">
+  <title>Crypto Orchestra</title>
+  <desc>Seven specialist agents converge on an orchestrator, whose decision passes through a deterministic risk gate before reaching a paper or shadow order.</desc>
+
+  <defs>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2F81F7" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#00E887" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00E887"/>
+      <stop offset="100%" stop-color="#2F81F7"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00E887" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#00E887" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <style>
+    .t   { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .m   { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace; }
+    .hd  { font-size: 46px; font-weight: 700; fill: #E6EDF3; letter-spacing: 2.5px; }
+    .sub { font-size: 19px; font-weight: 500; fill: #ADBAC7; }
+    .fine{ font-size: 13.5px; fill: #6E7681; letter-spacing: 0.3px; }
+    .lbl { font-size: 11px; fill: #6E7681; letter-spacing: 0.4px; }
+    .cap { font-size: 10.5px; fill: #8B949E; letter-spacing: 1.4px; font-weight: 600; }
+  </style>
+
+  <rect width="1280" height="360" rx="14" fill="#0D1117"/>
+  <rect x="0.5" y="0.5" width="1279" height="359" rx="14" fill="none" stroke="#21262D"/>
+
+  <!-- accent rule -->
+  <rect x="64" y="62" width="54" height="3" rx="1.5" fill="url(#rule)"/>
+
+  <text class="t hd"   x="64" y="122">CRYPTO ORCHESTRA</text>
+  <text class="t sub"  x="64" y="158">Multi-agent crypto research &amp; paper-trading system</text>
+  <text class="t fine" x="64" y="192">Reproducible, byte-verified backtests · deterministic risk gate</text>
+  <text class="t fine" x="64" y="212">Paper / shadow only — live trading is not authorized</text>
+
+  <g class="m" font-size="11.5" fill="#484F58">
+    <text x="64" y="268">PF 0.761 · −0.62%/trade · n=114</text>
+    <text x="64" y="288">ZEC-USD, continuous window 2021-06-26 → 2026-07-12</text>
+    <text x="64" y="308">No positive expectancy demonstrated.</text>
+  </g>
+
+  <!-- ── agent network ─────────────────────────────────────────────── -->
+  <g>
+    <circle cx="962" cy="180" r="74" fill="url(#halo)"/>
+
+    <!-- edges: seven agents → orchestrator -->
+    <g fill="none" stroke="url(#edge)" stroke-width="1.4">
+      <path d="M762 60  C 850 60,  890 180, 936 180"/>
+      <path d="M762 100 C 850 100, 895 180, 936 180"/>
+      <path d="M762 140 C 855 140, 900 180, 936 180"/>
+      <path d="M762 180 L 936 180"/>
+      <path d="M762 220 C 855 220, 900 180, 936 180"/>
+      <path d="M762 260 C 850 260, 895 180, 936 180"/>
+      <path d="M762 300 C 850 300, 890 180, 936 180"/>
+    </g>
+
+    <!-- agent nodes -->
+    <g fill="#0D1117" stroke="#2F81F7" stroke-width="1.6">
+      <circle cx="756" cy="60"  r="6.5"/>
+      <circle cx="756" cy="100" r="6.5"/>
+      <circle cx="756" cy="140" r="6.5"/>
+      <circle cx="756" cy="180" r="6.5"/>
+      <circle cx="756" cy="220" r="6.5"/>
+      <circle cx="756" cy="260" r="6.5"/>
+      <circle cx="756" cy="300" r="6.5"/>
+    </g>
+
+    <g class="t lbl" text-anchor="end">
+      <text x="738" y="64">technical</text>
+      <text x="738" y="104">macro</text>
+      <text x="738" y="144">sentiment</text>
+      <text x="738" y="184">whale</text>
+      <text x="738" y="224">risk</text>
+      <text x="738" y="264">news</text>
+      <text x="738" y="304">breakout</text>
+    </g>
+
+    <!-- orchestrator -->
+    <circle cx="962" cy="180" r="26" fill="#0D1117" stroke="#00E887" stroke-width="2"/>
+    <circle cx="962" cy="180" r="6"  fill="#00E887"/>
+    <text class="t cap" x="962" y="238" text-anchor="middle">ORCHESTRATOR</text>
+
+    <!-- orchestrator → risk gate -->
+    <path d="M988 180 L 1054 180" fill="none" stroke="#00E887" stroke-width="1.6" stroke-opacity="0.75"/>
+
+    <!-- deterministic risk gate -->
+    <rect x="1056" y="154" width="52" height="52" rx="9" fill="#0D1117" stroke="#2F81F7" stroke-width="2"/>
+    <path d="M1069 180 l 8 9 17 -19" fill="none" stroke="#2F81F7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="t cap" x="1082" y="238" text-anchor="middle">RISK GATE</text>
+
+    <!-- gate → simulated order -->
+    <path d="M1110 180 L 1168 180" fill="none" stroke="#30363D" stroke-width="1.6" stroke-dasharray="4 4"/>
+    <circle cx="1178" cy="180" r="6.5" fill="#0D1117" stroke="#6E7681" stroke-width="1.6"/>
+    <text class="t cap" x="1178" y="238" text-anchor="middle" fill="#6E7681">PAPER</text>
+  </g>
+</svg>
