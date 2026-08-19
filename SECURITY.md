@@ -48,8 +48,8 @@ If you run this yourself:
 - Pin `COINBASE_PORTFOLIO_UUID` before considering `DRY_RUN=false`. Preflight
   fails when a key exposes multiple portfolios without one pinned.
 - `LIVE_BALANCE_USD` is a per-trade sizing baseline, **not** an enforced
-  aggregate spending cap: with `MAX_POSITIONS` concurrent trades, total exposure
-  can exceed it. A true hard cap needs a dedicated portfolio plus an aggregate
+  aggregate spending cap: multiple concurrent trades can make total exposure
+  exceed it. A true hard cap needs a dedicated portfolio plus an aggregate
   exposure limit, which is not implemented.
 - `.env`, `cdp_api_key.json` and `obsidian_vault/` are git-ignored. If you ever
   commit one by accident, rotate the credential — removing the commit is not

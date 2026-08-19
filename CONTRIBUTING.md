@@ -7,9 +7,11 @@ believable before it has earned it.
 ## Ground rules
 
 **1. Never weaken the safety default.**
-`DRY_RUN=true` stays the default. `LIVE_BALANCE_USD` is a cap, not a knob —
-raising it is a deliberate decision, not a side effect of another change. PRs
-that flip either without an explicit, separately stated reason will be closed.
+`DRY_RUN=true` stays the default. `LIVE_BALANCE_USD` is a per-trade sizing
+baseline, not an aggregate cap; raising it still increases exposure and must be
+a deliberate decision, not a side effect of another change. PRs that flip the
+safety default or raise the baseline without a separately stated reason will be
+closed.
 
 **2. Research claims are pre-registered, not post-hoc.**
 If a change is meant to produce a *result* — a new filter, a new parameter, a
@@ -57,10 +59,11 @@ python -m pytest -q
 python backtesting/research_runner.py --verify-code
 ```
 
-All three run in CI and are required. The full `research-verify` job also
-regenerates the artifacts byte-for-byte from publicly hydrated candles; run it
-locally with `python backtesting/research_runner.py --verify` if you touched
-anything under `backtesting/`.
+All three run in CI. Branch protection should require the `lint`, `tests` and
+`research-verify` jobs. The full `research-verify` job regenerates the artifacts
+byte-for-byte from publicly hydrated candles; run it locally with
+`python backtesting/research_runner.py --verify` if you touched anything under
+`backtesting/`.
 
 The test suite is hermetic by construction: the root `conftest.py` pins safe
 configuration before the first project import and denies outbound network at the

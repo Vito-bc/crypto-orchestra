@@ -2,14 +2,13 @@
 
 All notable changes to this project are documented here.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
-this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Version numbers describe the *software*. They say nothing about strategy
 performance — see [`docs/trial_registry.md`](docs/trial_registry.md) for that,
 and note that several previously published numbers have been retracted.
 
-## [Unreleased]
+## Unreleased
 
 ### Fixed
 
@@ -17,7 +16,7 @@ and note that several previously published numbers have been retracted.
   `100`, while the code fallback said `10000` at three call sites and was
   hardcoded as `10_000.0` at three more. Running without a `.env` therefore
   sized orders — and measured the drawdown circuit breakers — against a balance
-  100x the documented cap. Now defined once in `pipeline/sizing.py`, default
+  100x the documented default. Now defined once in `pipeline/sizing.py`, default
   `100`.
 - README advertised a 0.2% maker / 0.4% taker fee model. The scanner charges
   0.4% / 0.4% / 0.6%, and this project's own research records that the
@@ -28,6 +27,12 @@ and note that several previously published numbers have been retracted.
   all specify 60. The job ran at twice the documented rate.
 - ruff `target-version` said `py310` while the pinned interpreter, CI and
   `research_runner._CANONICAL_PYTHON` all require exactly 3.13.5.
+- Scanner-elevated trades fell back to a 5% size while `TRADE_SIZE_PCT` and the
+  risk agent defaulted to 2%; the fallback now matches the configured default.
+- `MAX_POSITIONS` and `DAILY_LOSS_LIMIT` looked like deterministic controls in
+  `.env.example`, but were only passed to an LLM prompt that lacked the
+  portfolio-wide position count and daily P&L needed to enforce them. The inert
+  knobs and claims were removed; the deterministic circuit breakers remain.
 
 ### Added
 
@@ -45,7 +50,7 @@ and note that several previously published numbers have been retracted.
   the research index, and the badge row now reports the version actually
   verified in CI.
 
-## [0.1.0] — 2026-08-19
+## Baseline through 2026-08-19
 
 First consolidated state of the research and paper-trading system. **Not a
 release for live use**; `DRY_RUN=true` and live trading is not authorized.
@@ -93,6 +98,3 @@ release for live use**; `DRY_RUN=true` and live trading is not authorized.
 - **Earlier "profitable, ready to go live" conclusions — superseded.** They came
   from period-selected windows and an obsolete fee model. Superseded artifacts
   are preserved under `docs/research/artifacts/superseded/`.
-
-[Unreleased]: https://github.com/Vito-bc/crypto-orchestra/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Vito-bc/crypto-orchestra/releases/tag/v0.1.0

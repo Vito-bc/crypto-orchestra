@@ -98,7 +98,7 @@ trial and must be logged in [`../trial_registry.md`](../trial_registry.md)
 
 ## Fee model
 
-Coinbase Advanced base tier, as charged by `backtesting/signal_scanner.py`:
+Frozen conservative assumptions applied by `backtesting/signal_scanner.py`:
 
 | Leg | Rate | Constant |
 |-----|------|----------|
@@ -107,7 +107,8 @@ Coinbase Advanced base tier, as charged by `backtesting/signal_scanner.py`:
 | Stop-loss / max-hold (taker) | 0.6% | `_SL_FEE` |
 
 An earlier 0.2% / 0.4% model understated fees and inflated backtest P&L. Results
-computed under it are superseded.
+computed under it are superseded. Actual Coinbase Advanced fees vary by account
+tier; these constants are research assumptions, not a live fee quote.
 
 ## Reproducibility
 

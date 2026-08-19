@@ -9,11 +9,11 @@
   <a href="docs/trial_registry.md"><img src="https://img.shields.io/badge/mode-paper%20%2F%20shadow%20only-orange" alt="Paper / shadow only"></a>
 </p>
 
-Seven specialist Claude sub-agents analyse an asset in parallel, an orchestrator
-weighs their votes, and a deterministic risk engine decides whether the
-resulting limit order is allowed. Every research number in this repository is a
-byte-identical regeneration from a pinned environment — including the ones that
-say the strategy does not work.
+Seven specialist Claude sub-agents are scheduled through a bounded worker pool,
+an orchestrator weighs their votes, and a deterministic risk engine decides
+whether the resulting limit order is allowed. Every current headline result is
+a byte-identical regeneration from a pinned environment — including the results
+that say the strategy does not work.
 
 > [!WARNING]
 > **Paper / shadow only — live trading is not authorized.** `DRY_RUN=true`;
@@ -33,8 +33,8 @@ libraries, from a local candle cache.
   <img src="assets/verify.svg" alt="research_runner.py --verify exits 0: committed artifacts reproduce byte-for-byte" width="100%">
 </p>
 
-Both this and the cheaper `--verify-code` run in CI as required checks, fed by
-credential-free public hydration. Code identity is content-addressed, input
+Both this and the cheaper `--verify-code` run in CI, fed by credential-free
+public hydration. Code identity is content-addressed, input
 identity is a window-scoped logical OHLCV hash, and the interpreter is pinned to
 **3.13.5 exactly** — regenerating under anything else is refused rather than
 silently producing different numbers. See
@@ -44,7 +44,7 @@ silently producing different numbers. See
 
 ```mermaid
 flowchart LR
-  subgraph A["7 sub-agents · claude-haiku-4-5 · parallel"]
+  subgraph A["7 sub-agents · claude-haiku-4-5 · 5-worker pool"]
     direction TB
     A1["technical — RSI, MACD, BB, EMA"]
     A2["macro — 4h regime, veto power"]
@@ -79,7 +79,7 @@ blocks entry rather than waving it through.
 | Funding rate | OKX annualized funding > 20% → block (crowded longs) |
 | Bounce confirmation | Price must recover +1.5x ATR above the last stop-exit |
 | Velocity | Asset down > 5% in 24h → no long entry |
-| Daily EMA | Per-asset trend veto (ZEC 200d, ETH 50d) |
+| Daily EMA | Per-asset trend veto (BTC/ETH 50d, SOL/ZEC 200d) |
 | Whipsaw guard | 2+ stops in 96h → block re-entry |
 
 | Drawdown from peak | Action |
@@ -91,17 +91,19 @@ blocks entry rather than waving it through.
 
 Sizing is `LIVE_BALANCE_USD x position_size_pct`, defined once in
 [`pipeline/sizing.py`](pipeline/sizing.py) and defaulting to **$100**. The
-circuit breakers measure against the same baseline.
+circuit breakers measure against the same baseline. It is not an aggregate
+spending cap: concurrent positions can add up to more than that baseline.
 
 ### Live trading
 
-Not enabled, and this README deliberately does not document how to switch it on.
-Activation would require, in order: a repaired evaluation harness, a
+The code contains a live path for auditability, but this project does not
+authorize its use and the Quick Start does not enable it. Activation would
+require, in order: a repaired evaluation harness, a
 pre-registered strategy with an acceptance rule fixed in advance, a forward
 shadow trial that passes it, and an explicit human decision recorded in
 [docs/trial_registry.md](docs/trial_registry.md). **None of those conditions is
-met.** `LIVE_BALANCE_USD=100` is the cap that *would* apply if live trading were
-ever authorized — it is not evidence that money is at risk today.
+met.** `LIVE_BALANCE_USD=100` would remain only the per-trade sizing baseline —
+it is not a portfolio cap and not evidence that money is at risk today.
 
 ## Quick start
 
@@ -143,7 +145,7 @@ tools/           price data, support/resistance levels, market positioning
 schemas/         Pydantic contracts shared by every agent
 docs/research/   research index, artifacts, manifests
 docs/            trial registry, ADRs, task briefs
-tests/           914 tests — hermetic, network denied at the socket layer
+tests/           900+ tests — hermetic, network denied at the socket layer
 ```
 
 ## Configuration
@@ -156,7 +158,7 @@ tests/           914 tests — hermetic, network denied at the socket layer
 | `DRY_RUN` | No | `true` (default) = paper · `false` = real orders |
 | `LIVE_BALANCE_USD` | No | Sizing baseline (default: 100) |
 | `PIPELINE_INTERVAL_MINUTES` | No | Scheduler interval (default: 60) |
-| `SUBAGENT_MODEL` | No | Default `claude-haiku-4-5` |
+| `SUBAGENT_MODEL` | No | Default `claude-haiku-4-5-20251001` |
 | `ORCHESTRATOR_MODEL` | No | Default `claude-sonnet-4-6` |
 
 `LIVE_BALANCE_USD` is unrelated to `START_BALANCE` in `backtesting/` — that is a
@@ -167,7 +169,8 @@ simulation convention so historical replays report readable dollars, not a cap.
 - `.env` and `cdp_api_key.json` (Coinbase ECDSA key) are git-ignored — never commit either.
 - `DRY_RUN=true` is the default; no real order is placed without an explicit opt-in.
 - Coinbase API keys must have `can_transfer=false`; preflight treats withdrawal rights as a blocking error.
-- All exchange calls are isolated in `exchange/coinbase_client.py`.
+- Authenticated order calls are isolated in `exchange/coinbase_client.py`;
+  public candle hydration lives in `exchange/coinbase_candles.py`.
 - Vulnerability reports: [SECURITY.md](SECURITY.md).
 
 ## Contributing

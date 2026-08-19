@@ -8,12 +8,13 @@ authors:
 repository-code: "https://github.com/Vito-bc/crypto-orchestra"
 url: "https://github.com/Vito-bc/crypto-orchestra"
 abstract: >-
-  A multi-agent trading system in which seven specialist LLM sub-agents analyse
-  an asset in parallel, an orchestrator weighs their votes, and a deterministic
-  risk engine gates the resulting order. The repository is primarily a research
-  artifact: every published number is a byte-identical regeneration from a
-  pinned interpreter, pinned result-determining libraries, content-addressed
-  code and a window-scoped logical input hash, verified in CI. Its headline
+  A multi-agent trading system in which seven specialist LLM sub-agents run
+  through a bounded worker pool, an orchestrator weighs their votes, and a
+  deterministic risk engine gates the resulting order. The repository is
+  primarily a research artifact: its registered headline results are
+  byte-identical regenerations from a pinned interpreter, pinned
+  result-determining libraries, content-addressed code and a window-scoped
+  logical input hash, verified in CI. Its headline
   result is negative — the frozen momentum mechanism shows no positive
   expectancy (profit factor 0.761 over 114 trades on the continuous ZEC-USD
   window, 2021-06-26 to 2026-07-12) — and the repository documents the
@@ -30,5 +31,3 @@ keywords:
   - risk-management
   - pre-registration
 license: MIT
-version: 0.1.0
-date-released: "2026-08-19"
