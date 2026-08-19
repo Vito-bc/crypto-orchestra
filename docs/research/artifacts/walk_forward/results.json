@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "50eb3df7f1998264c9621cade0df245f3a7258377602e7e584feebc772e384ec",
+    "code_sha256": "58c283ad0e817c64944967e64898d81807979e124519b691d609c68144d27134",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -8,7 +8,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "608ef728189477723aff091af002a9e9a097b574bccf14cfe5865eb1a4ff42c6"
+        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -16,7 +16,7 @@
       },
       {
         "file": "backtesting/walk_forward.py",
-        "sha256": "5dbc4009b5271bbcdf0dbfd6a53dbdee4b4240e85370a13275e3a391394663e9"
+        "sha256": "e388f4311cd96474b9b08e039d54cb54bfe87177c0152889dc165a9f2d592a42"
       },
       {
         "file": "exchange/coinbase_candles.py",
