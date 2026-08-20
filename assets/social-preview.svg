@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="Crypto Orchestra — reproducible multi-agent crypto research and paper trading">
+  <title>Crypto Orchestra social preview</title>
+  <desc>Project title, negative research verdict, and a seven-agent network passing through a deterministic risk gate.</desc>
+
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00E887"/>
+      <stop offset="100%" stop-color="#2F81F7"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2F81F7" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#00E887" stop-opacity="0.65"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#00E887" stop-opacity="0.24"/>
+      <stop offset="100%" stop-color="#00E887" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <style>
+    .sans { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace; }
+    .title { font-size: 52px; font-weight: 750; letter-spacing: 2.4px; fill: #E6EDF3; }
+    .subtitle { font-size: 21px; font-weight: 500; fill: #ADBAC7; }
+    .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 1.8px; fill: #8B949E; }
+    .metric { font-size: 46px; font-weight: 700; fill: #E6EDF3; }
+    .detail { font-size: 17px; fill: #ADBAC7; }
+    .fine { font-size: 14px; fill: #6E7681; }
+    .agent { font-size: 12px; fill: #8B949E; }
+    .cap { font-size: 11px; font-weight: 700; letter-spacing: 1.3px; fill: #8B949E; }
+  </style>
+
+  <rect width="1280" height="640" fill="#0D1117"/>
+  <rect x="1" y="1" width="1278" height="638" rx="20" fill="none" stroke="#21262D" stroke-width="2"/>
+
+  <rect x="64" y="72" width="58" height="4" rx="2" fill="url(#accent)"/>
+  <text class="sans title" x="64" y="145">CRYPTO ORCHESTRA</text>
+  <text class="sans subtitle" x="64" y="188">Multi-agent crypto research &amp; paper-trading system</text>
+
+  <rect x="64" y="225" width="218" height="36" rx="18" fill="#161B22" stroke="#D29922"/>
+  <circle cx="84" cy="243" r="5" fill="#D29922"/>
+  <text class="sans" x="99" y="248" font-size="12" font-weight="700" letter-spacing="1.2" fill="#D29922">PAPER / SHADOW ONLY</text>
+
+  <text class="sans eyebrow" x="64" y="340">CURRENT RESEARCH VERDICT</text>
+  <text class="mono metric" x="64" y="406">PF 0.761</text>
+  <text class="mono detail" x="64" y="446">−0.62% / trade  ·  n = 114</text>
+  <text class="sans detail" x="64" y="493">No positive expectancy demonstrated.</text>
+  <text class="mono fine" x="64" y="545">ZEC-USD · continuous window · 2021-06-26 → 2026-07-12</text>
+  <text class="sans fine" x="64" y="580">Byte-verified artifacts · deterministic risk gate · Python 3.13.5</text>
+
+  <g>
+    <circle cx="986" cy="320" r="112" fill="url(#halo)"/>
+
+    <g fill="none" stroke="url(#edge)" stroke-width="1.8">
+      <path d="M796 170 C 880 170, 914 320, 956 320"/>
+      <path d="M796 220 C 880 220, 918 320, 956 320"/>
+      <path d="M796 270 C 884 270, 922 320, 956 320"/>
+      <path d="M796 320 L 956 320"/>
+      <path d="M796 370 C 884 370, 922 320, 956 320"/>
+      <path d="M796 420 C 880 420, 918 320, 956 320"/>
+      <path d="M796 470 C 880 470, 914 320, 956 320"/>
+    </g>
+
+    <g fill="#0D1117" stroke="#2F81F7" stroke-width="2">
+      <circle cx="790" cy="170" r="8"/>
+      <circle cx="790" cy="220" r="8"/>
+      <circle cx="790" cy="270" r="8"/>
+      <circle cx="790" cy="320" r="8"/>
+      <circle cx="790" cy="370" r="8"/>
+      <circle cx="790" cy="420" r="8"/>
+      <circle cx="790" cy="470" r="8"/>
+    </g>
+
+    <g class="sans agent" text-anchor="end">
+      <text x="768" y="174">technical</text>
+      <text x="768" y="224">macro</text>
+      <text x="768" y="274">sentiment</text>
+      <text x="768" y="324">whale</text>
+      <text x="768" y="374">risk</text>
+      <text x="768" y="424">news</text>
+      <text x="768" y="474">breakout</text>
+    </g>
+
+    <circle cx="986" cy="320" r="31" fill="#0D1117" stroke="#00E887" stroke-width="2.4"/>
+    <circle cx="986" cy="320" r="7" fill="#00E887"/>
+    <text class="sans cap" x="986" y="378" text-anchor="middle">ORCHESTRATOR</text>
+
+    <path d="M1017 320 L 1081 320" fill="none" stroke="#00E887" stroke-width="2"/>
+    <rect x="1083" y="290" width="60" height="60" rx="10" fill="#0D1117" stroke="#2F81F7" stroke-width="2.4"/>
+    <path d="M1098 320 l 9 10 20 -22" fill="none" stroke="#2F81F7" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text class="sans cap" x="1113" y="378" text-anchor="middle">RISK GATE</text>
+
+    <path d="M1145 320 L 1195 320" fill="none" stroke="#484F58" stroke-width="2" stroke-dasharray="5 5"/>
+    <circle cx="1205" cy="320" r="8" fill="#0D1117" stroke="#6E7681" stroke-width="2"/>
+    <text class="sans cap" x="1205" y="378" text-anchor="middle">PAPER</text>
+  </g>
+</svg>

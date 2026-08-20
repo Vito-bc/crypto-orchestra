@@ -41,8 +41,8 @@ and note that several previously published numbers have been retracted.
   instructions, moved out of the README.
 - Contribution, security and conduct policies; issue forms and a PR template
   that make trial pre-registration part of the review checklist.
-- Visual identity: agent-network banner and a terminal card generated from real
-  `--verify` output.
+- Visual identity: agent-network banner, upload-ready 1280×640 social preview,
+  and a terminal card generated from real `--verify` output.
 
 ### Changed
 
