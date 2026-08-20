@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" width="900" height="400" role="img" aria-label="Terminal output of research_runner.py --verify, exiting 0 with the message: committed artifacts reproduce byte-for-byte">
+  <title>research_runner.py --verify</title>
+  <desc>Real output of the reproducibility check: the committed research artifacts regenerate byte-for-byte from the local candle cache.</desc>
+
+  <style>
+    .m  { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace; font-size: 13.5px; }
+    .t  { font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .dim{ fill: #6E7681; }
+    .out{ fill: #ADBAC7; }
+    .ok { fill: #00E887; font-weight: 600; }
+    .pr { fill: #2F81F7; }
+    .el { fill: #484F58; font-style: italic; }
+  </style>
+
+  <rect width="900" height="400" rx="12" fill="#0D1117"/>
+  <rect x="0.5" y="0.5" width="899" height="399" rx="12" fill="none" stroke="#21262D"/>
+
+  <!-- title bar -->
+  <path d="M0 12 A12 12 0 0 1 12 0 L888 0 A12 12 0 0 1 900 12 L900 44 L0 44 Z" fill="#161B22"/>
+  <line x1="0" y1="44" x2="900" y2="44" stroke="#21262D"/>
+  <circle cx="22" cy="22" r="5.5" fill="#30363D"/>
+  <circle cx="40" cy="22" r="5.5" fill="#30363D"/>
+  <circle cx="58" cy="22" r="5.5" fill="#30363D"/>
+  <text class="t" x="80" y="26" font-size="12" fill="#6E7681">reproducibility check — local candle cache, no network</text>
+
+  <g class="m">
+    <text x="26" y="84"><tspan class="pr">$</tspan><tspan class="out" xml:space="preserve">  python backtesting/research_runner.py --verify</tspan></text>
+
+    <text class="dim" x="26" y="124" xml:space="preserve">  Downloading ZEC-USD data (warmup from 2020-11-01)...</text>
+    <text class="out" x="26" y="146" xml:space="preserve">  ZEC-USD: 2808 hourly candles in period</text>
+    <text class="dim" x="26" y="168" xml:space="preserve">  Downloading SOL-USD data (warmup from 2021-02-17)...</text>
+    <text class="out" x="26" y="190" xml:space="preserve">  SOL-USD: 4735 hourly candles in period</text>
+
+    <text class="el"  x="26" y="222" xml:space="preserve">  … 86 lines elided — 8 datasets across 4 assets …</text>
+
+    <text class="dim" x="26" y="254" xml:space="preserve">  Downloading SOL-USD data (warmup from 2021-09-05)...</text>
+    <text class="out" x="26" y="276" xml:space="preserve">  SOL-USD: 39610 hourly candles in period</text>
+
+    <text class="ok"  x="26" y="316" xml:space="preserve">OK: committed artifacts reproduce byte-for-byte.</text>
+
+    <text class="dim" x="26" y="352" xml:space="preserve">$ echo $?</text>
+    <text class="out" x="26" y="374" xml:space="preserve">0</text>
+  </g>
+</svg>

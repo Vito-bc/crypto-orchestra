@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or credential-exposure report
+    url: https://github.com/Vito-bc/crypto-orchestra/security/advisories/new
+    about: Report privately — never in a public issue.
+  - name: Research record and retractions
+    url: https://github.com/Vito-bc/crypto-orchestra/blob/main/docs/trial_registry.md
+    about: Before asking whether a number is real, check whether it has already been retracted.

@@ -1,0 +1,70 @@
+name: Research proposal
+description: Propose a strategy change, filter, or parameter — before running the scan
+labels: ["research", "needs-pre-registration"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project pre-registers trials. The point is to make a claim
+        falsifiable *before* seeing the number, so please open this issue before
+        running the scan, not after.
+
+        Read
+        [docs/trial_registry.md](https://github.com/Vito-bc/crypto-orchestra/blob/main/docs/trial_registry.md)
+        first —
+        several of the obvious ideas have already been tried and rejected on
+        evidence.
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: What do you predict, and what mechanism would explain it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance rule, fixed in advance
+      description: |
+        The exact numeric condition under which you would call this a success —
+        and, just as importantly, the condition under which you would abandon
+        it. State n, the statistic, and the threshold.
+      placeholder: |
+        Accept if: n >= 30 closed trades AND PF > 1.20 AND avg P&L > 0 after
+        modeled fees plus an additional 0.25% per-trade slippage stress AND no
+        single 30-day episode contributes > 50% of gross profit.
+        Reject otherwise. No threshold will be adjusted after the scan.
+    validations:
+      required: true
+
+  - type: textarea
+    id: window
+    attributes:
+      label: Evaluation window
+      description: Which assets, which dates, and why those. Period-selected windows are the main way this project has fooled itself before.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: budget
+    attributes:
+      label: Multiple-testing awareness
+      description: How many variants do you intend to try before concluding?
+      options:
+        - "One — this is a single pre-registered test"
+        - "A small declared set (list them in the hypothesis)"
+        - "Unknown / exploratory (diagnostic only, cannot support activation)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I have read the trial registry and this is not a rejected idea being re-proposed without new reasoning
+          required: true
+        - label: I understand a positive result here is diagnostic until it is confirmed on data that was never inspected
+          required: true

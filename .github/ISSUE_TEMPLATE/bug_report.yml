@@ -1,0 +1,71 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste `.env` contents, API keys, or `cdp_api_key.json`.
+        If the bug could expose credentials or place an unintended order, report
+        it privately instead — see
+        [SECURITY.md](https://github.com/Vito-bc/crypto-orchestra/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The exact command and the output.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - pipeline / risk engine
+        - agents / orchestrator
+        - backtesting / research runner
+        - exchange client
+        - dashboard (Streamlit or ASCII)
+        - tests / CI
+        - docs
+        - other
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: "Output of `python --version`. The research tooling requires exactly 3.13.5."
+      placeholder: "3.13.5"
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "Output of `git rev-parse --short HEAD`."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: "`DRY_RUN=true` was set (this project does not support live-trading bug reports)"
+          required: true
+        - label: I have removed all credentials and personal data from the output above
+          required: true
