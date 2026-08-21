@@ -1,34 +1,47 @@
 """
-Phase 7R-3 — synthetic power analysis for the draft STF gates.
+Phase 7R-3 — power analysis of the FINAL STF continuation gates.
 
-Question: if we ran the proposed forward trial, how often would the acceptance
-gates say "not falsified" when the strategy has NO edge, and how often would
-they reject one that does?
+Question: if the proposed forward trial ran, how often would its gates say "not
+falsified" when the strategy has NO edge, and how often would they reject one
+that does?
 
-This uses NO historical strategy returns. Trade outcomes are simulated from a
-declared model, so nothing here can leak performance from the candidate rule.
-What IS taken from history is the *structure* measured by the blinded 7R-1
-audit — cluster arrival rate, assets per cluster, overlap — because the gates
-are only as strong as the sample structure they will actually see.
+No historical strategy returns are used. Trade outcomes come from a declared
+model, so nothing here can leak performance from the candidate rule. What IS
+taken from history is the sample STRUCTURE measured by the blinded 7R-1 audit,
+over the COMMON-UNIVERSE window — the four-asset portfolio the trial would
+actually hold.
 
-THE MODEL
----------
-Trend-following payoffs are asymmetric by construction: many small losses, few
-large wins. That shape, not the mean, is what makes profit factor unstable at
-small n, so the simulation reproduces it explicitly:
+WHAT THE STRUCTURE SAYS
+-----------------------
+Every exposure cluster in the measured window involves all four assets
+(unique assets per cluster = 4.0). The four names therefore supply no
+diversification at the cluster level: a cluster is one crypto-beta regime, and
+the whole sample is 7 of them in 4.9 years. That is the ceiling on evidence,
+and it is why the gates are simulated against clusters rather than trades.
 
-  * clusters arrive as a Poisson process at the measured rate;
-  * each cluster involves a drawn number of assets (mean matched to 7R-1);
-  * within a cluster, win/loss direction is correlated through a Gaussian
-    copula — four crypto assets trending together is ONE market event, not four
-    independent draws, which is the whole reason "pooled n" overstates evidence;
-  * a loss is a fixed stop-sized move; a win is lognormal with a long right
-    tail;
-  * costs are subtracted from every trade.
+THE PAYOFF MODEL
+----------------
+The strategy has NO stop. Its only exit is the 20-day close breakout, so the
+size of a losing trade is a property of price behaviour, not of a risk rule.
+Fixing it at one number would smuggle in a mechanism the strategy does not have,
+so loss size is a SENSITIVITY AXIS, not a constant.
 
-Two worlds are simulated: a null in which expectancy after costs is exactly
-zero, and an alternative with a genuine per-trade edge. Everything else is held
-identical.
+Wins are lognormal with a long right tail; within a cluster, win/loss direction
+is correlated through a Gaussian copula, and repeat entries by the same asset
+share the regime factor.
+
+DRAWDOWN IS NOT ASSESSED
+------------------------
+The protocol measures drawdown on the STF sleeve (20% of capital) in calendar
+time, including unrealized P&L on open positions. This simulation produces a
+sequence of closed trades, not a calendar equity curve, so it can only bound the
+realized-only component. That bound is reported; the drawdown GATE is marked NOT
+ASSESSED rather than being evaluated against the wrong quantity.
+
+An earlier version compounded trades against total equity at 5% per position and
+concluded the drawdown gate was inert. That was wrong twice over: the protocol
+denominator is the sleeve, on which one position is 25%, and unrealized moves
+were ignored entirely.
 
 Usage:
     python backtesting/stf_power.py            # write the study
@@ -37,6 +50,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -52,26 +66,41 @@ ARTIFACT_DIR = ROOT / "docs" / "research" / "artifacts" / "stf_feasibility"
 ARTIFACT = ARTIFACT_DIR / "power.json"
 FEASIBILITY = ARTIFACT_DIR / "audit.json"
 
-N_TRIALS = 5_000
+_CODE_PATHS = [
+    "backtesting/research_runner.py",
+    "backtesting/stf_power.py",
+]
+
+N_TRIALS = 4_000
 SEED = 20260819          # fixed: the study must reproduce byte-for-byte
 
 # ── Declared payoff model ────────────────────────────────────────────────────
-LOSS_PCT = 8.0           # a losing trend trade gives back roughly the entry risk
-COST_PCT = 1.4           # round-trip from the draft protocol
+# Loss size is an AXIS, not a constant: the rule has no stop, so what a loser
+# gives back is a property of price behaviour.
+LOSS_PCTS = (4.0, 8.0, 12.0)
 WIN_RATES = (0.25, 0.35, 0.45)
 CORRELATIONS = (0.5, 0.7, 0.9)
-HORIZONS_YEARS = (1.5, 3.0, 5.0, 10.0)
+HORIZONS_YEARS = (3.0, 5.0)
+COST_PCT = 1.4           # round-trip; refine from the 7R-2 probe before use
 EDGE_PCT = 2.0           # alternative world: +2% per trade after costs
-POSITION_FRACTION = 0.05  # one position = 5% of equity, per the draft protocol
+WIN_SIGMA = 0.9          # lognormal shape — a few trades carry the profit
 
-# ── The draft gates under test ───────────────────────────────────────────────
-GATE_MIN_TRADES = 20
-GATE_MIN_CLUSTERS = 3
-GATE_MIN_YEARS = 1.5
+# ── Position sizing and the drawdown denominator ─────────────────────────────
+# The protocol allocates a 20% sleeve to STF and sizes each position at 5% of
+# TOTAL capital, i.e. 25% OF THE SLEEVE. Drawdown is measured on the sleeve.
+SLEEVE_FRACTION_OF_CAPITAL = 0.20
+POSITION_FRACTION_OF_CAPITAL = 0.05
+POSITION_FRACTION_OF_SLEEVE = POSITION_FRACTION_OF_CAPITAL / SLEEVE_FRACTION_OF_CAPITAL
+
+# ── FINAL protocol gates (continuation, not success) ─────────────────────────
+GATE_MIN_TRADES = 30
+GATE_MIN_CLUSTERS = 5
+GATE_MIN_YEARS = 3.0
 GATE_MIN_PF = 1.30
-GATE_LOEO_MIN_PF = 1.00
-GATE_MAX_DD_PCT = 25.0
-GATE_MAX_ASSET_SHARE = 0.60
+# Reported, NOT gated: leave-one-cluster-out (invalid at 5-7 clusters),
+# asset concentration (measures universe correlation), drawdown (needs a
+# calendar equity curve this simulation does not produce).
+DIAGNOSTIC_ONLY = ("leave_one_cluster_out", "asset_concentration", "max_drawdown")
 
 
 class PowerError(RuntimeError):
@@ -79,124 +108,32 @@ class PowerError(RuntimeError):
 
 
 def _structure() -> dict:
-    """Cluster arrival rate and assets-per-cluster, from the blinded audit."""
+    """Sample structure from the blinded audit, common-universe window."""
     if not FEASIBILITY.exists():
         raise PowerError(
             f"{FEASIBILITY} is missing — run stf_feasibility.py first. The "
             "power study must be calibrated to the measured sample structure, "
             "not to a guess.")
-    p = json.loads(FEASIBILITY.read_text(encoding="utf-8"))["portfolio"]
-    clusters = p["exposure_clusters"]
-    mean_assets = p["mean_concurrent_when_exposed"]
-    # A cluster is a market REGIME, not a single trade. Within one, an asset
-    # re-enters several times. The first version of this study modelled one
-    # trade per asset per cluster and produced ~2.8 trades/year against a
-    # measured 11.94, so almost no simulated trial ever reached the minimums —
-    # an artefact of the model, not a property of the gates.
-    trades_per_asset_per_cluster = p["pooled_closed_trades"] / clusters / mean_assets
+    c = json.loads(FEASIBILITY.read_text(encoding="utf-8"))["common_universe"]
     return {
-        "clusters_per_year": p["clusters_per_year"],
-        "mean_assets_per_cluster": mean_assets,
-        "trades_per_asset_per_cluster": round(trades_per_asset_per_cluster, 2),
-        "measured_pooled_trades_per_year": p["pooled_closed_trades_per_year"],
+        "window": f"{c['window_start'][:10]}..{c['window_end'][:10]}",
+        "years": c["years"],
+        "clusters_per_year": c["clusters_per_year"],
+        # UNIQUE assets per cluster, not the mean concurrent count. Using the
+        # concurrent figure invents too few assets and too many repeat trades,
+        # which misstates correlation and concentration.
+        "unique_assets_per_cluster": c["mean_unique_assets_per_cluster"],
+        "trades_per_asset_per_cluster": c["trades_per_asset_per_cluster"],
+        "measured_pooled_trades_per_year": c["pooled_closed_trades_per_year"],
         "implied_pooled_trades_per_year": round(
-            p["clusters_per_year"] * mean_assets * trades_per_asset_per_cluster, 2),
+            c["clusters_per_year"] * c["mean_unique_assets_per_cluster"]
+            * c["trades_per_asset_per_cluster"], 2),
     }
 
 
-def _win_size(win_rate: float, edge: float) -> float:
-    """
-    Mean win that makes expectancy exactly `edge` after costs.
-
-    E = p*W - (1-p)*LOSS - COST  =>  W = (edge + COST + (1-p)*LOSS) / p
-    """
-    return (edge + COST_PCT + (1.0 - win_rate) * LOSS_PCT) / win_rate
-
-
-def _simulate_one(rng, years: float, win_rate: float, rho: float,
-                  edge: float, structure: dict) -> dict | None:
-    """One synthetic trial. Returns its gate inputs, or None if it never ran."""
-    lam = structure["clusters_per_year"] * years
-    n_clusters = int(rng.poisson(lam))
-    if n_clusters == 0:
-        return None
-
-    mean_assets = structure["mean_assets_per_cluster"]
-    threshold = -np.sqrt(2.0) * _erfinv(2.0 * win_rate - 1.0)   # Phi^-1(1-p)
-    mean_win = _win_size(win_rate, edge)
-    # Lognormal with a long right tail: sigma large enough that the median win
-    # is well below the mean, so a handful of trades carry the profit.
-    sigma = 0.9
-    mu = np.log(mean_win) - sigma ** 2 / 2.0
-
-    returns: list[float] = []
-    cluster_of: list[int] = []
-    asset_of: list[int] = []
-
-    for c in range(n_clusters):
-        # Assets participating in this cluster: at least one, mean matched.
-        k = int(np.clip(rng.poisson(mean_assets - 1) + 1, 1, 4))
-        assets = rng.choice(4, size=k, replace=False)
-        z = rng.standard_normal()                       # shared regime factor
-        for a in assets:
-            # An asset re-enters several times inside one regime. Those repeats
-            # share the regime factor, so they are NOT independent evidence
-            # either — which is the whole reason pooled n overstates the sample.
-            n_trades = max(1, int(rng.poisson(
-                structure["trades_per_asset_per_cluster"])))
-            for _ in range(n_trades):
-                e = rng.standard_normal()
-                latent = np.sqrt(rho) * z + np.sqrt(1.0 - rho) * e
-                if latent > threshold:
-                    r = float(rng.lognormal(mu, sigma)) - COST_PCT
-                else:
-                    r = -LOSS_PCT - COST_PCT
-                returns.append(r)
-                cluster_of.append(c)
-                asset_of.append(int(a))
-
-    if not returns:
-        return None
-
-    arr = np.array(returns)
-    gross_win = float(arr[arr > 0].sum())
-    gross_loss = float(-arr[arr < 0].sum())
-    pf = gross_win / gross_loss if gross_loss > 0 else float("inf")
-
-    # Leave-one-cluster-out on the BEST cluster.
-    cl = np.array(cluster_of)
-    best, best_sum = -1, -np.inf
-    for c in range(n_clusters):
-        s = float(arr[cl == c].sum())
-        if s > best_sum:
-            best, best_sum = c, s
-    rest = arr[cl != best]
-    rw = float(rest[rest > 0].sum())
-    rl = float(-rest[rest < 0].sum())
-    loeo_pf = (rw / rl if rl > 0 else (float("inf") if rw > 0 else 0.0))
-
-    # Equity path in cluster order. One position is POSITION_FRACTION of
-    # equity, so a trade returning r% moves equity by POSITION_FRACTION * r%.
-    equity, peak, max_dd = 100.0, 100.0, 0.0
-    for r in arr:
-        equity *= (1.0 + r / 100.0 * POSITION_FRACTION)
-        peak = max(peak, equity)
-        max_dd = max(max_dd, (peak - equity) / peak * 100.0)
-
-    asset_arr = np.array(asset_of)
-    shares = [float(arr[(asset_arr == a) & (arr > 0)].sum()) for a in range(4)]
-    top_share = (max(shares) / gross_win) if gross_win > 0 else 0.0
-
-    return {
-        "n_trades": len(arr),
-        "n_clusters": n_clusters,
-        "years": years,
-        "expectancy": float(arr.mean()),
-        "pf": pf,
-        "loeo_pf": loeo_pf,
-        "max_dd": max_dd,
-        "top_asset_share": top_share,
-    }
+def _win_size(win_rate: float, loss_pct: float, edge: float) -> float:
+    """Mean win making expectancy exactly `edge` after costs."""
+    return (edge + COST_PCT + (1.0 - win_rate) * loss_pct) / win_rate
 
 
 def _erfinv(x: float) -> float:
@@ -219,56 +156,108 @@ def _erfinv(x: float) -> float:
     return float(p * x)
 
 
-def _gate_results(t: dict) -> dict:
-    """Each drafted gate evaluated separately, so inert ones become visible."""
+def _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure):
+    """One synthetic trial. Returns gate inputs, or None if it never ran."""
+    n_clusters = int(rng.poisson(structure["clusters_per_year"] * years))
+    if n_clusters == 0:
+        return None
+
+    n_assets = int(round(structure["unique_assets_per_cluster"]))
+    threshold = -np.sqrt(2.0) * _erfinv(2.0 * win_rate - 1.0)   # Phi^-1(1-p)
+    mean_win = _win_size(win_rate, loss_pct, edge)
+    mu = np.log(mean_win) - WIN_SIGMA ** 2 / 2.0
+
+    returns, cluster_of, asset_of = [], [], []
+    for c in range(n_clusters):
+        z = rng.standard_normal()                       # shared regime factor
+        for a in range(n_assets):
+            n_trades = max(1, int(rng.poisson(
+                structure["trades_per_asset_per_cluster"])))
+            for _ in range(n_trades):
+                e = rng.standard_normal()
+                latent = np.sqrt(rho) * z + np.sqrt(1.0 - rho) * e
+                r = ((float(rng.lognormal(mu, WIN_SIGMA)) - COST_PCT)
+                     if latent > threshold else (-loss_pct - COST_PCT))
+                returns.append(r)
+                cluster_of.append(c)
+                asset_of.append(a)
+
+    arr = np.array(returns)
+    if arr.size == 0:
+        return None
+
+    gross_win = float(arr[arr > 0].sum())
+    gross_loss = float(-arr[arr < 0].sum())
+    pf = gross_win / gross_loss if gross_loss > 0 else float("inf")
+
+    cl = np.array(cluster_of)
+    sums = [float(arr[cl == c].sum()) for c in range(n_clusters)]
+    best = int(np.argmax(sums))
+    rest = arr[cl != best]
+    rw, rl = float(rest[rest > 0].sum()), float(-rest[rest < 0].sum())
+    loeo_pf = rw / rl if rl > 0 else (float("inf") if rw > 0 else 0.0)
+
+    # Realized-only sleeve drawdown. A LOWER BOUND on the protocol's quantity:
+    # it ignores unrealized moves and calendar overlap, both of which can only
+    # deepen a drawdown.
+    equity = peak = 1.0
+    max_dd = 0.0
+    for r in arr:
+        equity *= (1.0 + r / 100.0 * POSITION_FRACTION_OF_SLEEVE)
+        peak = max(peak, equity)
+        max_dd = max(max_dd, (peak - equity) / peak * 100.0)
+
+    aa = np.array(asset_of)
+    shares = [float(arr[(aa == a) & (arr > 0)].sum()) for a in range(n_assets)]
+    top_share = (max(shares) / gross_win) if gross_win > 0 else 0.0
+
+    return {
+        "n_trades": int(arr.size), "n_clusters": n_clusters, "years": years,
+        "expectancy": float(arr.mean()), "pf": pf, "loeo_pf": loeo_pf,
+        "realized_only_sleeve_dd": max_dd, "top_asset_share": top_share,
+    }
+
+
+def _gates(t: dict) -> dict:
+    """The FINAL gates. Diagnostics are computed but do not decide."""
     return {
         "minimums": (t["n_trades"] >= GATE_MIN_TRADES
                      and t["n_clusters"] >= GATE_MIN_CLUSTERS
                      and t["years"] >= GATE_MIN_YEARS),
         "expectancy": t["expectancy"] > 0,
         "profit_factor": t["pf"] >= GATE_MIN_PF,
-        "leave_one_cluster_out": t["loeo_pf"] >= GATE_LOEO_MIN_PF,
-        "max_drawdown": t["max_dd"] <= GATE_MAX_DD_PCT,
-        "asset_concentration": t["top_asset_share"] <= GATE_MAX_ASSET_SHARE,
     }
 
 
-def _passes(t: dict) -> bool:
-    """Every draft gate, applied exactly as written."""
-    return all(_gate_results(t).values())
-
-
-def _cell(rng, years, win_rate, rho, edge, structure) -> dict:
+def _cell(rng, years, win_rate, rho, loss_pct, edge, structure) -> dict:
     passed = reached = ran = 0
-    # How often each gate FAILS among trials that reached the minimums. A gate
-    # that never fails is not protecting anything.
-    binding = {k: 0 for k in ("expectancy", "profit_factor",
-                              "leave_one_cluster_out", "max_drawdown",
-                              "asset_concentration")}
+    diag = {"loeo_pf_below_1": 0, "top_asset_share_above_60": 0,
+            "realized_sleeve_dd_above_25": 0}
     for _ in range(N_TRIALS):
-        t = _simulate_one(rng, years, win_rate, rho, edge, structure)
+        t = _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure)
         if t is None:
             continue
         ran += 1
-        g = _gate_results(t)
+        g = _gates(t)
         if g["minimums"]:
             reached += 1
-            for name in binding:
-                if not g[name]:
-                    binding[name] += 1
+            diag["loeo_pf_below_1"] += t["loeo_pf"] < 1.0
+            diag["top_asset_share_above_60"] += t["top_asset_share"] > 0.60
+            diag["realized_sleeve_dd_above_25"] += t["realized_only_sleeve_dd"] > 25.0
         if all(g.values()):
             passed += 1
     return {
         "pass_rate": round(passed / ran, 4) if ran else None,
         "reached_minimums_rate": round(reached / ran, 4) if ran else None,
-        "gate_failure_rate_given_minimums": {
-            k: (round(v / reached, 4) if reached else None)
-            for k, v in binding.items()
+        "diagnostics_given_minimums": {
+            k: (round(v / reached, 4) if reached else None) for k, v in diag.items()
         },
     }
 
 
 def build_study() -> dict:
+    from backtesting.research_runner import environment_fingerprint, sha256_source
+
     structure = _structure()
     rng = np.random.default_rng(SEED)
 
@@ -276,46 +265,71 @@ def build_study() -> dict:
     for years in HORIZONS_YEARS:
         for win_rate in WIN_RATES:
             for rho in CORRELATIONS:
-                key = f"years={years}|win_rate={win_rate}|rho={rho}"
-                null_cells[key] = _cell(rng, years, win_rate, rho, 0.0, structure)
-                alt_cells[key] = _cell(rng, years, win_rate, rho, EDGE_PCT, structure)
+                for loss_pct in LOSS_PCTS:
+                    key = (f"years={years}|win_rate={win_rate}|rho={rho}"
+                           f"|loss={loss_pct}")
+                    null_cells[key] = _cell(rng, years, win_rate, rho,
+                                            loss_pct, 0.0, structure)
+                    alt_cells[key] = _cell(rng, years, win_rate, rho,
+                                           loss_pct, EDGE_PCT, structure)
 
     def _summary(cells):
         rates = [c["pass_rate"] for c in cells.values() if c["pass_rate"] is not None]
-        return {
-            "min": round(min(rates), 4),
-            "median": round(float(np.median(rates)), 4),
-            "max": round(max(rates), 4),
-        }
+        return {"min": round(min(rates), 4),
+                "median": round(float(np.median(rates)), 4),
+                "max": round(max(rates), 4)}
+
+    files = sorted(({"file": rel, "sha256": sha256_source(ROOT / rel)}
+                    for rel in _CODE_PATHS), key=lambda d: d["file"])
+    agg = hashlib.sha256()
+    for entry in files:
+        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
 
     return {
         "trial_id": TRIAL_ID,
-        "purpose": ("power of the draft STF acceptance gates under a declared "
+        "purpose": ("power of the FINAL STF continuation gates under a declared "
                     "payoff model — no historical strategy returns are used"),
+        "code": {"files": files, "code_sha256": agg.hexdigest()},
+        "environment": environment_fingerprint(),
         "calibrated_from": {
             "source": "docs/research/artifacts/stf_feasibility/audit.json",
+            "basis": "common-universe window (fixed four-asset portfolio)",
             **structure,
         },
         "model": {
-            "loss_pct": LOSS_PCT,
+            "loss_pcts": list(LOSS_PCTS),
+            "loss_is_an_axis_because": ("the rule has no stop; its only exit is "
+                                        "the 20-day close breakout, so loss size "
+                                        "is a property of price, not of a risk "
+                                        "rule"),
             "cost_pct": COST_PCT,
-            "win_distribution": "lognormal, sigma=0.9 (long right tail)",
-            "win_size_rule": "mean win set so expectancy equals the stated edge",
-            "correlation": "Gaussian copula on win/loss direction within a cluster",
+            "win_distribution": f"lognormal, sigma={WIN_SIGMA}",
+            "correlation": "Gaussian copula on direction within a cluster",
             "edge_pct_alternative": EDGE_PCT,
-            "position_fraction_of_equity": POSITION_FRACTION,
             "n_trials_per_cell": N_TRIALS,
             "seed": SEED,
         },
-        "gates": {
+        "sizing": {
+            "sleeve_fraction_of_capital": SLEEVE_FRACTION_OF_CAPITAL,
+            "position_fraction_of_capital": POSITION_FRACTION_OF_CAPITAL,
+            "position_fraction_of_sleeve": POSITION_FRACTION_OF_SLEEVE,
+        },
+        "gates_evaluated": {
             "min_trades": GATE_MIN_TRADES,
             "min_clusters": GATE_MIN_CLUSTERS,
             "min_years": GATE_MIN_YEARS,
             "min_pf": GATE_MIN_PF,
-            "loeo_min_pf": GATE_LOEO_MIN_PF,
-            "max_dd_pct": GATE_MAX_DD_PCT,
-            "max_asset_share": GATE_MAX_ASSET_SHARE,
+            "expectancy_above_zero": True,
         },
+        "not_assessed": {
+            "max_drawdown": ("the protocol measures sleeve drawdown in calendar "
+                             "time including unrealized P&L; this simulation "
+                             "produces closed trades only, so only a realized-"
+                             "only LOWER BOUND is reported"),
+            "leave_one_cluster_out": "reported as a diagnostic, not a gate",
+            "asset_concentration": "reported as a diagnostic, not a gate",
+        },
+        "diagnostics_are_not_gates": list(DIAGNOSTIC_ONLY),
         "null_world_no_edge": {"cells": null_cells, "summary": _summary(null_cells)},
         "alternative_world_with_edge": {"cells": alt_cells,
                                         "summary": _summary(alt_cells)},
@@ -324,6 +338,24 @@ def build_study() -> dict:
 
 def _serialise(study: dict) -> str:
     return json.dumps(study, indent=2, sort_keys=True) + "\n"
+
+
+def _assert_writable() -> None:
+    from backtesting.research_runner import (
+        assert_canonical_python,
+        assert_code_is_committed,
+    )
+
+    assert_canonical_python()
+    assert_code_is_committed(_CODE_PATHS)
+
+
+def write_artifact() -> tuple[Path, dict]:
+    _assert_writable()
+    study = build_study()
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    ARTIFACT.write_text(_serialise(study), encoding="utf-8")
+    return ARTIFACT, study
 
 
 def verify() -> bool:
@@ -336,31 +368,38 @@ def verify() -> bool:
 
 
 def _report(s: dict) -> None:
-    print("\n" + "=" * 78)
-    print(f"STF GATE POWER STUDY  ({s['trial_id']})")
-    print("Synthetic outcomes only. Structure calibrated to the blinded audit.")
-    print("=" * 78)
-    print(f"\ncluster rate {s['calibrated_from']['clusters_per_year']}/yr, "
-          f"mean {s['calibrated_from']['mean_assets_per_cluster']} assets/cluster")
+    c = s["calibrated_from"]
+    print("\n" + "=" * 80)
+    print(f"STF CONTINUATION-GATE POWER STUDY  ({s['trial_id']})")
+    print("Synthetic outcomes. Structure from the blinded common-universe audit.")
+    print("=" * 80)
+    print(f"\n{c['clusters_per_year']} clusters/yr, "
+          f"{c['unique_assets_per_cluster']} UNIQUE assets per cluster, "
+          f"{c['trades_per_asset_per_cluster']} trades per asset per cluster")
+    print(f"gates: {s['gates_evaluated']}")
 
-    print(f"\n{'horizon':>8s} {'win':>5s} {'rho':>5s} "
-          f"{'PASS | no edge':>15s} {'PASS | real edge':>17s} {'reached mins':>13s}")
-    print("-" * 78)
+    print(f"\n{'yrs':>4s} {'win':>5s} {'rho':>4s} {'loss':>5s} "
+          f"{'PASS|no edge':>13s} {'PASS|edge':>10s} {'ratio':>6s} {'mins':>6s}")
+    print("-" * 80)
     for key in s["null_world_no_edge"]["cells"]:
-        years = key.split("|")[0].split("=")[1]
-        win = key.split("|")[1].split("=")[1]
-        rho = key.split("|")[2].split("=")[1]
+        parts = dict(p.split("=") for p in key.split("|"))
         n = s["null_world_no_edge"]["cells"][key]
         a = s["alternative_world_with_edge"]["cells"][key]
-        print(f"{years:>8s} {win:>5s} {rho:>5s} {n['pass_rate']:>15.1%} "
-              f"{a['pass_rate']:>17.1%} {a['reached_minimums_rate']:>13.1%}")
+        ratio = (a["pass_rate"] / n["pass_rate"]) if n["pass_rate"] else float("inf")
+        print(f"{parts['years']:>4s} {parts['win_rate']:>5s} {parts['rho']:>4s} "
+              f"{parts['loss']:>5s} {n['pass_rate']:>13.1%} "
+              f"{a['pass_rate']:>10.1%} {ratio:>6.2f} "
+              f"{a['reached_minimums_rate']:>6.1%}")
 
-    ns, als = s["null_world_no_edge"]["summary"], s["alternative_world_with_edge"]["summary"]
-    print(f"\nfalse-pass rate (no edge)  min {ns['min']:.1%}  "
-          f"median {ns['median']:.1%}  max {ns['max']:.1%}")
-    print(f"true-pass rate (real edge) min {als['min']:.1%}  "
-          f"median {als['median']:.1%}  max {als['max']:.1%}")
-    print("=" * 78)
+    ns = s["null_world_no_edge"]["summary"]
+    als = s["alternative_world_with_edge"]["summary"]
+    print(f"\nfalse-pass  (no edge)  min {ns['min']:.1%} median {ns['median']:.1%} "
+          f"max {ns['max']:.1%}")
+    print(f"true-pass   (edge)     min {als['min']:.1%} median {als['median']:.1%} "
+          f"max {als['max']:.1%}")
+    print("\ndrawdown gate: NOT ASSESSED (needs a calendar equity curve with "
+          "unrealized P&L)")
+    print("=" * 80)
 
 
 def main() -> None:
@@ -370,11 +409,10 @@ def main() -> None:
                 print("OK: power study reproduces byte-for-byte.")
                 return
             sys.exit(1)
-        study = build_study()
+        path, study = write_artifact()
         _report(study)
-        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-        ARTIFACT.write_text(_serialise(study), encoding="utf-8")
-        print(f"\nwrote {ARTIFACT.relative_to(ROOT)}")
+        shown = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+        print(f"\nwrote {shown}")
     except PowerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(2)

@@ -100,3 +100,5 @@ jobs:
         run: |
           python backtesting/research_runner.py --verify
           python backtesting/walk_forward.py --verify
+          python backtesting/stf_feasibility.py --verify
+          python backtesting/stf_power.py --verify

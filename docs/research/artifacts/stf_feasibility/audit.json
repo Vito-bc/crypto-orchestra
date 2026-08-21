@@ -1,17 +1,183 @@
 {
+  "audit_window": {
+    "end_inclusive": "2026-07-12T00:00:00+00:00",
+    "start_inclusive": "2020-01-01T00:00:00+00:00"
+  },
   "blinding": "prices are consumed exclusively by entry_exit_events(), which returns timestamps and labels; no P&L, profit factor, expectancy, win rate, asset ranking or parameter comparison is computed anywhere in this module",
+  "code": {
+    "code_sha256": "01c3e690fef8e12a9f7795a61697e0b08ae30f87390b8a6fb6950f7980b1b1a0",
+    "files": [
+      {
+        "file": "backtesting/research_runner.py",
+        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
+      },
+      {
+        "file": "backtesting/stf_feasibility.py",
+        "sha256": "85ef155f52f370f02b55fdd8eb1d50e35c2a586cf7c4fb4b36bd7fdfa94c18fc"
+      }
+    ]
+  },
+  "common_universe": {
+    "cluster_gap_days": 60,
+    "clusters": [
+      {
+        "closed_trades_started": 6,
+        "end": "2021-12-09T00:00:00+00:00",
+        "exposed_days": 121,
+        "start": "2021-08-11T00:00:00+00:00",
+        "unique_assets": 4
+      },
+      {
+        "closed_trades_started": 4,
+        "end": "2022-04-23T00:00:00+00:00",
+        "exposed_days": 45,
+        "start": "2022-03-10T00:00:00+00:00",
+        "unique_assets": 4
+      },
+      {
+        "closed_trades_started": 4,
+        "end": "2022-08-25T00:00:00+00:00",
+        "exposed_days": 21,
+        "start": "2022-08-05T00:00:00+00:00",
+        "unique_assets": 4
+      },
+      {
+        "closed_trades_started": 13,
+        "end": "2023-08-01T00:00:00+00:00",
+        "exposed_days": 205,
+        "start": "2023-01-09T00:00:00+00:00",
+        "unique_assets": 4
+      },
+      {
+        "closed_trades_started": 20,
+        "end": "2025-02-04T00:00:00+00:00",
+        "exposed_days": 478,
+        "start": "2023-10-16T00:00:00+00:00",
+        "unique_assets": 4
+      },
+      {
+        "closed_trades_started": 15,
+        "end": "2026-01-24T00:00:00+00:00",
+        "exposed_days": 275,
+        "start": "2025-04-25T00:00:00+00:00",
+        "unique_assets": 4
+      },
+      {
+        "closed_trades_started": 4,
+        "end": "2026-06-03T00:00:00+00:00",
+        "exposed_days": 57,
+        "start": "2026-04-08T00:00:00+00:00",
+        "unique_assets": 4
+      }
+    ],
+    "clusters_per_year": 1.42,
+    "concurrency_days": {
+      "0": 881,
+      "1": 284,
+      "2": 264,
+      "3": 156,
+      "4": 212
+    },
+    "days_total": 1797,
+    "days_with_any_exposure": 916,
+    "exposure_clusters": 7,
+    "exposure_fraction": 0.51,
+    "implied_years_to_target": {
+      "20": 1.49,
+      "30": 2.24
+    },
+    "mean_closed_trades_per_cluster": 9.429,
+    "mean_concurrent_when_exposed": 2.323,
+    "mean_unique_assets_per_cluster": 4.0,
+    "pairwise_overlap": {
+      "BTC-USD|ETH-USD": {
+        "days_both": 425,
+        "days_either": 686,
+        "jaccard": 0.62
+      },
+      "BTC-USD|SOL-USD": {
+        "days_both": 368,
+        "days_either": 709,
+        "jaccard": 0.519
+      },
+      "BTC-USD|ZEC-USD": {
+        "days_both": 281,
+        "days_either": 779,
+        "jaccard": 0.361
+      },
+      "ETH-USD|SOL-USD": {
+        "days_both": 360,
+        "days_either": 708,
+        "jaccard": 0.508
+      },
+      "ETH-USD|ZEC-USD": {
+        "days_both": 286,
+        "days_either": 765,
+        "jaccard": 0.374
+      },
+      "SOL-USD|ZEC-USD": {
+        "days_both": 284,
+        "days_either": 733,
+        "jaccard": 0.387
+      }
+    },
+    "pooled_closed_trades": 66,
+    "pooled_closed_trades_per_year": 13.41,
+    "trades_per_asset_per_cluster": 2.357,
+    "window_end": "2026-07-12T00:00:00+00:00",
+    "window_start": "2021-08-11T00:00:00+00:00",
+    "years": 4.92
+  },
+  "environment": {
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "ta": "0.11.0"
+    },
+    "python": "3.13.5"
+  },
+  "inputs": [
+    {
+      "file": "BTC_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "14bc0da98eb93a3bc2ee3b1689f56ca48dca60f0f2297c8bd883042ef5c947a0",
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
+    },
+    {
+      "file": "ETH_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "f8355b6cdc590fbf9134fcdccb4bc96c4dc757697f536fab36dc3fae53299389",
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
+    },
+    {
+      "file": "SOL_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "7cc7766a3095e888963a2dcb9555752d795bc455733815e323fe58306ee7c39b",
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
+    },
+    {
+      "file": "ZEC_USD_1d.parquet",
+      "hash_scheme": "ohlcv-logical-v1",
+      "logical_sha256": "025cf812338fb5c591fb726a540d9e863146adeacb037e93e3752868aa9cdd97",
+      "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
+      "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
+    }
+  ],
   "not_evidence": "this is PRE-CUTOFF data used to size a future trial. It is not an evaluation and cannot support or oppose activation.",
-  "per_asset": {
+  "per_asset_full_history": {
     "BTC-USD": {
       "closed_trades": 23,
-      "closed_trades_per_year": 3.56,
+      "closed_trades_per_year": 3.61,
       "data_quality": {
-        "bars": 2412,
-        "calendar_days_spanned": 2412,
-        "close_non_finite": 0,
+        "bars": 2384,
+        "calendar_days_spanned": 2384,
         "first": "2020-01-02T00:00:00+00:00",
         "gap_count": 0,
-        "last": "2026-08-09T00:00:00+00:00",
+        "last": "2026-07-12T00:00:00+00:00",
         "missing_days_est": 0,
         "required_fields_missing": [],
         "required_fields_present": [
@@ -23,8 +189,9 @@
           "volume"
         ]
       },
-      "eligible_years": 6.45,
+      "eligible_years": 6.38,
       "entries": 23,
+      "first_eligible": "2020-02-26T00:00:00+00:00",
       "holding_days": {
         "max": 98,
         "mean": 37.0,
@@ -38,14 +205,13 @@
     },
     "ETH-USD": {
       "closed_trades": 22,
-      "closed_trades_per_year": 3.41,
+      "closed_trades_per_year": 3.45,
       "data_quality": {
-        "bars": 2412,
-        "calendar_days_spanned": 2412,
-        "close_non_finite": 0,
+        "bars": 2384,
+        "calendar_days_spanned": 2384,
         "first": "2020-01-02T00:00:00+00:00",
         "gap_count": 0,
-        "last": "2026-08-09T00:00:00+00:00",
+        "last": "2026-07-12T00:00:00+00:00",
         "missing_days_est": 0,
         "required_fields_missing": [],
         "required_fields_present": [
@@ -57,8 +223,9 @@
           "volume"
         ]
       },
-      "eligible_years": 6.45,
+      "eligible_years": 6.38,
       "entries": 22,
+      "first_eligible": "2020-02-26T00:00:00+00:00",
       "holding_days": {
         "max": 110,
         "mean": 37.3,
@@ -72,14 +239,13 @@
     },
     "SOL-USD": {
       "closed_trades": 16,
-      "closed_trades_per_year": 3.2,
+      "closed_trades_per_year": 3.25,
       "data_quality": {
-        "bars": 1880,
-        "calendar_days_spanned": 1880,
-        "close_non_finite": 0,
+        "bars": 1852,
+        "calendar_days_spanned": 1852,
         "first": "2021-06-17T00:00:00+00:00",
         "gap_count": 0,
-        "last": "2026-08-09T00:00:00+00:00",
+        "last": "2026-07-12T00:00:00+00:00",
         "missing_days_est": 0,
         "required_fields_missing": [],
         "required_fields_present": [
@@ -91,8 +257,9 @@
           "volume"
         ]
       },
-      "eligible_years": 5.0,
+      "eligible_years": 4.92,
       "entries": 16,
+      "first_eligible": "2021-08-11T00:00:00+00:00",
       "holding_days": {
         "max": 99,
         "mean": 32.3,
@@ -106,14 +273,13 @@
     },
     "ZEC-USD": {
       "closed_trades": 16,
-      "closed_trades_per_year": 2.9,
+      "closed_trades_per_year": 2.94,
       "data_quality": {
-        "bars": 2071,
-        "calendar_days_spanned": 2071,
-        "close_non_finite": 0,
+        "bars": 2043,
+        "calendar_days_spanned": 2043,
         "first": "2020-12-08T00:00:00+00:00",
         "gap_count": 0,
-        "last": "2026-08-09T00:00:00+00:00",
+        "last": "2026-07-12T00:00:00+00:00",
         "missing_days_est": 0,
         "required_fields_missing": [],
         "required_fields_present": [
@@ -125,8 +291,9 @@
           "volume"
         ]
       },
-      "eligible_years": 5.52,
+      "eligible_years": 5.44,
       "entries": 16,
+      "first_eligible": "2021-02-01T00:00:00+00:00",
       "holding_days": {
         "max": 97,
         "mean": 37.3,
@@ -138,103 +305,6 @@
       },
       "open_at_end": 0
     }
-  },
-  "portfolio": {
-    "cluster_gap_days": 60,
-    "clusters": [
-      {
-        "end": "2021-05-18T00:00:00+00:00",
-        "exposed_days": 382,
-        "start": "2020-05-02T00:00:00+00:00"
-      },
-      {
-        "end": "2021-12-09T00:00:00+00:00",
-        "exposed_days": 133,
-        "start": "2021-07-30T00:00:00+00:00"
-      },
-      {
-        "end": "2022-04-23T00:00:00+00:00",
-        "exposed_days": 45,
-        "start": "2022-03-10T00:00:00+00:00"
-      },
-      {
-        "end": "2022-08-25T00:00:00+00:00",
-        "exposed_days": 21,
-        "start": "2022-08-05T00:00:00+00:00"
-      },
-      {
-        "end": "2023-08-01T00:00:00+00:00",
-        "exposed_days": 205,
-        "start": "2023-01-09T00:00:00+00:00"
-      },
-      {
-        "end": "2025-02-04T00:00:00+00:00",
-        "exposed_days": 478,
-        "start": "2023-10-16T00:00:00+00:00"
-      },
-      {
-        "end": "2026-01-24T00:00:00+00:00",
-        "exposed_days": 275,
-        "start": "2025-04-25T00:00:00+00:00"
-      },
-      {
-        "end": "2026-06-03T00:00:00+00:00",
-        "exposed_days": 57,
-        "start": "2026-04-08T00:00:00+00:00"
-      }
-    ],
-    "clusters_per_year": 1.24,
-    "concurrency_days": {
-      "0": 1177,
-      "1": 347,
-      "2": 462,
-      "3": 189,
-      "4": 237
-    },
-    "days_total": 2412,
-    "days_with_any_exposure": 1235,
-    "exposure_clusters": 8,
-    "exposure_fraction": 0.512,
-    "implied_years_to_target": {
-      "20": 1.68,
-      "30": 2.51
-    },
-    "mean_concurrent_when_exposed": 2.26,
-    "pairwise_overlap": {
-      "BTC-USD|ETH-USD": {
-        "days_both": 627,
-        "days_either": 1045,
-        "jaccard": 0.6
-      },
-      "BTC-USD|SOL-USD": {
-        "days_both": 396,
-        "days_either": 972,
-        "jaccard": 0.407
-      },
-      "BTC-USD|ZEC-USD": {
-        "days_both": 373,
-        "days_either": 1075,
-        "jaccard": 0.347
-      },
-      "ETH-USD|SOL-USD": {
-        "days_both": 400,
-        "days_either": 938,
-        "jaccard": 0.426
-      },
-      "ETH-USD|ZEC-USD": {
-        "days_both": 371,
-        "days_either": 1047,
-        "jaccard": 0.354
-      },
-      "SOL-USD|ZEC-USD": {
-        "days_both": 284,
-        "days_either": 830,
-        "jaccard": 0.342
-      }
-    },
-    "pooled_closed_trades": 77,
-    "pooled_closed_trades_per_year": 11.94,
-    "pooled_years": 6.45
   },
   "purpose": "BLINDED feasibility audit \u2014 event rates, exposure structure and data quality only",
   "rule": {
