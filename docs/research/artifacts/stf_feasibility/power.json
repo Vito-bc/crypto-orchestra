@@ -1,842 +1,1063 @@
 {
   "alternative_world_with_edge": {
     "cells": {
-      "years=1.5|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4557,
-          "expectancy": 0.4456,
-          "leave_one_cluster_out": 0.7749,
-          "max_drawdown": 0.0008,
-          "profit_factor": 0.569
+      "years=3.0|win_rate=0.25|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7437,
+          "realized_sleeve_dd_above_25": 0.9546,
+          "top_asset_share_above_60": 0.1613
         },
-        "pass_rate": 0.0487,
-        "reached_minimums_rate": 0.305
+        "pass_rate": 0.1756,
+        "reached_minimums_rate": 0.426
       },
-      "years=1.5|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4808,
-          "expectancy": 0.4652,
-          "leave_one_cluster_out": 0.805,
-          "max_drawdown": 0.0008,
-          "profit_factor": 0.5591
+      "years=3.0|win_rate=0.25|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6584,
+          "realized_sleeve_dd_above_25": 0.4863,
+          "top_asset_share_above_60": 0.169
         },
-        "pass_rate": 0.0485,
-        "reached_minimums_rate": 0.3054
+        "pass_rate": 0.2213,
+        "reached_minimums_rate": 0.417
       },
-      "years=1.5|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4298,
-          "expectancy": 0.4996,
-          "leave_one_cluster_out": 0.8196,
-          "max_drawdown": 0.0038,
-          "profit_factor": 0.571
+      "years=3.0|win_rate=0.25|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7316,
+          "realized_sleeve_dd_above_25": 0.8802,
+          "top_asset_share_above_60": 0.1758
         },
-        "pass_rate": 0.0445,
-        "reached_minimums_rate": 0.3069
+        "pass_rate": 0.1859,
+        "reached_minimums_rate": 0.43
       },
-      "years=1.5|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3654,
-          "expectancy": 0.4188,
-          "leave_one_cluster_out": 0.7033,
-          "max_drawdown": 0.0,
-          "profit_factor": 0.5347
+      "years=3.0|win_rate=0.25|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7557,
+          "realized_sleeve_dd_above_25": 0.9717,
+          "top_asset_share_above_60": 0.1586
         },
-        "pass_rate": 0.072,
-        "reached_minimums_rate": 0.3085
+        "pass_rate": 0.1809,
+        "reached_minimums_rate": 0.42
       },
-      "years=1.5|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4064,
-          "expectancy": 0.4505,
-          "leave_one_cluster_out": 0.7634,
-          "max_drawdown": 0.0008,
-          "profit_factor": 0.5425
+      "years=3.0|win_rate=0.25|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6761,
+          "realized_sleeve_dd_above_25": 0.5912,
+          "top_asset_share_above_60": 0.1853
         },
-        "pass_rate": 0.056,
-        "reached_minimums_rate": 0.3006
+        "pass_rate": 0.2266,
+        "reached_minimums_rate": 0.4301
       },
-      "years=1.5|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3871,
-          "expectancy": 0.465,
-          "leave_one_cluster_out": 0.7679,
-          "max_drawdown": 0.0016,
-          "profit_factor": 0.5397
+      "years=3.0|win_rate=0.25|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7557,
+          "realized_sleeve_dd_above_25": 0.8974,
+          "top_asset_share_above_60": 0.1808
         },
-        "pass_rate": 0.0584,
-        "reached_minimums_rate": 0.301
+        "pass_rate": 0.1848,
+        "reached_minimums_rate": 0.4347
       },
-      "years=1.5|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2651,
-          "expectancy": 0.3509,
-          "leave_one_cluster_out": 0.657,
-          "max_drawdown": 0.0,
-          "profit_factor": 0.4626
+      "years=3.0|win_rate=0.25|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7838,
+          "realized_sleeve_dd_above_25": 0.9875,
+          "top_asset_share_above_60": 0.1577
         },
-        "pass_rate": 0.0861,
-        "reached_minimums_rate": 0.3015
+        "pass_rate": 0.1775,
+        "reached_minimums_rate": 0.4239
       },
-      "years=1.5|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3006,
-          "expectancy": 0.391,
-          "leave_one_cluster_out": 0.6875,
-          "max_drawdown": 0.0,
-          "profit_factor": 0.4893
+      "years=3.0|win_rate=0.25|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7181,
+          "realized_sleeve_dd_above_25": 0.7024,
+          "top_asset_share_above_60": 0.187
         },
-        "pass_rate": 0.0793,
-        "reached_minimums_rate": 0.2985
+        "pass_rate": 0.218,
+        "reached_minimums_rate": 0.4341
       },
-      "years=1.5|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3414,
-          "expectancy": 0.4046,
-          "leave_one_cluster_out": 0.7202,
-          "max_drawdown": 0.0008,
-          "profit_factor": 0.4897
+      "years=3.0|win_rate=0.25|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7405,
+          "realized_sleeve_dd_above_25": 0.924,
+          "top_asset_share_above_60": 0.1642
         },
-        "pass_rate": 0.0709,
-        "reached_minimums_rate": 0.3085
+        "pass_rate": 0.2005,
+        "reached_minimums_rate": 0.4342
       },
-      "years=10.0|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0943,
-          "expectancy": 0.3513,
-          "leave_one_cluster_out": 0.6363,
-          "max_drawdown": 0.0957,
-          "profit_factor": 0.5448
+      "years=3.0|win_rate=0.35|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6831,
+          "realized_sleeve_dd_above_25": 0.9126,
+          "top_asset_share_above_60": 0.0713
         },
-        "pass_rate": 0.3348,
-        "reached_minimums_rate": 0.9986
+        "pass_rate": 0.1851,
+        "reached_minimums_rate": 0.4258
       },
-      "years=10.0|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1259,
-          "expectancy": 0.3765,
-          "leave_one_cluster_out": 0.6607,
-          "max_drawdown": 0.1643,
-          "profit_factor": 0.5372
+      "years=3.0|win_rate=0.35|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5806,
+          "realized_sleeve_dd_above_25": 0.3135,
+          "top_asset_share_above_60": 0.0821
         },
-        "pass_rate": 0.3138,
-        "reached_minimums_rate": 0.9992
+        "pass_rate": 0.236,
+        "reached_minimums_rate": 0.4039
       },
-      "years=10.0|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1683,
-          "expectancy": 0.3946,
-          "leave_one_cluster_out": 0.7052,
-          "max_drawdown": 0.264,
-          "profit_factor": 0.5433
+      "years=3.0|win_rate=0.35|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.646,
+          "realized_sleeve_dd_above_25": 0.7441,
+          "top_asset_share_above_60": 0.0774
         },
-        "pass_rate": 0.2728,
-        "reached_minimums_rate": 0.9994
+        "pass_rate": 0.2093,
+        "reached_minimums_rate": 0.4292
       },
-      "years=10.0|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0504,
-          "expectancy": 0.2913,
-          "leave_one_cluster_out": 0.5493,
-          "max_drawdown": 0.0344,
-          "profit_factor": 0.5051
+      "years=3.0|win_rate=0.35|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6943,
+          "realized_sleeve_dd_above_25": 0.9383,
+          "top_asset_share_above_60": 0.0732
         },
-        "pass_rate": 0.4188,
-        "reached_minimums_rate": 0.9998
+        "pass_rate": 0.1945,
+        "reached_minimums_rate": 0.4398
       },
-      "years=10.0|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0686,
-          "expectancy": 0.3301,
-          "leave_one_cluster_out": 0.5833,
-          "max_drawdown": 0.0778,
-          "profit_factor": 0.5017
+      "years=3.0|win_rate=0.35|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5977,
+          "realized_sleeve_dd_above_25": 0.4331,
+          "top_asset_share_above_60": 0.0966
         },
-        "pass_rate": 0.3924,
-        "reached_minimums_rate": 0.9998
+        "pass_rate": 0.2513,
+        "reached_minimums_rate": 0.4285
       },
-      "years=10.0|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0929,
-          "expectancy": 0.3556,
-          "leave_one_cluster_out": 0.6177,
-          "max_drawdown": 0.1438,
-          "profit_factor": 0.511
+      "years=3.0|win_rate=0.35|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6694,
+          "realized_sleeve_dd_above_25": 0.8224,
+          "top_asset_share_above_60": 0.0923
         },
-        "pass_rate": 0.3654,
-        "reached_minimums_rate": 0.9988
+        "pass_rate": 0.2133,
+        "reached_minimums_rate": 0.4343
       },
-      "years=10.0|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.03,
-          "expectancy": 0.2498,
-          "leave_one_cluster_out": 0.4787,
-          "max_drawdown": 0.014,
-          "profit_factor": 0.4577
+      "years=3.0|win_rate=0.35|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7448,
+          "realized_sleeve_dd_above_25": 0.9684,
+          "top_asset_share_above_60": 0.1142
         },
-        "pass_rate": 0.4822,
-        "reached_minimums_rate": 0.999
+        "pass_rate": 0.1767,
+        "reached_minimums_rate": 0.4162
       },
-      "years=10.0|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0364,
-          "expectancy": 0.2798,
-          "leave_one_cluster_out": 0.5116,
-          "max_drawdown": 0.0346,
-          "profit_factor": 0.4612
+      "years=3.0|win_rate=0.35|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6374,
+          "realized_sleeve_dd_above_25": 0.5548,
+          "top_asset_share_above_60": 0.117
         },
-        "pass_rate": 0.4662,
-        "reached_minimums_rate": 0.9992
+        "pass_rate": 0.2462,
+        "reached_minimums_rate": 0.4415
       },
-      "years=10.0|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0488,
-          "expectancy": 0.2993,
-          "leave_one_cluster_out": 0.532,
-          "max_drawdown": 0.0668,
-          "profit_factor": 0.4556
+      "years=3.0|win_rate=0.35|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6887,
+          "realized_sleeve_dd_above_25": 0.862,
+          "top_asset_share_above_60": 0.111
         },
-        "pass_rate": 0.4538,
-        "reached_minimums_rate": 0.9996
+        "pass_rate": 0.2059,
+        "reached_minimums_rate": 0.4228
       },
-      "years=3.0|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3882,
-          "expectancy": 0.4431,
-          "leave_one_cluster_out": 0.7684,
-          "max_drawdown": 0.0044,
-          "profit_factor": 0.5647
+      "years=3.0|win_rate=0.45|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6273,
+          "realized_sleeve_dd_above_25": 0.8268,
+          "top_asset_share_above_60": 0.0371
         },
-        "pass_rate": 0.1293,
-        "reached_minimums_rate": 0.6918
+        "pass_rate": 0.1996,
+        "reached_minimums_rate": 0.4249
       },
-      "years=3.0|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4005,
-          "expectancy": 0.472,
-          "leave_one_cluster_out": 0.7923,
-          "max_drawdown": 0.0097,
-          "profit_factor": 0.5649
+      "years=3.0|win_rate=0.45|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.477,
+          "realized_sleeve_dd_above_25": 0.1956,
+          "top_asset_share_above_60": 0.0556
         },
-        "pass_rate": 0.1207,
-        "reached_minimums_rate": 0.7004
+        "pass_rate": 0.2704,
+        "reached_minimums_rate": 0.4285
       },
-      "years=3.0|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4177,
-          "expectancy": 0.4924,
-          "leave_one_cluster_out": 0.8042,
-          "max_drawdown": 0.0212,
-          "profit_factor": 0.5685
+      "years=3.0|win_rate=0.45|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5824,
+          "realized_sleeve_dd_above_25": 0.5883,
+          "top_asset_share_above_60": 0.0442
         },
-        "pass_rate": 0.1145,
-        "reached_minimums_rate": 0.6958
+        "pass_rate": 0.2262,
+        "reached_minimums_rate": 0.4305
       },
-      "years=3.0|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2885,
-          "expectancy": 0.4061,
-          "leave_one_cluster_out": 0.6994,
-          "max_drawdown": 0.0006,
-          "profit_factor": 0.5297
+      "years=3.0|win_rate=0.45|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6409,
+          "realized_sleeve_dd_above_25": 0.8724,
+          "top_asset_share_above_60": 0.0591
         },
-        "pass_rate": 0.178,
-        "reached_minimums_rate": 0.6944
+        "pass_rate": 0.1998,
+        "reached_minimums_rate": 0.4277
       },
-      "years=3.0|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3211,
-          "expectancy": 0.4332,
-          "leave_one_cluster_out": 0.7385,
-          "max_drawdown": 0.0038,
-          "profit_factor": 0.5395
+      "years=3.0|win_rate=0.45|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.4953,
+          "realized_sleeve_dd_above_25": 0.2633,
+          "top_asset_share_above_60": 0.0516
         },
-        "pass_rate": 0.1593,
-        "reached_minimums_rate": 0.6974
+        "pass_rate": 0.2716,
+        "reached_minimums_rate": 0.428
       },
-      "years=3.0|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3342,
-          "expectancy": 0.4372,
-          "leave_one_cluster_out": 0.7397,
-          "max_drawdown": 0.0102,
-          "profit_factor": 0.5359
+      "years=3.0|win_rate=0.45|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5916,
+          "realized_sleeve_dd_above_25": 0.6667,
+          "top_asset_share_above_60": 0.0535
         },
-        "pass_rate": 0.1565,
-        "reached_minimums_rate": 0.6857
+        "pass_rate": 0.2416,
+        "reached_minimums_rate": 0.4471
       },
-      "years=3.0|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2301,
-          "expectancy": 0.3543,
-          "leave_one_cluster_out": 0.6333,
-          "max_drawdown": 0.0006,
-          "profit_factor": 0.4788
+      "years=3.0|win_rate=0.45|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6734,
+          "realized_sleeve_dd_above_25": 0.9279,
+          "top_asset_share_above_60": 0.0596
         },
-        "pass_rate": 0.2219,
-        "reached_minimums_rate": 0.6969
+        "pass_rate": 0.1922,
+        "reached_minimums_rate": 0.426
       },
-      "years=3.0|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.248,
-          "expectancy": 0.3699,
-          "leave_one_cluster_out": 0.6637,
-          "max_drawdown": 0.0009,
-          "profit_factor": 0.4868
+      "years=3.0|win_rate=0.45|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5447,
+          "realized_sleeve_dd_above_25": 0.3867,
+          "top_asset_share_above_60": 0.0565
         },
-        "pass_rate": 0.2044,
-        "reached_minimums_rate": 0.6896
+        "pass_rate": 0.2736,
+        "reached_minimums_rate": 0.4388
       },
-      "years=3.0|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2882,
-          "expectancy": 0.4024,
-          "leave_one_cluster_out": 0.7027,
-          "max_drawdown": 0.0036,
-          "profit_factor": 0.5021
+      "years=3.0|win_rate=0.45|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6146,
+          "realized_sleeve_dd_above_25": 0.7449,
+          "top_asset_share_above_60": 0.0567
         },
-        "pass_rate": 0.1765,
-        "reached_minimums_rate": 0.678
+        "pass_rate": 0.2208,
+        "reached_minimums_rate": 0.4199
       },
-      "years=5.0|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2906,
-          "expectancy": 0.4132,
-          "leave_one_cluster_out": 0.7199,
-          "max_drawdown": 0.014,
-          "profit_factor": 0.5562
+      "years=5.0|win_rate=0.25|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7296,
+          "realized_sleeve_dd_above_25": 0.9859,
+          "top_asset_share_above_60": 0.1172
         },
-        "pass_rate": 0.2222,
-        "reached_minimums_rate": 0.9301
+        "pass_rate": 0.331,
+        "reached_minimums_rate": 0.8326
       },
-      "years=5.0|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3189,
-          "expectancy": 0.4403,
-          "leave_one_cluster_out": 0.7612,
-          "max_drawdown": 0.0335,
-          "profit_factor": 0.5638
+      "years=5.0|win_rate=0.25|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6047,
+          "realized_sleeve_dd_above_25": 0.6068,
+          "top_asset_share_above_60": 0.1148
         },
-        "pass_rate": 0.1923,
-        "reached_minimums_rate": 0.9286
+        "pass_rate": 0.4481,
+        "reached_minimums_rate": 0.8308
       },
-      "years=5.0|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3465,
-          "expectancy": 0.4595,
-          "leave_one_cluster_out": 0.7801,
-          "max_drawdown": 0.0709,
-          "profit_factor": 0.5582
+      "years=5.0|win_rate=0.25|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6868,
+          "realized_sleeve_dd_above_25": 0.9137,
+          "top_asset_share_above_60": 0.1103
         },
-        "pass_rate": 0.1776,
-        "reached_minimums_rate": 0.9296
+        "pass_rate": 0.3709,
+        "reached_minimums_rate": 0.8322
       },
-      "years=5.0|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1969,
-          "expectancy": 0.378,
-          "leave_one_cluster_out": 0.6603,
-          "max_drawdown": 0.0047,
-          "profit_factor": 0.5227
+      "years=5.0|win_rate=0.25|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7464,
+          "realized_sleeve_dd_above_25": 0.987,
+          "top_asset_share_above_60": 0.1255
         },
-        "pass_rate": 0.2806,
-        "reached_minimums_rate": 0.9301
+        "pass_rate": 0.3389,
+        "reached_minimums_rate": 0.8452
       },
-      "years=5.0|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2274,
-          "expectancy": 0.4004,
-          "leave_one_cluster_out": 0.6925,
-          "max_drawdown": 0.0103,
-          "profit_factor": 0.5338
+      "years=5.0|win_rate=0.25|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6471,
+          "realized_sleeve_dd_above_25": 0.6836,
+          "top_asset_share_above_60": 0.1323
         },
-        "pass_rate": 0.2612,
-        "reached_minimums_rate": 0.9328
+        "pass_rate": 0.4553,
+        "reached_minimums_rate": 0.8441
       },
-      "years=5.0|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2683,
-          "expectancy": 0.4078,
-          "leave_one_cluster_out": 0.703,
-          "max_drawdown": 0.0317,
-          "profit_factor": 0.5182
+      "years=5.0|win_rate=0.25|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.711,
+          "realized_sleeve_dd_above_25": 0.9426,
+          "top_asset_share_above_60": 0.1167
         },
-        "pass_rate": 0.2495,
-        "reached_minimums_rate": 0.9353
+        "pass_rate": 0.3728,
+        "reached_minimums_rate": 0.8276
       },
-      "years=5.0|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1454,
-          "expectancy": 0.32,
-          "leave_one_cluster_out": 0.6017,
-          "max_drawdown": 0.0015,
-          "profit_factor": 0.4761
+      "years=5.0|win_rate=0.25|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7501,
+          "realized_sleeve_dd_above_25": 0.994,
+          "top_asset_share_above_60": 0.1296
         },
-        "pass_rate": 0.3322,
-        "reached_minimums_rate": 0.9228
+        "pass_rate": 0.3531,
+        "reached_minimums_rate": 0.8341
       },
-      "years=5.0|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1648,
-          "expectancy": 0.3542,
-          "leave_one_cluster_out": 0.6359,
-          "max_drawdown": 0.0049,
-          "profit_factor": 0.4969
+      "years=5.0|win_rate=0.25|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6844,
+          "realized_sleeve_dd_above_25": 0.797,
+          "top_asset_share_above_60": 0.134
         },
-        "pass_rate": 0.3123,
-        "reached_minimums_rate": 0.9325
+        "pass_rate": 0.4371,
+        "reached_minimums_rate": 0.8419
       },
-      "years=5.0|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2026,
-          "expectancy": 0.3795,
-          "leave_one_cluster_out": 0.6553,
-          "max_drawdown": 0.0183,
-          "profit_factor": 0.4945
+      "years=5.0|win_rate=0.25|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.741,
+          "realized_sleeve_dd_above_25": 0.9627,
+          "top_asset_share_above_60": 0.1361
         },
-        "pass_rate": 0.2938,
-        "reached_minimums_rate": 0.9215
+        "pass_rate": 0.3632,
+        "reached_minimums_rate": 0.8304
+      },
+      "years=5.0|win_rate=0.35|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6517,
+          "realized_sleeve_dd_above_25": 0.9481,
+          "top_asset_share_above_60": 0.0531
+        },
+        "pass_rate": 0.3665,
+        "reached_minimums_rate": 0.8384
+      },
+      "years=5.0|win_rate=0.35|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.512,
+          "realized_sleeve_dd_above_25": 0.4052,
+          "top_asset_share_above_60": 0.0569
+        },
+        "pass_rate": 0.5048,
+        "reached_minimums_rate": 0.831
+      },
+      "years=5.0|win_rate=0.35|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6201,
+          "realized_sleeve_dd_above_25": 0.8103,
+          "top_asset_share_above_60": 0.06
+        },
+        "pass_rate": 0.4016,
+        "reached_minimums_rate": 0.8376
+      },
+      "years=5.0|win_rate=0.35|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6808,
+          "realized_sleeve_dd_above_25": 0.9621,
+          "top_asset_share_above_60": 0.0599
+        },
+        "pass_rate": 0.3575,
+        "reached_minimums_rate": 0.8309
+      },
+      "years=5.0|win_rate=0.35|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5625,
+          "realized_sleeve_dd_above_25": 0.5225,
+          "top_asset_share_above_60": 0.0652
+        },
+        "pass_rate": 0.4925,
+        "reached_minimums_rate": 0.8332
+      },
+      "years=5.0|win_rate=0.35|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.635,
+          "realized_sleeve_dd_above_25": 0.8625,
+          "top_asset_share_above_60": 0.0632
+        },
+        "pass_rate": 0.4117,
+        "reached_minimums_rate": 0.8316
+      },
+      "years=5.0|win_rate=0.35|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6822,
+          "realized_sleeve_dd_above_25": 0.9782,
+          "top_asset_share_above_60": 0.0806
+        },
+        "pass_rate": 0.3762,
+        "reached_minimums_rate": 0.8388
+      },
+      "years=5.0|win_rate=0.35|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.582,
+          "realized_sleeve_dd_above_25": 0.6432,
+          "top_asset_share_above_60": 0.0706
+        },
+        "pass_rate": 0.4886,
+        "reached_minimums_rate": 0.8327
+      },
+      "years=5.0|win_rate=0.35|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6663,
+          "realized_sleeve_dd_above_25": 0.9069,
+          "top_asset_share_above_60": 0.0613
+        },
+        "pass_rate": 0.3952,
+        "reached_minimums_rate": 0.8327
+      },
+      "years=5.0|win_rate=0.45|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5945,
+          "realized_sleeve_dd_above_25": 0.8784,
+          "top_asset_share_above_60": 0.0211
+        },
+        "pass_rate": 0.3956,
+        "reached_minimums_rate": 0.8418
+      },
+      "years=5.0|win_rate=0.45|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.4083,
+          "realized_sleeve_dd_above_25": 0.2463,
+          "top_asset_share_above_60": 0.0328
+        },
+        "pass_rate": 0.5568,
+        "reached_minimums_rate": 0.8315
+      },
+      "years=5.0|win_rate=0.45|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5481,
+          "realized_sleeve_dd_above_25": 0.704,
+          "top_asset_share_above_60": 0.0258
+        },
+        "pass_rate": 0.4456,
+        "reached_minimums_rate": 0.8326
+      },
+      "years=5.0|win_rate=0.45|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6138,
+          "realized_sleeve_dd_above_25": 0.9193,
+          "top_asset_share_above_60": 0.0318
+        },
+        "pass_rate": 0.3968,
+        "reached_minimums_rate": 0.8425
+      },
+      "years=5.0|win_rate=0.45|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.4682,
+          "realized_sleeve_dd_above_25": 0.3645,
+          "top_asset_share_above_60": 0.0392
+        },
+        "pass_rate": 0.5452,
+        "reached_minimums_rate": 0.8509
+      },
+      "years=5.0|win_rate=0.45|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.571,
+          "realized_sleeve_dd_above_25": 0.7786,
+          "top_asset_share_above_60": 0.0278
+        },
+        "pass_rate": 0.4469,
+        "reached_minimums_rate": 0.8376
+      },
+      "years=5.0|win_rate=0.45|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.6273,
+          "realized_sleeve_dd_above_25": 0.9485,
+          "top_asset_share_above_60": 0.0362
+        },
+        "pass_rate": 0.3975,
+        "reached_minimums_rate": 0.8308
+      },
+      "years=5.0|win_rate=0.45|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.4998,
+          "realized_sleeve_dd_above_25": 0.4962,
+          "top_asset_share_above_60": 0.0423
+        },
+        "pass_rate": 0.5194,
+        "reached_minimums_rate": 0.8278
+      },
+      "years=5.0|win_rate=0.45|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.5936,
+          "realized_sleeve_dd_above_25": 0.8199,
+          "top_asset_share_above_60": 0.0441
+        },
+        "pass_rate": 0.4266,
+        "reached_minimums_rate": 0.8355
       }
     },
     "summary": {
-      "max": 0.4822,
-      "median": 0.1983,
-      "min": 0.0445
+      "max": 0.5568,
+      "median": 0.3023,
+      "min": 0.1756
     }
   },
   "calibrated_from": {
-    "clusters_per_year": 1.24,
-    "implied_pooled_trades_per_year": 11.93,
-    "mean_assets_per_cluster": 2.26,
-    "measured_pooled_trades_per_year": 11.94,
+    "basis": "common-universe window (fixed four-asset portfolio)",
+    "clusters_per_year": 1.42,
+    "implied_pooled_trades_per_year": 13.39,
+    "measured_pooled_trades_per_year": 13.41,
     "source": "docs/research/artifacts/stf_feasibility/audit.json",
-    "trades_per_asset_per_cluster": 4.26
+    "trades_per_asset_per_cluster": 2.357,
+    "unique_assets_per_cluster": 4.0,
+    "window": "2021-08-11..2026-07-12",
+    "years": 4.92
   },
-  "gates": {
-    "loeo_min_pf": 1.0,
-    "max_asset_share": 0.6,
-    "max_dd_pct": 25.0,
-    "min_clusters": 3,
+  "code": {
+    "code_sha256": "ab19b884a61fd2bec75c4d27424d19b35126019e97e448811305aa6bfeddbfef",
+    "files": [
+      {
+        "file": "backtesting/research_runner.py",
+        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
+      },
+      {
+        "file": "backtesting/stf_power.py",
+        "sha256": "c43747078200b31d55e2f2922adefa64b859e13fac4eb456544bc8be1cabba77"
+      }
+    ]
+  },
+  "diagnostics_are_not_gates": [
+    "leave_one_cluster_out",
+    "asset_concentration",
+    "max_drawdown"
+  ],
+  "environment": {
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "ta": "0.11.0"
+    },
+    "python": "3.13.5"
+  },
+  "gates_evaluated": {
+    "expectancy_above_zero": true,
+    "min_clusters": 5,
     "min_pf": 1.3,
-    "min_trades": 20,
-    "min_years": 1.5
+    "min_trades": 30,
+    "min_years": 3.0
   },
   "model": {
-    "correlation": "Gaussian copula on win/loss direction within a cluster",
+    "correlation": "Gaussian copula on direction within a cluster",
     "cost_pct": 1.4,
     "edge_pct_alternative": 2.0,
-    "loss_pct": 8.0,
-    "n_trials_per_cell": 5000,
-    "position_fraction_of_equity": 0.05,
+    "loss_is_an_axis_because": "the rule has no stop; its only exit is the 20-day close breakout, so loss size is a property of price, not of a risk rule",
+    "loss_pcts": [
+      4.0,
+      8.0,
+      12.0
+    ],
+    "n_trials_per_cell": 4000,
     "seed": 20260819,
-    "win_distribution": "lognormal, sigma=0.9 (long right tail)",
-    "win_size_rule": "mean win set so expectancy equals the stated edge"
+    "win_distribution": "lognormal, sigma=0.9"
+  },
+  "not_assessed": {
+    "asset_concentration": "reported as a diagnostic, not a gate",
+    "leave_one_cluster_out": "reported as a diagnostic, not a gate",
+    "max_drawdown": "the protocol measures sleeve drawdown in calendar time including unrealized P&L; this simulation produces closed trades only, so only a realized-only LOWER BOUND is reported"
   },
   "null_world_no_edge": {
     "cells": {
-      "years=1.5|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4453,
-          "expectancy": 0.5643,
-          "leave_one_cluster_out": 0.8497,
-          "max_drawdown": 0.0016,
-          "profit_factor": 0.6793
+      "years=3.0|win_rate=0.25|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8217,
+          "realized_sleeve_dd_above_25": 0.9753,
+          "top_asset_share_above_60": 0.1636
         },
-        "pass_rate": 0.034,
-        "reached_minimums_rate": 0.296
+        "pass_rate": 0.1261,
+        "reached_minimums_rate": 0.4312
       },
-      "years=1.5|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4523,
-          "expectancy": 0.5446,
-          "leave_one_cluster_out": 0.8492,
-          "max_drawdown": 0.0008,
-          "profit_factor": 0.6331
+      "years=3.0|win_rate=0.25|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8123,
+          "realized_sleeve_dd_above_25": 0.5791,
+          "top_asset_share_above_60": 0.157
         },
-        "pass_rate": 0.0375,
-        "reached_minimums_rate": 0.3082
+        "pass_rate": 0.1364,
+        "reached_minimums_rate": 0.4296
       },
-      "years=1.5|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4667,
-          "expectancy": 0.5847,
-          "leave_one_cluster_out": 0.8627,
-          "max_drawdown": 0.0064,
-          "profit_factor": 0.6699
+      "years=3.0|win_rate=0.25|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8104,
+          "realized_sleeve_dd_above_25": 0.8769,
+          "top_asset_share_above_60": 0.182
         },
-        "pass_rate": 0.0323,
-        "reached_minimums_rate": 0.2958
+        "pass_rate": 0.1323,
+        "reached_minimums_rate": 0.4336
       },
-      "years=1.5|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3737,
-          "expectancy": 0.5458,
-          "leave_one_cluster_out": 0.8295,
-          "max_drawdown": 0.0024,
-          "profit_factor": 0.6582
+      "years=3.0|win_rate=0.25|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8315,
+          "realized_sleeve_dd_above_25": 0.9806,
+          "top_asset_share_above_60": 0.1703
         },
-        "pass_rate": 0.0421,
-        "reached_minimums_rate": 0.2984
+        "pass_rate": 0.1295,
+        "reached_minimums_rate": 0.4299
       },
-      "years=1.5|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3849,
-          "expectancy": 0.5418,
-          "leave_one_cluster_out": 0.8257,
-          "max_drawdown": 0.0016,
-          "profit_factor": 0.6341
+      "years=3.0|win_rate=0.25|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8229,
+          "realized_sleeve_dd_above_25": 0.6747,
+          "top_asset_share_above_60": 0.2035
         },
-        "pass_rate": 0.0414,
-        "reached_minimums_rate": 0.2981
+        "pass_rate": 0.1379,
+        "reached_minimums_rate": 0.4308
       },
-      "years=1.5|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4051,
-          "expectancy": 0.5346,
-          "leave_one_cluster_out": 0.8049,
-          "max_drawdown": 0.0015,
-          "profit_factor": 0.6195
+      "years=3.0|win_rate=0.25|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8109,
+          "realized_sleeve_dd_above_25": 0.9087,
+          "top_asset_share_above_60": 0.1695
         },
-        "pass_rate": 0.0504,
-        "reached_minimums_rate": 0.3161
+        "pass_rate": 0.1435,
+        "reached_minimums_rate": 0.4276
       },
-      "years=1.5|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2736,
-          "expectancy": 0.5353,
-          "leave_one_cluster_out": 0.7962,
-          "max_drawdown": 0.0,
-          "profit_factor": 0.6527
+      "years=3.0|win_rate=0.25|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8166,
+          "realized_sleeve_dd_above_25": 0.9881,
+          "top_asset_share_above_60": 0.1738
         },
-        "pass_rate": 0.0528,
-        "reached_minimums_rate": 0.3011
+        "pass_rate": 0.1469,
+        "reached_minimums_rate": 0.4239
       },
-      "years=1.5|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3485,
-          "expectancy": 0.4938,
-          "leave_one_cluster_out": 0.7718,
-          "max_drawdown": 0.0,
-          "profit_factor": 0.6116
+      "years=3.0|win_rate=0.25|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8128,
+          "realized_sleeve_dd_above_25": 0.7227,
+          "top_asset_share_above_60": 0.1819
         },
-        "pass_rate": 0.0544,
-        "reached_minimums_rate": 0.2864
+        "pass_rate": 0.1531,
+        "reached_minimums_rate": 0.4257
       },
-      "years=1.5|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3484,
-          "expectancy": 0.5362,
-          "leave_one_cluster_out": 0.7911,
-          "max_drawdown": 0.0015,
-          "profit_factor": 0.6146
+      "years=3.0|win_rate=0.25|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8177,
+          "realized_sleeve_dd_above_25": 0.939,
+          "top_asset_share_above_60": 0.1927
         },
-        "pass_rate": 0.0573,
-        "reached_minimums_rate": 0.3128
+        "pass_rate": 0.1406,
+        "reached_minimums_rate": 0.4107
       },
-      "years=10.0|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0961,
-          "expectancy": 0.5398,
-          "leave_one_cluster_out": 0.7874,
-          "max_drawdown": 0.1463,
-          "profit_factor": 0.7292
+      "years=3.0|win_rate=0.35|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7795,
+          "realized_sleeve_dd_above_25": 0.9203,
+          "top_asset_share_above_60": 0.0821
         },
-        "pass_rate": 0.1922,
-        "reached_minimums_rate": 0.9992
+        "pass_rate": 0.1341,
+        "reached_minimums_rate": 0.4215
       },
-      "years=10.0|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1283,
-          "expectancy": 0.5439,
-          "leave_one_cluster_out": 0.7932,
-          "max_drawdown": 0.2186,
-          "profit_factor": 0.7139
+      "years=3.0|win_rate=0.35|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7661,
+          "realized_sleeve_dd_above_25": 0.4123,
+          "top_asset_share_above_60": 0.102
         },
-        "pass_rate": 0.1918,
-        "reached_minimums_rate": 0.999
+        "pass_rate": 0.1419,
+        "reached_minimums_rate": 0.4254
       },
-      "years=10.0|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1726,
-          "expectancy": 0.529,
-          "leave_one_cluster_out": 0.7952,
-          "max_drawdown": 0.3054,
-          "profit_factor": 0.6736
+      "years=3.0|win_rate=0.35|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7954,
+          "realized_sleeve_dd_above_25": 0.7893,
+          "top_asset_share_above_60": 0.0917
         },
-        "pass_rate": 0.1956,
-        "reached_minimums_rate": 0.9988
+        "pass_rate": 0.1349,
+        "reached_minimums_rate": 0.4544
       },
-      "years=10.0|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0528,
-          "expectancy": 0.5207,
-          "leave_one_cluster_out": 0.7615,
-          "max_drawdown": 0.0668,
-          "profit_factor": 0.7312
+      "years=3.0|win_rate=0.35|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7855,
+          "realized_sleeve_dd_above_25": 0.9391,
+          "top_asset_share_above_60": 0.1017
         },
-        "pass_rate": 0.2152,
-        "reached_minimums_rate": 0.9994
+        "pass_rate": 0.1473,
+        "reached_minimums_rate": 0.4291
       },
-      "years=10.0|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0676,
-          "expectancy": 0.5139,
-          "leave_one_cluster_out": 0.7633,
-          "max_drawdown": 0.1129,
-          "profit_factor": 0.7044
+      "years=3.0|win_rate=0.35|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7954,
+          "realized_sleeve_dd_above_25": 0.5229,
+          "top_asset_share_above_60": 0.1023
         },
-        "pass_rate": 0.2206,
-        "reached_minimums_rate": 0.9994
+        "pass_rate": 0.1391,
+        "reached_minimums_rate": 0.4265
       },
-      "years=10.0|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0955,
-          "expectancy": 0.5223,
-          "leave_one_cluster_out": 0.7639,
-          "max_drawdown": 0.1891,
-          "profit_factor": 0.682
+      "years=3.0|win_rate=0.35|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.761,
+          "realized_sleeve_dd_above_25": 0.8215,
+          "top_asset_share_above_60": 0.0981
         },
-        "pass_rate": 0.2264,
-        "reached_minimums_rate": 0.9994
+        "pass_rate": 0.149,
+        "reached_minimums_rate": 0.4337
       },
-      "years=10.0|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.035,
-          "expectancy": 0.509,
-          "leave_one_cluster_out": 0.7356,
-          "max_drawdown": 0.0318,
-          "profit_factor": 0.7288
+      "years=3.0|win_rate=0.35|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7826,
+          "realized_sleeve_dd_above_25": 0.9641,
+          "top_asset_share_above_60": 0.1018
         },
-        "pass_rate": 0.2306,
-        "reached_minimums_rate": 0.9992
+        "pass_rate": 0.1528,
+        "reached_minimums_rate": 0.4246
       },
-      "years=10.0|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0398,
-          "expectancy": 0.5119,
-          "leave_one_cluster_out": 0.73,
-          "max_drawdown": 0.0644,
-          "profit_factor": 0.6986
+      "years=3.0|win_rate=0.35|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7839,
+          "realized_sleeve_dd_above_25": 0.6027,
+          "top_asset_share_above_60": 0.1133
         },
-        "pass_rate": 0.2514,
-        "reached_minimums_rate": 0.9994
+        "pass_rate": 0.153,
+        "reached_minimums_rate": 0.4299
       },
-      "years=10.0|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.0588,
-          "expectancy": 0.5141,
-          "leave_one_cluster_out": 0.7364,
-          "max_drawdown": 0.1143,
-          "profit_factor": 0.6826
+      "years=3.0|win_rate=0.35|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7786,
+          "realized_sleeve_dd_above_25": 0.8749,
+          "top_asset_share_above_60": 0.1069
         },
-        "pass_rate": 0.2524,
-        "reached_minimums_rate": 0.9994
+        "pass_rate": 0.15,
+        "reached_minimums_rate": 0.4315
       },
-      "years=3.0|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3754,
-          "expectancy": 0.5581,
-          "leave_one_cluster_out": 0.8412,
-          "max_drawdown": 0.0038,
-          "profit_factor": 0.6827
+      "years=3.0|win_rate=0.45|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7563,
+          "realized_sleeve_dd_above_25": 0.8422,
+          "top_asset_share_above_60": 0.0485
         },
-        "pass_rate": 0.0911,
-        "reached_minimums_rate": 0.6954
+        "pass_rate": 0.1333,
+        "reached_minimums_rate": 0.4335
       },
-      "years=3.0|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4125,
-          "expectancy": 0.5555,
-          "leave_one_cluster_out": 0.8505,
-          "max_drawdown": 0.0106,
-          "profit_factor": 0.6625
+      "years=3.0|win_rate=0.45|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7573,
+          "realized_sleeve_dd_above_25": 0.3101,
+          "top_asset_share_above_60": 0.0543
         },
-        "pass_rate": 0.0872,
-        "reached_minimums_rate": 0.6957
+        "pass_rate": 0.1328,
+        "reached_minimums_rate": 0.4241
       },
-      "years=3.0|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.4169,
-          "expectancy": 0.5706,
-          "leave_one_cluster_out": 0.8535,
-          "max_drawdown": 0.0188,
-          "profit_factor": 0.6498
+      "years=3.0|win_rate=0.45|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7377,
+          "realized_sleeve_dd_above_25": 0.6645,
+          "top_asset_share_above_60": 0.049
         },
-        "pass_rate": 0.085,
-        "reached_minimums_rate": 0.6892
+        "pass_rate": 0.1315,
+        "reached_minimums_rate": 0.4005
       },
-      "years=3.0|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2784,
-          "expectancy": 0.5266,
-          "leave_one_cluster_out": 0.7934,
-          "max_drawdown": 0.0018,
-          "profit_factor": 0.6628
+      "years=3.0|win_rate=0.45|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7598,
+          "realized_sleeve_dd_above_25": 0.8883,
+          "top_asset_share_above_60": 0.0541
         },
-        "pass_rate": 0.1247,
-        "reached_minimums_rate": 0.6953
+        "pass_rate": 0.1426,
+        "reached_minimums_rate": 0.4226
       },
-      "years=3.0|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3341,
-          "expectancy": 0.5464,
-          "leave_one_cluster_out": 0.8089,
-          "max_drawdown": 0.0044,
-          "profit_factor": 0.6544
+      "years=3.0|win_rate=0.45|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7727,
+          "realized_sleeve_dd_above_25": 0.3869,
+          "top_asset_share_above_60": 0.0624
         },
-        "pass_rate": 0.1126,
-        "reached_minimums_rate": 0.694
+        "pass_rate": 0.1374,
+        "reached_minimums_rate": 0.4305
       },
-      "years=3.0|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.352,
-          "expectancy": 0.5388,
-          "leave_one_cluster_out": 0.8204,
-          "max_drawdown": 0.0117,
-          "profit_factor": 0.6384
+      "years=3.0|win_rate=0.45|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.762,
+          "realized_sleeve_dd_above_25": 0.7365,
+          "top_asset_share_above_60": 0.0575
         },
-        "pass_rate": 0.109,
-        "reached_minimums_rate": 0.6845
+        "pass_rate": 0.1356,
+        "reached_minimums_rate": 0.4199
       },
-      "years=3.0|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2272,
-          "expectancy": 0.5043,
-          "leave_one_cluster_out": 0.7681,
-          "max_drawdown": 0.0006,
-          "profit_factor": 0.6497
+      "years=3.0|win_rate=0.45|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7514,
+          "realized_sleeve_dd_above_25": 0.9266,
+          "top_asset_share_above_60": 0.0518
         },
-        "pass_rate": 0.1399,
-        "reached_minimums_rate": 0.6985
+        "pass_rate": 0.1548,
+        "reached_minimums_rate": 0.4461
       },
-      "years=3.0|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2515,
-          "expectancy": 0.517,
-          "leave_one_cluster_out": 0.7738,
-          "max_drawdown": 0.0021,
-          "profit_factor": 0.6382
+      "years=3.0|win_rate=0.45|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7455,
+          "realized_sleeve_dd_above_25": 0.4782,
+          "top_asset_share_above_60": 0.078
         },
-        "pass_rate": 0.1383,
-        "reached_minimums_rate": 0.6937
+        "pass_rate": 0.1594,
+        "reached_minimums_rate": 0.4365
       },
-      "years=3.0|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2959,
-          "expectancy": 0.5152,
-          "leave_one_cluster_out": 0.7647,
-          "max_drawdown": 0.0038,
-          "profit_factor": 0.6094
+      "years=3.0|win_rate=0.45|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7345,
+          "realized_sleeve_dd_above_25": 0.7761,
+          "top_asset_share_above_60": 0.0592
         },
-        "pass_rate": 0.1457,
-        "reached_minimums_rate": 0.6897
+        "pass_rate": 0.1591,
+        "reached_minimums_rate": 0.4322
       },
-      "years=5.0|win_rate=0.25|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2863,
-          "expectancy": 0.541,
-          "leave_one_cluster_out": 0.8222,
-          "max_drawdown": 0.0241,
-          "profit_factor": 0.6841
+      "years=5.0|win_rate=0.25|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8104,
+          "realized_sleeve_dd_above_25": 0.9824,
+          "top_asset_share_above_60": 0.1148
         },
-        "pass_rate": 0.1451,
-        "reached_minimums_rate": 0.9333
+        "pass_rate": 0.2422,
+        "reached_minimums_rate": 0.8368
       },
-      "years=5.0|win_rate=0.25|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3264,
-          "expectancy": 0.5618,
-          "leave_one_cluster_out": 0.8422,
-          "max_drawdown": 0.0393,
-          "profit_factor": 0.6889
+      "years=5.0|win_rate=0.25|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8068,
+          "realized_sleeve_dd_above_25": 0.6843,
+          "top_asset_share_above_60": 0.1228
         },
-        "pass_rate": 0.1294,
-        "reached_minimums_rate": 0.9319
+        "pass_rate": 0.2424,
+        "reached_minimums_rate": 0.8354
       },
-      "years=5.0|win_rate=0.25|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.3528,
-          "expectancy": 0.5491,
-          "leave_one_cluster_out": 0.8287,
-          "max_drawdown": 0.0801,
-          "profit_factor": 0.6481
+      "years=5.0|win_rate=0.25|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8085,
+          "realized_sleeve_dd_above_25": 0.9348,
+          "top_asset_share_above_60": 0.1085
         },
-        "pass_rate": 0.1418,
-        "reached_minimums_rate": 0.9307
+        "pass_rate": 0.2408,
+        "reached_minimums_rate": 0.832
       },
-      "years=5.0|win_rate=0.35|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2038,
-          "expectancy": 0.52,
-          "leave_one_cluster_out": 0.7877,
-          "max_drawdown": 0.0097,
-          "profit_factor": 0.6761
+      "years=5.0|win_rate=0.25|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7955,
+          "realized_sleeve_dd_above_25": 0.9896,
+          "top_asset_share_above_60": 0.133
         },
-        "pass_rate": 0.176,
-        "reached_minimums_rate": 0.9282
+        "pass_rate": 0.268,
+        "reached_minimums_rate": 0.8393
       },
-      "years=5.0|win_rate=0.35|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2316,
-          "expectancy": 0.5263,
-          "leave_one_cluster_out": 0.795,
-          "max_drawdown": 0.0179,
-          "profit_factor": 0.6593
+      "years=5.0|win_rate=0.25|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8107,
+          "realized_sleeve_dd_above_25": 0.7503,
+          "top_asset_share_above_60": 0.1358
         },
-        "pass_rate": 0.1741,
-        "reached_minimums_rate": 0.9291
+        "pass_rate": 0.2582,
+        "reached_minimums_rate": 0.8375
       },
-      "years=5.0|win_rate=0.35|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2697,
-          "expectancy": 0.5309,
-          "leave_one_cluster_out": 0.7959,
-          "max_drawdown": 0.0451,
-          "profit_factor": 0.6413
+      "years=5.0|win_rate=0.25|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8158,
+          "realized_sleeve_dd_above_25": 0.9525,
+          "top_asset_share_above_60": 0.1251
         },
-        "pass_rate": 0.1742,
-        "reached_minimums_rate": 0.9375
+        "pass_rate": 0.2479,
+        "reached_minimums_rate": 0.8381
       },
-      "years=5.0|win_rate=0.45|rho=0.5": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1571,
-          "expectancy": 0.5021,
-          "leave_one_cluster_out": 0.7632,
-          "max_drawdown": 0.003,
-          "profit_factor": 0.6675
+      "years=5.0|win_rate=0.25|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8126,
+          "realized_sleeve_dd_above_25": 0.9955,
+          "top_asset_share_above_60": 0.147
         },
-        "pass_rate": 0.1949,
-        "reached_minimums_rate": 0.9273
+        "pass_rate": 0.2706,
+        "reached_minimums_rate": 0.8285
       },
-      "years=5.0|win_rate=0.45|rho=0.7": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.1739,
-          "expectancy": 0.513,
-          "leave_one_cluster_out": 0.76,
-          "max_drawdown": 0.006,
-          "profit_factor": 0.6512
+      "years=5.0|win_rate=0.25|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8159,
+          "realized_sleeve_dd_above_25": 0.8129,
+          "top_asset_share_above_60": 0.1441
         },
-        "pass_rate": 0.2039,
-        "reached_minimums_rate": 0.9304
+        "pass_rate": 0.2771,
+        "reached_minimums_rate": 0.8443
       },
-      "years=5.0|win_rate=0.45|rho=0.9": {
-        "gate_failure_rate_given_minimums": {
-          "asset_concentration": 0.2044,
-          "expectancy": 0.5068,
-          "leave_one_cluster_out": 0.7594,
-          "max_drawdown": 0.0196,
-          "profit_factor": 0.634
+      "years=5.0|win_rate=0.25|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.8096,
+          "realized_sleeve_dd_above_25": 0.9581,
+          "top_asset_share_above_60": 0.1258
         },
-        "pass_rate": 0.205,
-        "reached_minimums_rate": 0.9185
+        "pass_rate": 0.2695,
+        "reached_minimums_rate": 0.83
+      },
+      "years=5.0|win_rate=0.35|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7771,
+          "realized_sleeve_dd_above_25": 0.9544,
+          "top_asset_share_above_60": 0.0513
+        },
+        "pass_rate": 0.2417,
+        "reached_minimums_rate": 0.8386
+      },
+      "years=5.0|win_rate=0.35|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7727,
+          "realized_sleeve_dd_above_25": 0.5278,
+          "top_asset_share_above_60": 0.0706
+        },
+        "pass_rate": 0.2486,
+        "reached_minimums_rate": 0.8362
+      },
+      "years=5.0|win_rate=0.35|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7846,
+          "realized_sleeve_dd_above_25": 0.8611,
+          "top_asset_share_above_60": 0.058
+        },
+        "pass_rate": 0.2427,
+        "reached_minimums_rate": 0.8376
+      },
+      "years=5.0|win_rate=0.35|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7679,
+          "realized_sleeve_dd_above_25": 0.9721,
+          "top_asset_share_above_60": 0.0579
+        },
+        "pass_rate": 0.2658,
+        "reached_minimums_rate": 0.8423
+      },
+      "years=5.0|win_rate=0.35|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7903,
+          "realized_sleeve_dd_above_25": 0.6201,
+          "top_asset_share_above_60": 0.0677
+        },
+        "pass_rate": 0.2551,
+        "reached_minimums_rate": 0.8465
+      },
+      "years=5.0|win_rate=0.35|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7626,
+          "realized_sleeve_dd_above_25": 0.8848,
+          "top_asset_share_above_60": 0.0609
+        },
+        "pass_rate": 0.2701,
+        "reached_minimums_rate": 0.8298
+      },
+      "years=5.0|win_rate=0.35|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7637,
+          "realized_sleeve_dd_above_25": 0.9827,
+          "top_asset_share_above_60": 0.0756
+        },
+        "pass_rate": 0.2856,
+        "reached_minimums_rate": 0.8378
+      },
+      "years=5.0|win_rate=0.35|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7635,
+          "realized_sleeve_dd_above_25": 0.6879,
+          "top_asset_share_above_60": 0.0881
+        },
+        "pass_rate": 0.2927,
+        "reached_minimums_rate": 0.8401
+      },
+      "years=5.0|win_rate=0.35|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7672,
+          "realized_sleeve_dd_above_25": 0.9168,
+          "top_asset_share_above_60": 0.0654
+        },
+        "pass_rate": 0.2811,
+        "reached_minimums_rate": 0.8294
+      },
+      "years=5.0|win_rate=0.45|rho=0.5|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7579,
+          "realized_sleeve_dd_above_25": 0.9093,
+          "top_asset_share_above_60": 0.0272
+        },
+        "pass_rate": 0.2377,
+        "reached_minimums_rate": 0.8359
+      },
+      "years=5.0|win_rate=0.45|rho=0.5|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7517,
+          "realized_sleeve_dd_above_25": 0.3957,
+          "top_asset_share_above_60": 0.0381
+        },
+        "pass_rate": 0.2464,
+        "reached_minimums_rate": 0.8402
+      },
+      "years=5.0|win_rate=0.45|rho=0.5|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7483,
+          "realized_sleeve_dd_above_25": 0.7522,
+          "top_asset_share_above_60": 0.0326
+        },
+        "pass_rate": 0.2458,
+        "reached_minimums_rate": 0.8293
+      },
+      "years=5.0|win_rate=0.45|rho=0.7|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7372,
+          "realized_sleeve_dd_above_25": 0.9286,
+          "top_asset_share_above_60": 0.0333
+        },
+        "pass_rate": 0.2684,
+        "reached_minimums_rate": 0.8337
+      },
+      "years=5.0|win_rate=0.45|rho=0.7|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7351,
+          "realized_sleeve_dd_above_25": 0.4663,
+          "top_asset_share_above_60": 0.0367
+        },
+        "pass_rate": 0.2822,
+        "reached_minimums_rate": 0.8386
+      },
+      "years=5.0|win_rate=0.45|rho=0.7|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7463,
+          "realized_sleeve_dd_above_25": 0.8096,
+          "top_asset_share_above_60": 0.0398
+        },
+        "pass_rate": 0.2672,
+        "reached_minimums_rate": 0.8421
+      },
+      "years=5.0|win_rate=0.45|rho=0.9|loss=12.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7322,
+          "realized_sleeve_dd_above_25": 0.9498,
+          "top_asset_share_above_60": 0.0407
+        },
+        "pass_rate": 0.2957,
+        "reached_minimums_rate": 0.8419
+      },
+      "years=5.0|win_rate=0.45|rho=0.9|loss=4.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7391,
+          "realized_sleeve_dd_above_25": 0.5588,
+          "top_asset_share_above_60": 0.0503
+        },
+        "pass_rate": 0.2893,
+        "reached_minimums_rate": 0.8411
+      },
+      "years=5.0|win_rate=0.45|rho=0.9|loss=8.0": {
+        "diagnostics_given_minimums": {
+          "loeo_pf_below_1": 0.7287,
+          "realized_sleeve_dd_above_25": 0.8545,
+          "top_asset_share_above_60": 0.0437
+        },
+        "pass_rate": 0.2934,
+        "reached_minimums_rate": 0.836
       }
     },
     "summary": {
-      "max": 0.2524,
-      "median": 0.1409,
-      "min": 0.0323
+      "max": 0.2957,
+      "median": 0.1986,
+      "min": 0.1261
     }
   },
-  "purpose": "power of the draft STF acceptance gates under a declared payoff model \u2014 no historical strategy returns are used",
+  "purpose": "power of the FINAL STF continuation gates under a declared payoff model \u2014 no historical strategy returns are used",
+  "sizing": {
+    "position_fraction_of_capital": 0.05,
+    "position_fraction_of_sleeve": 0.25,
+    "sleeve_fraction_of_capital": 0.2
+  },
   "trial_id": "2026-08-stf-power.7R3"
 }

@@ -17,16 +17,14 @@ HOW THE BLIND IS ENFORCED
 Prices enter one function, `entry_exit_events`, which returns TIMESTAMPS AND
 EVENT LABELS ONLY. Every downstream computation operates on those timestamps.
 There is no code path from a price to an output, so P&L is not withheld — it is
-absent. `tests/test_stf_feasibility.py` asserts this structurally.
+absent. `tests/test_stf_feasibility.py` asserts this on the executable tokens.
 
 WHAT IT REPORTS
 ---------------
-  * entry and exit counts, and open positions at the end
-  * holding-period distribution
-  * exposure clusters (portfolio-level, 60-day flat separation)
-  * concurrency and pairwise overlap between assets
-  * observed event rate and the implied time to 20 / 30 closed trades
-  * data gaps and required-field availability
+  * entry and exit counts, holding-period distribution, data quality per asset
+  * portfolio exposure structure over the COMMON-UNIVERSE window: clusters,
+    UNIQUE assets per cluster, trades per cluster, concurrency, overlap
+  * the observed event rate and the implied time to 20 / 30 closed trades
 
 WHAT IT MUST NEVER REPORT
 -------------------------
@@ -40,6 +38,7 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -55,6 +54,19 @@ ARTIFACT_DIR = ROOT / "docs" / "research" / "artifacts" / "stf_feasibility"
 ARTIFACT = ARTIFACT_DIR / "audit.json"
 
 CANDLE_DIR = ROOT / "data" / "candles"
+
+# Frozen audit window. Without a fixed end the artifact would change every time
+# the candle cache grows, and it would describe data the committed research
+# manifest does not cover. Both ends match the main research scope, so the same
+# hydrated inputs serve both artifacts and CI needs no extra data.
+AUDIT_START = "2020-01-01T00:00:00+00:00"
+AUDIT_END = "2026-07-12T00:00:00+00:00"
+
+# Files whose content determines this audit.
+_CODE_PATHS = [
+    "backtesting/research_runner.py",
+    "backtesting/stf_feasibility.py",
+]
 
 # The single rule under audit. Not a grid; not tunable from the CLI.
 ENTRY_LOOKBACK = 55
@@ -187,37 +199,133 @@ def _data_quality(df: pd.DataFrame) -> dict:
         "missing_days_est": int(sum(g.days - 1 for g in missing)),
         "required_fields_present": sorted(c for c in required if c in df.columns),
         "required_fields_missing": sorted(c for c in required if c not in df.columns),
-        "close_non_finite": int((~pd.to_numeric(df["close"], errors="coerce")
-                                 .apply(lambda v: v == v and abs(v) != float("inf"))).sum()),
+    }
+
+
+def portfolio_structure(frames: dict, window_start: pd.Timestamp) -> dict:
+    """
+    Exposure structure over ONE window, for the fixed four-asset universe.
+
+    `window_start` matters. The proposed trial holds four assets from day one,
+    so calibrating on a span in which SOL did not yet exist would describe a
+    different portfolio from the one being proposed.
+    """
+    index = pd.DatetimeIndex(
+        sorted({d for _, idx in frames.values() for d in idx if d >= window_start}))
+    held = {a: _in_position_days([(s, e) for s, e in spans if s >= window_start],
+                                 index)
+            for a, (spans, _) in frames.items()}
+    concurrent = sum(held.values())
+    any_open = concurrent > 0
+    clusters = _clusters(any_open)
+
+    # UNIQUE assets touched per cluster. This is NOT the mean concurrent count:
+    # a cluster can hold 2.3 assets on an average day while touching all four
+    # over its life. Calibrating a simulation with the concurrent figure invents
+    # too few assets and too many repeat trades per asset, which then misstates
+    # correlation, leave-one-out and concentration.
+    per_cluster = []
+    for cl in clusters:
+        lo, hi = pd.Timestamp(cl["start"]), pd.Timestamp(cl["end"])
+        uniq = [a for a in UNIVERSE if held[a].loc[lo:hi].any()]
+        started = sum(1 for a in UNIVERSE
+                      for (s, _e) in frames[a][0] if lo <= s <= hi)
+        per_cluster.append({**cl, "unique_assets": len(uniq),
+                            "closed_trades_started": started})
+
+    years = ((index[-1] - index[0]).days + 1) / 365.25 if len(index) else 0.0
+    pooled = sum(1 for a in UNIVERSE
+                 for (s, _e) in frames[a][0] if s >= window_start)
+    mean_unique = (sum(c["unique_assets"] for c in per_cluster) / len(per_cluster)
+                   if per_cluster else None)
+    per_cluster_trades = (pooled / len(per_cluster)) if per_cluster else None
+    rate = (pooled / years) if years else None
+
+    overlap = {}
+    for i, a in enumerate(UNIVERSE):
+        for b in UNIVERSE[i + 1:]:
+            both = int((held[a] & held[b]).sum())
+            either = int((held[a] | held[b]).sum())
+            overlap[f"{a}|{b}"] = {
+                "days_both": both, "days_either": either,
+                "jaccard": round(both / either, 3) if either else None,
+            }
+
+    return {
+        "window_start": window_start.isoformat(),
+        "window_end": AUDIT_END,
+        "years": round(years, 2),
+        "pooled_closed_trades": pooled,
+        "pooled_closed_trades_per_year": round(rate, 2) if rate else None,
+        "cluster_gap_days": CLUSTER_GAP_DAYS,
+        "exposure_clusters": len(per_cluster),
+        "clusters_per_year": round(len(per_cluster) / years, 2) if years else None,
+        "clusters": per_cluster,
+        "mean_unique_assets_per_cluster": round(mean_unique, 3) if mean_unique else None,
+        "mean_concurrent_when_exposed": (round(float(concurrent[any_open].mean()), 3)
+                                         if bool(any_open.any()) else None),
+        "mean_closed_trades_per_cluster": (round(per_cluster_trades, 3)
+                                           if per_cluster_trades else None),
+        "trades_per_asset_per_cluster": (round(per_cluster_trades / mean_unique, 3)
+                                         if per_cluster_trades and mean_unique else None),
+        "implied_years_to_target": {
+            str(t): (round(t / rate, 2) if rate else None) for t in TARGET_TRADES
+        },
+        "days_with_any_exposure": int(any_open.sum()),
+        "days_total": int(len(index)),
+        "exposure_fraction": round(float(any_open.mean()), 3) if len(index) else None,
+        "concurrency_days": {str(k): int(v) for k, v in
+                             concurrent.value_counts().sort_index().items()},
+        "pairwise_overlap": overlap,
     }
 
 
 def build_audit() -> dict:
+    from backtesting.research_runner import (
+        _HASH_SCHEME,
+        environment_fingerprint,
+        logical_sha256,
+        sha256_source,
+    )
+
     per_asset: dict = {}
     frames: dict = {}
+    inputs: list = []
+    audit_end = pd.Timestamp(AUDIT_END)
 
     for asset in UNIVERSE:
         path = CANDLE_DIR / f"{asset.replace('-', '_')}_1d.parquet"
         if not path.exists():
             raise FeasibilityError(f"missing daily data for {asset}: {path}")
-        df = pd.read_parquet(path)
+        raw = pd.read_parquet(path)
+        inputs.append({
+            "file": path.name,
+            "hash_scheme": _HASH_SCHEME,
+            "scope_start_inclusive": AUDIT_START,
+            "scope_end_inclusive": AUDIT_END,
+            "logical_sha256": logical_sha256(raw, AUDIT_START, AUDIT_END),
+        })
+
+        df = raw.copy()
         df["time"] = pd.to_datetime(df["time"], utc=True)
-        df = df.sort_values("time").reset_index(drop=True)
+        df = df[df["time"] <= audit_end].sort_values("time").reset_index(drop=True)
+        if df.empty:
+            raise FeasibilityError(f"{asset}: no data inside the audit window")
 
         closes = pd.Series(df["close"].astype("float64").values, index=df["time"])
         events = entry_exit_events(closes)          # <- prices stop here
         spans, still_open = _spans(events)
-        held = _held_days(spans)
 
         years = ((closes.index[-1] - closes.index[0]).days + 1) / 365.25
-        # The first ENTRY_LOOKBACK bars cannot produce a signal.
         eligible_years = max(years - ENTRY_LOOKBACK / 365.25, 0.0)
+        first_eligible = closes.index[min(ENTRY_LOOKBACK, len(closes) - 1)]
 
         per_asset[asset] = {
             "entries": sum(1 for e in events if e["event"] == "ENTRY"),
             "closed_trades": len(spans),
             "open_at_end": still_open,
-            "holding_days": _quantiles(held),
+            "holding_days": _quantiles(_held_days(spans)),
+            "first_eligible": first_eligible.isoformat(),
             "eligible_years": round(eligible_years, 2),
             "closed_trades_per_year": (round(len(spans) / eligible_years, 2)
                                        if eligible_years > 0 else None),
@@ -225,31 +333,15 @@ def build_audit() -> dict:
         }
         frames[asset] = (spans, closes.index)
 
-    # ── Portfolio structure ──────────────────────────────────────────────────
-    all_days = sorted(set().union(*[set(idx) for _, idx in frames.values()]))
-    index = pd.DatetimeIndex(all_days)
-    held_by_asset = {a: _in_position_days(spans, index) for a, (spans, _) in frames.items()}
-    concurrent = sum(held_by_asset.values())
-    any_open = concurrent > 0
+    # The trial holds all four assets from day one, so calibration starts where
+    # the LAST of them becomes signal-eligible.
+    common_start = max(pd.Timestamp(v["first_eligible"]) for v in per_asset.values())
 
-    clusters = _clusters(any_open)
-    pooled_closed = sum(v["closed_trades"] for v in per_asset.values())
-    pooled_years = max(v["eligible_years"] for v in per_asset.values())
-    pooled_rate = round(pooled_closed / pooled_years, 2) if pooled_years else None
-
-    overlap = {}
-    for i, a in enumerate(UNIVERSE):
-        for b in UNIVERSE[i + 1:]:
-            both = int((held_by_asset[a] & held_by_asset[b]).sum())
-            either = int((held_by_asset[a] | held_by_asset[b]).sum())
-            overlap[f"{a}|{b}"] = {
-                "days_both": both,
-                "days_either": either,
-                "jaccard": round(both / either, 3) if either else None,
-            }
-
-    concurrency_hist = {str(k): int(v) for k, v in
-                        concurrent.value_counts().sort_index().items()}
+    files = sorted(({"file": rel, "sha256": sha256_source(ROOT / rel)}
+                    for rel in _CODE_PATHS), key=lambda d: d["file"])
+    agg = hashlib.sha256()
+    for entry in files:
+        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
 
     return {
         "trial_id": TRIAL_ID,
@@ -262,6 +354,10 @@ def build_audit() -> dict:
         "not_evidence": ("this is PRE-CUTOFF data used to size a future trial. "
                          "It is not an evaluation and cannot support or oppose "
                          "activation."),
+        "code": {"files": files, "code_sha256": agg.hexdigest()},
+        "environment": environment_fingerprint(),
+        "inputs": sorted(inputs, key=lambda d: d["file"]),
+        "audit_window": {"start_inclusive": AUDIT_START, "end_inclusive": AUDIT_END},
         "rule": {
             "name": "STF-CLOSE-55-20",
             "entry": f"daily close > max of prior {ENTRY_LOOKBACK} closes (current excluded)",
@@ -271,28 +367,11 @@ def build_audit() -> dict:
             "direction": "long only",
             "universe": UNIVERSE,
         },
-        "per_asset": per_asset,
-        "portfolio": {
-            "pooled_closed_trades": pooled_closed,
-            "pooled_years": round(pooled_years, 2),
-            "pooled_closed_trades_per_year": pooled_rate,
-            "implied_years_to_target": {
-                str(t): (round(t / pooled_rate, 2) if pooled_rate else None)
-                for t in TARGET_TRADES
-            },
-            "cluster_gap_days": CLUSTER_GAP_DAYS,
-            "exposure_clusters": len(clusters),
-            "clusters": clusters,
-            "clusters_per_year": (round(len(clusters) / pooled_years, 2)
-                                  if pooled_years else None),
-            "days_with_any_exposure": int(any_open.sum()),
-            "days_total": int(len(index)),
-            "exposure_fraction": round(float(any_open.mean()), 3),
-            "concurrency_days": concurrency_hist,
-            "mean_concurrent_when_exposed": round(
-                float(concurrent[any_open].mean()), 2) if any_open.any() else None,
-            "pairwise_overlap": overlap,
-        },
+        "per_asset_full_history": per_asset,
+        # THE calibration basis: the fixed four-asset universe the trial would
+        # actually hold. Per-asset figures above span each asset's own history
+        # and are informational only.
+        "common_universe": portfolio_structure(frames, common_start),
     }
 
 
@@ -300,45 +379,65 @@ def _serialise(audit: dict) -> str:
     return json.dumps(audit, indent=2, sort_keys=True) + "\n"
 
 
+def _assert_writable() -> None:
+    """Same write discipline as the research runner: canonical env, clean tree."""
+    from backtesting.research_runner import (
+        assert_canonical_python,
+        assert_code_is_committed,
+    )
+
+    assert_canonical_python()
+    assert_code_is_committed(_CODE_PATHS)
+
+
+def write_artifact() -> tuple[Path, dict]:
+    """Guard once, build once, write, and return what was written."""
+    _assert_writable()
+    audit = build_audit()
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    ARTIFACT.write_text(_serialise(audit), encoding="utf-8")
+    return ARTIFACT, audit
+
+
 def verify() -> bool:
     if not ARTIFACT.exists():
         raise FeasibilityError(f"no committed audit at {ARTIFACT}")
-    fresh = _serialise(build_audit())
-    if fresh == ARTIFACT.read_text(encoding="utf-8"):
+    if _serialise(build_audit()) == ARTIFACT.read_text(encoding="utf-8"):
         return True
     print("MISMATCH: feasibility audit differs from a fresh run", file=sys.stderr)
     return False
 
 
 def _report(a: dict) -> None:
-    p = a["portfolio"]
+    c = a["common_universe"]
     print("\n" + "=" * 74)
     print(f"STF-CLOSE-55-20 — BLINDED FEASIBILITY AUDIT  ({a['trial_id']})")
     print("No P&L, no profit factor, no ranking. Event structure only.")
     print("=" * 74)
 
-    print(f"\n{'asset':10s} {'closed':>7s} {'open':>5s} {'per yr':>7s} "
-          f"{'median hold':>12s} {'gaps':>5s}")
-    for asset, v in a["per_asset"].items():
-        h = v["holding_days"]
+    print("\nper asset, own history (informational)")
+    print(f"{'asset':10s} {'closed':>7s} {'open':>5s} {'per yr':>7s} {'median hold':>12s}")
+    for asset, v in a["per_asset_full_history"].items():
         print(f"{asset:10s} {v['closed_trades']:7d} {v['open_at_end']:5d} "
               f"{v['closed_trades_per_year']:7.2f} "
-              f"{h.get('median', 0):12.1f} "
-              f"{v['data_quality']['gap_count']:5d}")
+              f"{v['holding_days'].get('median', 0):12.1f}")
 
-    print(f"\npooled closed trades   : {p['pooled_closed_trades']} over "
-          f"{p['pooled_years']} years  ({p['pooled_closed_trades_per_year']}/yr)")
-    for target, years in p["implied_years_to_target"].items():
-        print(f"  implied years to {target:>2s} : {years}")
-    print(f"\nexposure clusters      : {p['exposure_clusters']} "
-          f"({p['clusters_per_year']}/yr, {p['cluster_gap_days']}-day flat separation)")
-    print(f"time with any exposure : {p['exposure_fraction']:.1%}")
-    print(f"mean concurrent assets : {p['mean_concurrent_when_exposed']} when exposed")
-    print("concurrency (days)     : " + ", ".join(
-        f"{k}:{v}" for k, v in p["concurrency_days"].items()))
-    print("\npairwise overlap (Jaccard on in-position days):")
-    for pair, v in p["pairwise_overlap"].items():
-        print(f"  {pair:22s} {v['jaccard']}")
+    print(f"\nCOMMON UNIVERSE (the calibration basis) "
+          f"{c['window_start'][:10]} -> {c['window_end'][:10]}, {c['years']} years")
+    print(f"  pooled closed trades      : {c['pooled_closed_trades']} "
+          f"({c['pooled_closed_trades_per_year']}/yr)")
+    for t, y in c["implied_years_to_target"].items():
+        print(f"    implied years to {t:>2s}     : {y}")
+    print(f"  exposure clusters         : {c['exposure_clusters']} "
+          f"({c['clusters_per_year']}/yr)")
+    print(f"  UNIQUE assets per cluster : {c['mean_unique_assets_per_cluster']}")
+    print(f"  mean concurrent when open : {c['mean_concurrent_when_exposed']}")
+    print(f"  trades per cluster        : {c['mean_closed_trades_per_cluster']}")
+    print(f"  trades per asset/cluster  : {c['trades_per_asset_per_cluster']}")
+    print(f"  time with any exposure    : {c['exposure_fraction']:.1%}")
+    print("  pairwise overlap (Jaccard):")
+    for pair, v in c["pairwise_overlap"].items():
+        print(f"    {pair:22s} {v['jaccard']}")
     print("\n" + "=" * 74)
     print("Pre-cutoff data, used only to size a future trial. Not an evaluation.")
     print("=" * 74)
@@ -351,11 +450,10 @@ def main() -> None:
                 print("OK: feasibility audit reproduces byte-for-byte.")
                 return
             sys.exit(1)
-        audit = build_audit()
+        path, audit = write_artifact()
         _report(audit)
-        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-        ARTIFACT.write_text(_serialise(audit), encoding="utf-8")
-        print(f"\nwrote {ARTIFACT.relative_to(ROOT)}")
+        shown = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+        print(f"\nwrote {shown}")
     except FeasibilityError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(2)

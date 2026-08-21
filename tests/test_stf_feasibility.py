@@ -40,6 +40,7 @@ def test_events_carry_no_price_information() -> None:
         assert ev["event"] in {"ENTRY", "EXIT"}
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("banned", [
     "pnl", "profit_factor", "expectancy", "win_rate", "return", "equity",
     "sharpe", "drawdown",
@@ -170,6 +171,7 @@ def test_the_universe_is_fixed_and_the_rule_is_singular() -> None:
     assert "for lookback in" not in src, "a parameter sweep appeared"
 
 
+@pytest.mark.integration
 def test_audit_reports_the_naming_correction() -> None:
     """
     The rule uses closes, not highs/lows, so it is not the classical Donchian
@@ -182,6 +184,7 @@ def test_audit_reports_the_naming_correction() -> None:
 
 # ── Power study is calibrated, not guessed ───────────────────────────────────
 
+@pytest.mark.integration
 def test_power_study_is_calibrated_from_the_blinded_audit() -> None:
     import backtesting.stf_power as pw
 
@@ -194,12 +197,25 @@ def test_power_study_is_calibrated_from_the_blinded_audit() -> None:
 
 
 def test_power_study_uses_no_historical_strategy_returns() -> None:
-    """It may read the audit's STRUCTURE; it must not read prices."""
+    """
+    It may read the audit's STRUCTURE; it must not read prices.
+
+    Executable tokens only: the module's prose describes the strategy ("the
+    20-day close breakout"), and a raw text search flags that description.
+    """
+    import io
+    import tokenize
+
     import backtesting.stf_power as pw
 
-    src = inspect.getsource(pw)
-    assert "read_parquet" not in src
-    assert "close" not in src.replace("closed", "")
+    code = " ".join(
+        tok.string
+        for tok in tokenize.generate_tokens(
+            io.StringIO(inspect.getsource(pw)).readline)
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING)
+    )
+    for banned in ("read_parquet", "close", "CANDLE_DIR", "parquet"):
+        assert banned not in code, f"{banned!r} in executable code"
 
 
 def test_the_simulated_null_really_has_zero_expectancy() -> None:
@@ -207,11 +223,12 @@ def test_the_simulated_null_really_has_zero_expectancy() -> None:
     import backtesting.stf_power as pw
 
     for win_rate in pw.WIN_RATES:
-        w = pw._win_size(win_rate, 0.0)
-        expectancy = (win_rate * w
-                      - (1 - win_rate) * pw.LOSS_PCT
-                      - pw.COST_PCT)
-        assert expectancy == pytest.approx(0.0, abs=1e-9)
+        for loss_pct in pw.LOSS_PCTS:
+            w = pw._win_size(win_rate, loss_pct, 0.0)
+            expectancy = (win_rate * w
+                          - (1 - win_rate) * loss_pct
+                          - pw.COST_PCT)
+            assert expectancy == pytest.approx(0.0, abs=1e-9)
 
 
 def test_erfinv_matches_the_normal_quantile() -> None:
@@ -221,3 +238,124 @@ def test_erfinv_matches_the_normal_quantile() -> None:
     for p, expected in [(0.5, 0.0), (0.975, 1.959964), (0.75, 0.674490)]:
         got = np.sqrt(2.0) * pw._erfinv(2.0 * p - 1.0)
         assert got == pytest.approx(expected, abs=1e-4)
+
+
+# ── Hermetic equivalents of the artifact-dependent checks ───────────────────
+#
+# The three tests above call build_audit(), which reads the git-ignored parquet
+# cache. In CI the tests job runs before any hydration and does not share a
+# filesystem with the research-verify job, so a clean checkout has no candles.
+# They are marked integration; these cover the same properties without data.
+
+def test_the_rule_constants_are_the_registered_ones() -> None:
+    assert fz.ENTRY_LOOKBACK == 55
+    assert fz.EXIT_LOOKBACK == 20
+    assert fz.UNIVERSE == ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
+
+
+def test_the_audit_window_is_frozen_and_matches_the_research_scope() -> None:
+    """
+    An unbounded end would change the artifact every time the cache grows, and
+    would describe data the committed research manifest does not cover — which
+    is also what let the tests depend on ungated data.
+    """
+    from backtesting.research_runner import _SCOPE_START, _scope_end
+
+    assert fz.AUDIT_START == _SCOPE_START
+    assert fz.AUDIT_END == _scope_end()
+
+
+def test_portfolio_structure_counts_unique_assets_not_concurrency() -> None:
+    """
+    A cluster can average 2.3 open assets while touching all four over its life.
+    Calibrating a simulation with the concurrent figure invents too few assets
+    and too many repeat trades per asset.
+    """
+    idx = pd.date_range("2024-01-01", periods=200, freq="D", tz="UTC")
+    # Two assets, never open at the same time, both inside one cluster.
+    frames = {
+        "BTC-USD": ([(idx[0], idx[10])], idx),
+        "ETH-USD": ([(idx[20], idx[30])], idx),
+        "SOL-USD": ([], idx),
+        "ZEC-USD": ([], idx),
+    }
+    out = fz.portfolio_structure(frames, idx[0])
+    assert out["exposure_clusters"] == 1
+    assert out["mean_unique_assets_per_cluster"] == 2.0
+    assert out["mean_concurrent_when_exposed"] == 1.0, (
+        "the two metrics must not be conflated"
+    )
+
+
+def test_portfolio_structure_ignores_trades_before_the_window() -> None:
+    """
+    The trial holds four assets from day one, so calibration must start where
+    the last of them becomes eligible. Earlier spans describe a different
+    portfolio.
+    """
+    idx = pd.date_range("2024-01-01", periods=200, freq="D", tz="UTC")
+    frames = {a: ([(idx[0], idx[5]), (idx[100], idx[110])], idx)
+              for a in fz.UNIVERSE}
+    out = fz.portfolio_structure(frames, idx[50])
+    assert out["pooled_closed_trades"] == 4, "pre-window trades were counted"
+
+
+def test_the_artifact_carries_provenance() -> None:
+    """
+    Phase 6.9 made code identity, environment and input hashes mandatory for
+    research artifacts. A new artifact must not reintroduce the old guarantees.
+    """
+    src = inspect.getsource(fz)
+    for needed in ("code_sha256", "environment_fingerprint", "logical_sha256",
+                   "assert_canonical_python", "assert_code_is_committed"):
+        assert needed in src, f"{needed} missing from the audit"
+
+
+def test_loss_size_is_a_sensitivity_axis_not_a_constant() -> None:
+    """
+    The rule has no stop: its only exit is the 20-day close breakout, so what a
+    losing trade gives back is a property of price, not of a risk rule. Fixing
+    it at one number would smuggle in a mechanism the strategy does not have.
+    """
+    import backtesting.stf_power as pw
+
+    assert len(pw.LOSS_PCTS) >= 3
+    assert not hasattr(pw, "LOSS_PCT"), "loss size was re-frozen to a constant"
+
+
+def test_drawdown_uses_the_sleeve_denominator() -> None:
+    """
+    The protocol measures drawdown on the 20% STF sleeve, where one 5%-of-
+    capital position is 25%. Compounding against total equity understated it by
+    a factor of five and produced the false conclusion that the gate was inert.
+    """
+    import backtesting.stf_power as pw
+
+    assert pw.POSITION_FRACTION_OF_SLEEVE == pytest.approx(0.25)
+    assert pw.SLEEVE_FRACTION_OF_CAPITAL == pytest.approx(0.20)
+
+
+def test_drawdown_is_declared_not_assessed() -> None:
+    """
+    A realized-only trade sequence cannot produce the protocol's calendar-time,
+    unrealized-inclusive drawdown. Saying so is required; silently evaluating a
+    different quantity is not acceptable.
+    """
+    import backtesting.stf_power as pw
+
+    assert "max_drawdown" in pw.DIAGNOSTIC_ONLY
+    src = inspect.getsource(pw)
+    assert "NOT ASSESSED" in src
+
+
+def test_the_power_study_evaluates_the_final_gates() -> None:
+    """
+    The first study measured the superseded gates (18 months / 20 trades / 3
+    clusters, with LOEO and drawdown mandatory) while the report proposed
+    different ones, so its numbers described a trial nobody intended to run.
+    """
+    import backtesting.stf_power as pw
+
+    assert pw.GATE_MIN_YEARS == 3.0
+    assert pw.GATE_MIN_TRADES == 30
+    assert pw.GATE_MIN_CLUSTERS == 5
