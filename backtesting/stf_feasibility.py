@@ -59,26 +59,21 @@ CANDLE_DIR = ROOT / "data" / "candles"
 # the candle cache grows, and it would describe data the committed research
 # manifest does not cover. Both ends match the main research scope, so the same
 # hydrated inputs serve both artifacts and CI needs no extra data.
-AUDIT_START = "2020-01-01T00:00:00+00:00"
-AUDIT_END = "2026-07-12T00:00:00+00:00"
+from backtesting.stf_protocol import (  # noqa: E402
+    AUDIT_END,
+    AUDIT_START,
+    CLUSTER_GAP_DAYS,
+    ENTRY_LOOKBACK,
+    EXIT_LOOKBACK,
+    UNIVERSE,
+)
 
 # Files whose content determines this audit.
 _CODE_PATHS = [
     "backtesting/research_runner.py",
     "backtesting/stf_feasibility.py",
+    "backtesting/stf_protocol.py",
 ]
-
-# The single rule under audit. Not a grid; not tunable from the CLI.
-ENTRY_LOOKBACK = 55
-EXIT_LOOKBACK = 20
-UNIVERSE = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
-
-# A portfolio is "flat" when no asset holds a position. Two spans of exposure
-# separated by at least this many flat days are counted as separate clusters.
-# NOTE the term: cluster, not "independent episode". Sixty flat days does not
-# make two crypto trend episodes statistically independent — it only makes them
-# non-contiguous.
-CLUSTER_GAP_DAYS = 60
 
 # Targets from the draft protocol, quoted here only to express the observed
 # event rate as an implied duration.
@@ -91,13 +86,21 @@ class FeasibilityError(RuntimeError):
 
 # ── The ONLY function that touches prices ────────────────────────────────────
 
-def entry_exit_events(closes: pd.Series) -> list[dict]:
+def entry_exit_events(closes: pd.Series,
+                      evaluation_start: pd.Timestamp | None = None) -> list[dict]:
     """
     Replay the rule and return EVENTS ONLY — no prices, no returns.
 
     Entry: close > max of the previous ENTRY_LOOKBACK closes (current excluded).
     Exit:  close < min of the previous EXIT_LOOKBACK closes (current excluded).
     Long only, one position at a time, evaluated on completed daily bars.
+
+    `evaluation_start` separates WARM-UP from EVALUATION. The rolling levels are
+    built from the whole series, because a 55-day window needs history; but the
+    state machine starts FLAT there, because a forward trial starts flat.
+    Replaying through the earlier span and discarding its trades afterwards left
+    the machine "in position" across the boundary, which suppressed the first
+    post-start entry — a trial would have taken it.
 
     The return type is the blind: timestamps and labels. A caller cannot
     reconstruct P&L from this, because the prices never leave the function.
@@ -107,6 +110,8 @@ def entry_exit_events(closes: pd.Series) -> list[dict]:
     # look-ahead discipline the scanner uses for daily context.
     entry_level = closes.shift(1).rolling(ENTRY_LOOKBACK).max()
     exit_level = closes.shift(1).rolling(EXIT_LOOKBACK).min()
+    if evaluation_start is not None:
+        closes = closes[closes.index >= evaluation_start]
 
     events: list[dict] = []
     in_position = False
@@ -212,9 +217,9 @@ def portfolio_structure(frames: dict, window_start: pd.Timestamp) -> dict:
     """
     index = pd.DatetimeIndex(
         sorted({d for _, idx in frames.values() for d in idx if d >= window_start}))
-    held = {a: _in_position_days([(s, e) for s, e in spans if s >= window_start],
-                                 index)
-            for a, (spans, _) in frames.items()}
+    # `frames` already holds spans replayed FROM window_start with a flat start.
+    # Post-hoc filtering is what produced the suppressed-first-entry error.
+    held = {a: _in_position_days(spans, index) for a, (spans, _) in frames.items()}
     concurrent = sum(held.values())
     any_open = concurrent > 0
     clusters = _clusters(any_open)
@@ -234,8 +239,7 @@ def portfolio_structure(frames: dict, window_start: pd.Timestamp) -> dict:
                             "closed_trades_started": started})
 
     years = ((index[-1] - index[0]).days + 1) / 365.25 if len(index) else 0.0
-    pooled = sum(1 for a in UNIVERSE
-                 for (s, _e) in frames[a][0] if s >= window_start)
+    pooled = sum(len(frames[a][0]) for a in UNIVERSE)
     mean_unique = (sum(c["unique_assets"] for c in per_cluster) / len(per_cluster)
                    if per_cluster else None)
     per_cluster_trades = (pooled / len(per_cluster)) if per_cluster else None
@@ -289,7 +293,7 @@ def build_audit() -> dict:
     )
 
     per_asset: dict = {}
-    frames: dict = {}
+    series: dict = {}
     inputs: list = []
     audit_end = pd.Timestamp(AUDIT_END)
 
@@ -315,6 +319,7 @@ def build_audit() -> dict:
         closes = pd.Series(df["close"].astype("float64").values, index=df["time"])
         events = entry_exit_events(closes)          # <- prices stop here
         spans, still_open = _spans(events)
+        series[asset] = closes
 
         years = ((closes.index[-1] - closes.index[0]).days + 1) / 365.25
         eligible_years = max(years - ENTRY_LOOKBACK / 365.25, 0.0)
@@ -331,11 +336,18 @@ def build_audit() -> dict:
                                        if eligible_years > 0 else None),
             "data_quality": _data_quality(df),
         }
-        frames[asset] = (spans, closes.index)
 
     # The trial holds all four assets from day one, so calibration starts where
     # the LAST of them becomes signal-eligible.
     common_start = max(pd.Timestamp(v["first_eligible"]) for v in per_asset.values())
+
+    # SECOND replay, starting FLAT at common_start. The first replay above spans
+    # each asset's own history and is informational; a forward trial does not
+    # inherit a position from before it began.
+    frames = {}
+    for asset, closes in series.items():
+        spans, _open = _spans(entry_exit_events(closes, evaluation_start=common_start))
+        frames[asset] = (spans, closes.index)
 
     files = sorted(({"file": rel, "sha256": sha256_source(ROOT / rel)}
                     for rel in _CODE_PATHS), key=lambda d: d["file"])
@@ -378,6 +390,21 @@ def build_audit() -> dict:
 def _serialise(audit: dict) -> str:
     return json.dumps(audit, indent=2, sort_keys=True) + "\n"
 
+def _atomic_write(path: Path, text: str) -> None:
+    """
+    Write via a temporary file and replace.
+
+    A direct write_text can leave a truncated artifact if the process dies
+    mid-write, and a half-written JSON that still parses is worse than none.
+    """
+    tmp = path.with_suffix(path.suffix + ".partial")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
 
 def _assert_writable() -> None:
     """Same write discipline as the research runner: canonical env, clean tree."""
@@ -395,7 +422,7 @@ def write_artifact() -> tuple[Path, dict]:
     _assert_writable()
     audit = build_audit()
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    ARTIFACT.write_text(_serialise(audit), encoding="utf-8")
+    _atomic_write(ARTIFACT, _serialise(audit))
     return ARTIFACT, audit
 
 

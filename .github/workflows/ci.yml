@@ -92,6 +92,12 @@ jobs:
         # truncated fetch fails here rather than producing a shorter scan.
         run: python backtesting/hydrate_research_data.py
 
+      - name: Run the integration suite
+        # These tests read the candle cache, so they can only run AFTER
+        # hydration. The default suite deselects them, which meant nothing
+        # exercised them in CI at all.
+        run: python -m pytest -q -m integration
+
       - name: Verify artifacts reproduce byte-for-byte
         # BOTH registered artifacts. Verifying only the main one let a scanner
         # change refresh it while the walk-forward artifact went stale, with CI
