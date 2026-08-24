@@ -36,14 +36,16 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timedelta, timezone
+from math import isfinite
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from backtesting.stf_protocol import UNIVERSE, position_notional  # noqa: E402
+
 OBSERVATIONS = ROOT / "logs" / "stf_cost_probe.jsonl"
-UNIVERSE = ["BTC-USD", "ETH-USD", "SOL-USD", "ZEC-USD"]
 
 # The protocol executes on the first hourly bar after the daily close, so the
 # cost that matters is the cost in that window. Sampling at an arbitrary hour
@@ -73,15 +75,16 @@ def _public_client():
 
 def trial_notional() -> float:
     """
-    The notional one STF position would take, from the single sizing source.
+    The notional one STF position would take.
 
-    Read through pipeline.sizing rather than os.getenv so the probe cannot drift
-    from the contract the rest of the system enforces — the per-order default
-    moved from 5% to 2% and a local copy would have kept measuring the old size.
+    Size comes from the FROZEN trial protocol, not from pipeline.sizing: the
+    power study and this probe once used different fractions (5% and 2%), so
+    cost and drawdown described different mechanisms. The live default may move
+    again; a registered trial must not move with it.
     """
-    from pipeline.sizing import live_balance_usd, trade_size_pct
+    from pipeline.sizing import live_balance_usd
 
-    return live_balance_usd() * trade_size_pct()
+    return position_notional(live_balance_usd())
 
 
 def _validated_levels(raw, side: str) -> list[tuple[float, float]]:
@@ -99,7 +102,9 @@ def _validated_levels(raw, side: str) -> list[tuple[float, float]]:
             size = float(lvl["size"] if isinstance(lvl, dict) else lvl.size)
         except (KeyError, AttributeError, TypeError, ValueError):
             continue
-        if price > 0 and size > 0 and price == price and size == size:
+        # isfinite, not a bare NaN check: inf passes `x == x` and would sweep
+        # the whole book into one level.
+        if price > 0 and size > 0 and isfinite(price) and isfinite(size):
             levels.append((price, size))
     return sorted(levels, key=lambda p: p[0], reverse=(side == "bid"))
 
@@ -256,7 +261,7 @@ def report() -> dict:
     import statistics
 
     per_asset: dict = {a: {"spread_bps": [], "round_trip_bps": []} for a in UNIVERSE}
-    used = skipped = 0
+    used = skipped = no_candle = 0
     for line in OBSERVATIONS.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -267,6 +272,11 @@ def report() -> dict:
         used += 1
         for row in obs["assets"]:
             if "error" in row:
+                continue
+            # If the bar the signal needs was not published yet, this reading
+            # describes a moment the strategy could not have traded in.
+            if not row.get("daily_candle", {}).get("available", True):
+                no_candle += 1
                 continue
             buy = row["buy"].get("quoted_impact_bps")
             sell = row["sell"].get("quoted_impact_bps")
@@ -281,12 +291,16 @@ def report() -> dict:
         out = {"n": len(s), "mean": round(statistics.fmean(s), 2),
                "max": round(s[-1], 2)}
         for p in _PERCENTILES:
-            out[f"p{int(p * 100)}"] = round(s[min(int(p * len(s)), len(s) - 1)], 2)
+            # Nearest-rank: ceil(p*n) - 1. `int(p*n)` truncates, so at n=10 the
+            # p90 picked the 10th observation (the maximum) instead of the 9th.
+            rank = max(1, -((-int(p * len(s) * 1000)) // 1000))
+            out[f"p{int(p * 100)}"] = round(s[min(rank, len(s)) - 1], 2)
         return out
 
     return {
         "observations_used": used,
         "observations_skipped_out_of_window": skipped,
+        "asset_readings_skipped_no_daily_bar": no_candle,
         "measures": ("QUOTED IMPACT against the displayed book plus the spread; "
                      "this is not realised execution slippage"),
         "percentiles_reported": [f"p{int(p * 100)}" for p in _PERCENTILES],

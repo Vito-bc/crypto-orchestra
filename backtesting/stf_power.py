@@ -32,16 +32,17 @@ share the regime factor.
 
 DRAWDOWN IS NOT ASSESSED
 ------------------------
-The protocol measures drawdown on the STF sleeve (20% of capital) in calendar
-time, including unrealized P&L on open positions. This simulation produces a
-sequence of closed trades, not a calendar equity curve, so it can only bound the
-realized-only component. That bound is reported; the drawdown GATE is marked NOT
-ASSESSED rather than being evaluated against the wrong quantity.
+The protocol measures drawdown on the STF sleeve in calendar time, including
+unrealized P&L on open positions. This simulation produces closed trades in an
+artificial cluster/asset order, which is NOT a bound on that quantity in either
+direction: real positions overlap, so a simultaneous winner can offset a loser
+and shrink the trough, while unrealized moves can deepen it. A sequential
+realized STRESS statistic is reported and compared with nothing.
 
-An earlier version compounded trades against total equity at 5% per position and
-concluded the drawdown gate was inert. That was wrong twice over: the protocol
-denominator is the sleeve, on which one position is 25%, and unrealized moves
-were ignored entirely.
+Two earlier readings of this were wrong and are withdrawn. The first compounded
+against total capital rather than the sleeve and concluded the gate was inert.
+The second corrected the denominator but called the result a lower bound, which
+it is not.
 
 Usage:
     python backtesting/stf_power.py            # write the study
@@ -69,6 +70,7 @@ FEASIBILITY = ARTIFACT_DIR / "audit.json"
 _CODE_PATHS = [
     "backtesting/research_runner.py",
     "backtesting/stf_power.py",
+    "backtesting/stf_protocol.py",
 ]
 
 N_TRIALS = 4_000
@@ -85,12 +87,14 @@ COST_PCT = 1.4           # round-trip; refine from the 7R-2 probe before use
 EDGE_PCT = 2.0           # alternative world: +2% per trade after costs
 WIN_SIGMA = 0.9          # lognormal shape — a few trades carry the profit
 
-# ── Position sizing and the drawdown denominator ─────────────────────────────
-# The protocol allocates a 20% sleeve to STF and sizes each position at 5% of
-# TOTAL capital, i.e. 25% OF THE SLEEVE. Drawdown is measured on the sleeve.
-SLEEVE_FRACTION_OF_CAPITAL = 0.20
-POSITION_FRACTION_OF_CAPITAL = 0.05
-POSITION_FRACTION_OF_SLEEVE = POSITION_FRACTION_OF_CAPITAL / SLEEVE_FRACTION_OF_CAPITAL
+# Sizing comes from the shared frozen protocol, never a local copy: this module
+# modelled 5% of capital while the cost probe measured 2%, so the two described
+# different mechanisms and nothing flagged it.
+from backtesting.stf_protocol import (  # noqa: E402
+    POSITION_FRACTION_OF_CAPITAL,
+    POSITION_FRACTION_OF_SLEEVE,
+    SLEEVE_FRACTION_OF_CAPITAL,
+)
 
 # ── FINAL protocol gates (continuation, not success) ─────────────────────────
 GATE_MIN_TRADES = 30
@@ -114,8 +118,13 @@ def _structure() -> dict:
             f"{FEASIBILITY} is missing — run stf_feasibility.py first. The "
             "power study must be calibrated to the measured sample structure, "
             "not to a guess.")
-    c = json.loads(FEASIBILITY.read_text(encoding="utf-8"))["common_universe"]
+    raw = FEASIBILITY.read_text(encoding="utf-8")
+    c = json.loads(raw)["common_universe"]
     return {
+        # The audit is an INPUT to this study, so its identity belongs in this
+        # artifact too. Without it a regenerated audit could silently change
+        # these numbers while the power artifact still verified.
+        "audit_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         "window": f"{c['window_start'][:10]}..{c['window_end'][:10]}",
         "years": c["years"],
         "clusters_per_year": c["clusters_per_year"],
@@ -171,8 +180,11 @@ def _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure):
     for c in range(n_clusters):
         z = rng.standard_normal()                       # shared regime factor
         for a in range(n_assets):
-            n_trades = max(1, int(rng.poisson(
-                structure["trades_per_asset_per_cluster"])))
+            # 1 + Poisson(mean - 1), not max(1, Poisson(mean)): clamping a
+            # Poisson at one RAISES its mean (2.357 became 2.452), so the
+            # simulated trade count drifted above the measured one.
+            n_trades = 1 + int(rng.poisson(
+                max(structure["trades_per_asset_per_cluster"] - 1.0, 0.0)))
             for _ in range(n_trades):
                 e = rng.standard_normal()
                 latent = np.sqrt(rho) * z + np.sqrt(1.0 - rho) * e
@@ -197,15 +209,17 @@ def _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure):
     rw, rl = float(rest[rest > 0].sum()), float(-rest[rest < 0].sum())
     loeo_pf = rw / rl if rl > 0 else (float("inf") if rw > 0 else 0.0)
 
-    # Realized-only sleeve drawdown. A LOWER BOUND on the protocol's quantity:
-    # it ignores unrealized moves and calendar overlap, both of which can only
-    # deepen a drawdown.
+    # Sequential realized stress: trades applied one at a time in an ARTIFICIAL
+    # cluster/asset order. This is NOT a bound on the protocol's drawdown in
+    # either direction — real positions overlap, so a simultaneous winner can
+    # offset a loser and reduce it, while unrealized moves can deepen it. It is
+    # reported as a stress statistic and compared with nothing.
     equity = peak = 1.0
-    max_dd = 0.0
+    stress = 0.0
     for r in arr:
         equity *= (1.0 + r / 100.0 * POSITION_FRACTION_OF_SLEEVE)
         peak = max(peak, equity)
-        max_dd = max(max_dd, (peak - equity) / peak * 100.0)
+        stress = max(stress, (peak - equity) / peak * 100.0)
 
     aa = np.array(asset_of)
     shares = [float(arr[(aa == a) & (arr > 0)].sum()) for a in range(n_assets)]
@@ -214,7 +228,7 @@ def _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure):
     return {
         "n_trades": int(arr.size), "n_clusters": n_clusters, "years": years,
         "expectancy": float(arr.mean()), "pf": pf, "loeo_pf": loeo_pf,
-        "realized_only_sleeve_dd": max_dd, "top_asset_share": top_share,
+        "sequential_realized_stress": stress, "top_asset_share": top_share,
     }
 
 
@@ -232,7 +246,7 @@ def _gates(t: dict) -> dict:
 def _cell(rng, years, win_rate, rho, loss_pct, edge, structure) -> dict:
     passed = reached = ran = 0
     diag = {"loeo_pf_below_1": 0, "top_asset_share_above_60": 0,
-            "realized_sleeve_dd_above_25": 0}
+            "sequential_realized_stress_above_25": 0}
     for _ in range(N_TRIALS):
         t = _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure)
         if t is None:
@@ -243,7 +257,8 @@ def _cell(rng, years, win_rate, rho, loss_pct, edge, structure) -> dict:
             reached += 1
             diag["loeo_pf_below_1"] += t["loeo_pf"] < 1.0
             diag["top_asset_share_above_60"] += t["top_asset_share"] > 0.60
-            diag["realized_sleeve_dd_above_25"] += t["realized_only_sleeve_dd"] > 25.0
+            diag["sequential_realized_stress_above_25"] += (
+                t["sequential_realized_stress"] > 25.0)
         if all(g.values()):
             passed += 1
     return {
@@ -323,9 +338,13 @@ def build_study() -> dict:
         },
         "not_assessed": {
             "max_drawdown": ("the protocol measures sleeve drawdown in calendar "
-                             "time including unrealized P&L; this simulation "
-                             "produces closed trades only, so only a realized-"
-                             "only LOWER BOUND is reported"),
+                             "time including unrealized P&L. This simulation "
+                             "produces closed trades in an artificial order, "
+                             "which is NOT a bound in either direction: "
+                             "overlapping winners can offset losers, unrealized "
+                             "moves can deepen the trough. Only a sequential "
+                             "stress statistic is reported, and it is compared "
+                             "with nothing."),
             "leave_one_cluster_out": "reported as a diagnostic, not a gate",
             "asset_concentration": "reported as a diagnostic, not a gate",
         },
@@ -339,6 +358,21 @@ def build_study() -> dict:
 def _serialise(study: dict) -> str:
     return json.dumps(study, indent=2, sort_keys=True) + "\n"
 
+def _atomic_write(path: Path, text: str) -> None:
+    """
+    Write via a temporary file and replace.
+
+    A direct write_text can leave a truncated artifact if the process dies
+    mid-write, and a half-written JSON that still parses is worse than none.
+    """
+    tmp = path.with_suffix(path.suffix + ".partial")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
 
 def _assert_writable() -> None:
     from backtesting.research_runner import (
@@ -347,14 +381,17 @@ def _assert_writable() -> None:
     )
 
     assert_canonical_python()
-    assert_code_is_committed(_CODE_PATHS)
+    # The audit is an INPUT, so an uncommitted one would make this study
+    # describe a structure that exists on one machine only.
+    assert_code_is_committed(_CODE_PATHS + [
+        "docs/research/artifacts/stf_feasibility/audit.json"])
 
 
 def write_artifact() -> tuple[Path, dict]:
     _assert_writable()
     study = build_study()
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    ARTIFACT.write_text(_serialise(study), encoding="utf-8")
+    _atomic_write(ARTIFACT, _serialise(study))
     return ARTIFACT, study
 
 

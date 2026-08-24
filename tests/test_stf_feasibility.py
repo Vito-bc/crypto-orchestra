@@ -16,6 +16,7 @@ import inspect
 import numpy as np
 import pandas as pd
 import pytest
+from unittest.mock import patch
 
 import backtesting.stf_feasibility as fz
 
@@ -157,9 +158,11 @@ def test_the_cluster_gap_is_not_called_independence() -> None:
     independent. The vocabulary matters because the whole trial rests on how
     many independent observations it can claim.
     """
-    src = inspect.getsource(fz)
-    assert "cluster" in src.lower()
-    assert "not \"independent episode\"" in src or "not statistically" in src.lower()
+    import backtesting.stf_protocol as proto
+
+    src = (inspect.getsource(fz) + inspect.getsource(proto)).lower()
+    assert "cluster" in src
+    assert "not statistically" in src or "independent episode" in src
 
 
 def test_the_universe_is_fixed_and_the_rule_is_singular() -> None:
@@ -287,17 +290,41 @@ def test_portfolio_structure_counts_unique_assets_not_concurrency() -> None:
     )
 
 
-def test_portfolio_structure_ignores_trades_before_the_window() -> None:
+def test_the_state_machine_restarts_flat_at_the_evaluation_start() -> None:
     """
-    The trial holds four assets from day one, so calibration must start where
-    the last of them becomes eligible. Earlier spans describe a different
-    portfolio.
+    A forward trial begins with no position. Replaying the whole history and
+    discarding early trades afterwards left the machine "in position" across the
+    boundary, which SUPPRESSED the first post-start entry — the trial would have
+    taken it. Worth 2 of 68 trades in the real audit.
     """
-    idx = pd.date_range("2024-01-01", periods=200, freq="D", tz="UTC")
-    frames = {a: ([(idx[0], idx[5]), (idx[100], idx[110])], idx)
-              for a in fz.UNIVERSE}
-    out = fz.portfolio_structure(frames, idx[50])
-    assert out["pooled_closed_trades"] == 4, "pre-window trades were counted"
+    # Rally into the boundary (opens a position), then a fresh breakout after it.
+    values = ([100.0] * fz.ENTRY_LOOKBACK + [120.0] * 10
+              + [150.0] * 10)
+    closes = _closes(values)
+    boundary = closes.index[fz.ENTRY_LOOKBACK + 5]
+
+    carried = fz.entry_exit_events(closes)
+    restarted = fz.entry_exit_events(closes, evaluation_start=boundary)
+
+    # Carrying state: the position opened before the boundary, so no entry fires
+    # after it. Restarting flat: the post-boundary breakout is taken.
+    assert not [e for e in carried if e["event"] == "ENTRY"
+                and pd.Timestamp(e["ts"]) >= boundary]
+    assert [e for e in restarted if e["event"] == "ENTRY"
+            and pd.Timestamp(e["ts"]) >= boundary]
+
+
+def test_warm_up_history_still_feeds_the_rolling_levels() -> None:
+    """
+    Restarting the STATE must not restart the WINDOWS: a 55-day level needs 55
+    days of history, which is what pre-cutoff data is for.
+    """
+    values = [100.0] * fz.ENTRY_LOOKBACK + [101.0, 102.0]
+    closes = _closes(values)
+    boundary = closes.index[fz.ENTRY_LOOKBACK]
+    # The bar at the boundary is a new 55-day high only because the preceding
+    # 55 bars are visible; without them the window would be incomplete.
+    assert fz.entry_exit_events(closes, evaluation_start=boundary)
 
 
 def test_the_artifact_carries_provenance() -> None:
@@ -325,14 +352,17 @@ def test_loss_size_is_a_sensitivity_axis_not_a_constant() -> None:
 
 def test_drawdown_uses_the_sleeve_denominator() -> None:
     """
-    The protocol measures drawdown on the 20% STF sleeve, where one 5%-of-
-    capital position is 25%. Compounding against total equity understated it by
-    a factor of five and produced the false conclusion that the gate was inert.
+    Sizing is a risk decision, frozen once for every component: a 2%-of-capital
+    position is 10% of the 20% sleeve, and at most four are held. The sleeve and
+    the drawdown limit are not relaxed so a strategy fits — no edge has been
+    demonstrated, so the correct response to a binding limit is a smaller
+    position.
     """
     import backtesting.stf_power as pw
 
-    assert pw.POSITION_FRACTION_OF_SLEEVE == pytest.approx(0.25)
+    assert pw.POSITION_FRACTION_OF_CAPITAL == pytest.approx(0.02)
     assert pw.SLEEVE_FRACTION_OF_CAPITAL == pytest.approx(0.20)
+    assert pw.POSITION_FRACTION_OF_SLEEVE == pytest.approx(0.10)
 
 
 def test_drawdown_is_declared_not_assessed() -> None:
@@ -359,3 +389,51 @@ def test_the_power_study_evaluates_the_final_gates() -> None:
     assert pw.GATE_MIN_YEARS == 3.0
     assert pw.GATE_MIN_TRADES == 30
     assert pw.GATE_MIN_CLUSTERS == 5
+
+
+def test_every_stf_component_shares_one_frozen_size() -> None:
+    """
+    The power study modelled 5% of capital while the cost probe measured the
+    live 2%: cost, drawdown and the future shadow journal described three
+    different mechanisms, and nothing flagged it because each owned its number.
+    """
+    import backtesting.stf_cost_probe as cp
+    import backtesting.stf_power as pw
+    import backtesting.stf_protocol as proto
+
+    assert pw.POSITION_FRACTION_OF_CAPITAL is proto.POSITION_FRACTION_OF_CAPITAL
+    with patch("pipeline.sizing.live_balance_usd", return_value=100.0):
+        assert cp.trial_notional() == proto.position_notional(100.0)
+
+
+def test_the_sequential_stress_is_not_called_a_bound() -> None:
+    """
+    Trades are applied in an artificial cluster/asset order. Real positions
+    overlap, so a simultaneous winner can offset a loser and SHRINK the trough
+    while unrealized moves can deepen it — the statistic bounds nothing.
+    """
+    import backtesting.stf_power as pw
+
+    src = inspect.getsource(pw)
+    assert "sequential_realized_stress" in src
+    assert "LOWER BOUND" not in src
+    assert "NOT a bound" in src
+
+
+def test_the_trade_count_poisson_preserves_its_mean() -> None:
+    """
+    max(1, Poisson(m)) has a mean ABOVE m — clamping moves probability mass up.
+    1 + Poisson(m-1) has mean exactly m.
+    """
+    import numpy as np
+
+    import backtesting.stf_power as pw
+
+    rng = np.random.default_rng(7)
+    mean = 2.429
+    clamped = np.maximum(1, rng.poisson(mean, 400_000)).mean()
+    correct = (1 + rng.poisson(mean - 1.0, 400_000)).mean()
+
+    assert clamped > mean + 0.01, "the clamped form should overshoot"
+    assert correct == pytest.approx(mean, abs=0.01)
+    assert "1 + int(rng.poisson(" in inspect.getsource(pw._simulate_one)

@@ -5,7 +5,7 @@
   },
   "blinding": "prices are consumed exclusively by entry_exit_events(), which returns timestamps and labels; no P&L, profit factor, expectancy, win rate, asset ranking or parameter comparison is computed anywhere in this module",
   "code": {
-    "code_sha256": "01c3e690fef8e12a9f7795a61697e0b08ae30f87390b8a6fb6950f7980b1b1a0",
+    "code_sha256": "7f1b7f95a34bbbb1c2534d2cec3162e5fbc1f9142bc3e9929b34cade1aa0b604",
     "files": [
       {
         "file": "backtesting/research_runner.py",
@@ -13,7 +13,11 @@
       },
       {
         "file": "backtesting/stf_feasibility.py",
-        "sha256": "85ef155f52f370f02b55fdd8eb1d50e35c2a586cf7c4fb4b36bd7fdfa94c18fc"
+        "sha256": "1ad31063c3bf8a62396654a60a810a5cb68959e182928ba05295b49f7f431926"
+      },
+      {
+        "file": "backtesting/stf_protocol.py",
+        "sha256": "47b9a47c9440ac4d3ed42252131d4a8676c339fe1af76e87e3aeedd193f4e082"
       }
     ]
   },
@@ -21,7 +25,7 @@
     "cluster_gap_days": 60,
     "clusters": [
       {
-        "closed_trades_started": 6,
+        "closed_trades_started": 8,
         "end": "2021-12-09T00:00:00+00:00",
         "exposed_days": 121,
         "start": "2021-08-11T00:00:00+00:00",
@@ -73,47 +77,47 @@
     "clusters_per_year": 1.42,
     "concurrency_days": {
       "0": 881,
-      "1": 284,
-      "2": 264,
-      "3": 156,
-      "4": 212
+      "1": 271,
+      "2": 251,
+      "3": 157,
+      "4": 237
     },
     "days_total": 1797,
     "days_with_any_exposure": 916,
     "exposure_clusters": 7,
     "exposure_fraction": 0.51,
     "implied_years_to_target": {
-      "20": 1.49,
-      "30": 2.24
+      "20": 1.45,
+      "30": 2.17
     },
-    "mean_closed_trades_per_cluster": 9.429,
-    "mean_concurrent_when_exposed": 2.323,
+    "mean_closed_trades_per_cluster": 9.714,
+    "mean_concurrent_when_exposed": 2.393,
     "mean_unique_assets_per_cluster": 4.0,
     "pairwise_overlap": {
       "BTC-USD|ETH-USD": {
-        "days_both": 425,
-        "days_either": 686,
-        "jaccard": 0.62
+        "days_both": 451,
+        "days_either": 724,
+        "jaccard": 0.623
       },
       "BTC-USD|SOL-USD": {
-        "days_both": 368,
+        "days_both": 394,
         "days_either": 709,
-        "jaccard": 0.519
+        "jaccard": 0.556
       },
       "BTC-USD|ZEC-USD": {
-        "days_both": 281,
-        "days_either": 779,
-        "jaccard": 0.361
+        "days_both": 306,
+        "days_either": 780,
+        "jaccard": 0.392
       },
       "ETH-USD|SOL-USD": {
-        "days_both": 360,
+        "days_both": 398,
         "days_either": 708,
-        "jaccard": 0.508
+        "jaccard": 0.562
       },
       "ETH-USD|ZEC-USD": {
-        "days_both": 286,
-        "days_either": 765,
-        "jaccard": 0.374
+        "days_both": 311,
+        "days_either": 778,
+        "jaccard": 0.4
       },
       "SOL-USD|ZEC-USD": {
         "days_both": 284,
@@ -121,9 +125,9 @@
         "jaccard": 0.387
       }
     },
-    "pooled_closed_trades": 66,
-    "pooled_closed_trades_per_year": 13.41,
-    "trades_per_asset_per_cluster": 2.357,
+    "pooled_closed_trades": 68,
+    "pooled_closed_trades_per_year": 13.82,
+    "trades_per_asset_per_cluster": 2.429,
     "window_end": "2026-07-12T00:00:00+00:00",
     "window_start": "2021-08-11T00:00:00+00:00",
     "years": 4.92
