@@ -4,7 +4,6 @@
       "years=3.0|win_rate=0.25|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7357,
-          "sequential_realized_stress_above_25": 0.5228,
           "top_asset_share_above_60": 0.1502
         },
         "pass_rate": 0.1729,
@@ -13,7 +12,6 @@
       "years=3.0|win_rate=0.25|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6327,
-          "sequential_realized_stress_above_25": 0.0123,
           "top_asset_share_above_60": 0.1582
         },
         "pass_rate": 0.221,
@@ -22,7 +20,6 @@
       "years=3.0|win_rate=0.25|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7211,
-          "sequential_realized_stress_above_25": 0.2528,
           "top_asset_share_above_60": 0.151
         },
         "pass_rate": 0.1919,
@@ -31,7 +28,6 @@
       "years=3.0|win_rate=0.25|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7748,
-          "sequential_realized_stress_above_25": 0.6397,
           "top_asset_share_above_60": 0.1582
         },
         "pass_rate": 0.1738,
@@ -40,7 +36,6 @@
       "years=3.0|win_rate=0.25|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6711,
-          "sequential_realized_stress_above_25": 0.0367,
           "top_asset_share_above_60": 0.1645
         },
         "pass_rate": 0.2226,
@@ -49,7 +44,6 @@
       "years=3.0|win_rate=0.25|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7326,
-          "sequential_realized_stress_above_25": 0.3294,
           "top_asset_share_above_60": 0.1871
         },
         "pass_rate": 0.1947,
@@ -58,7 +52,6 @@
       "years=3.0|win_rate=0.25|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7668,
-          "sequential_realized_stress_above_25": 0.7108,
           "top_asset_share_above_60": 0.1496
         },
         "pass_rate": 0.1928,
@@ -67,7 +60,6 @@
       "years=3.0|win_rate=0.25|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7093,
-          "sequential_realized_stress_above_25": 0.0698,
           "top_asset_share_above_60": 0.1851
         },
         "pass_rate": 0.2205,
@@ -76,7 +68,6 @@
       "years=3.0|win_rate=0.25|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7635,
-          "sequential_realized_stress_above_25": 0.4669,
           "top_asset_share_above_60": 0.1625
         },
         "pass_rate": 0.1856,
@@ -85,7 +76,6 @@
       "years=3.0|win_rate=0.35|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.683,
-          "sequential_realized_stress_above_25": 0.3499,
           "top_asset_share_above_60": 0.0689
         },
         "pass_rate": 0.1855,
@@ -94,7 +84,6 @@
       "years=3.0|win_rate=0.35|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5615,
-          "sequential_realized_stress_above_25": 0.0041,
           "top_asset_share_above_60": 0.0853
         },
         "pass_rate": 0.2555,
@@ -103,7 +92,6 @@
       "years=3.0|win_rate=0.35|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6303,
-          "sequential_realized_stress_above_25": 0.1262,
           "top_asset_share_above_60": 0.0693
         },
         "pass_rate": 0.2117,
@@ -112,7 +100,6 @@
       "years=3.0|win_rate=0.35|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6862,
-          "sequential_realized_stress_above_25": 0.4606,
           "top_asset_share_above_60": 0.0829
         },
         "pass_rate": 0.19,
@@ -121,7 +108,6 @@
       "years=3.0|win_rate=0.35|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6058,
-          "sequential_realized_stress_above_25": 0.0169,
           "top_asset_share_above_60": 0.1003
         },
         "pass_rate": 0.2442,
@@ -130,7 +116,6 @@
       "years=3.0|win_rate=0.35|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6721,
-          "sequential_realized_stress_above_25": 0.1985,
           "top_asset_share_above_60": 0.0851
         },
         "pass_rate": 0.2105,
@@ -139,7 +124,6 @@
       "years=3.0|win_rate=0.35|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7243,
-          "sequential_realized_stress_above_25": 0.5591,
           "top_asset_share_above_60": 0.0915
         },
         "pass_rate": 0.1875,
@@ -148,7 +132,6 @@
       "years=3.0|win_rate=0.35|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6358,
-          "sequential_realized_stress_above_25": 0.0338,
           "top_asset_share_above_60": 0.1002
         },
         "pass_rate": 0.2355,
@@ -157,7 +140,6 @@
       "years=3.0|win_rate=0.35|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6833,
-          "sequential_realized_stress_above_25": 0.2865,
           "top_asset_share_above_60": 0.0943
         },
         "pass_rate": 0.2138,
@@ -166,7 +148,6 @@
       "years=3.0|win_rate=0.45|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5957,
-          "sequential_realized_stress_above_25": 0.2165,
           "top_asset_share_above_60": 0.0393
         },
         "pass_rate": 0.2096,
@@ -175,7 +156,6 @@
       "years=3.0|win_rate=0.45|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.4855,
-          "sequential_realized_stress_above_25": 0.0024,
           "top_asset_share_above_60": 0.0429
         },
         "pass_rate": 0.2674,
@@ -184,7 +164,6 @@
       "years=3.0|win_rate=0.45|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5825,
-          "sequential_realized_stress_above_25": 0.0589,
           "top_asset_share_above_60": 0.0408
         },
         "pass_rate": 0.2256,
@@ -193,7 +172,6 @@
       "years=3.0|win_rate=0.45|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6691,
-          "sequential_realized_stress_above_25": 0.3135,
           "top_asset_share_above_60": 0.0462
         },
         "pass_rate": 0.1847,
@@ -202,7 +180,6 @@
       "years=3.0|win_rate=0.45|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5063,
-          "sequential_realized_stress_above_25": 0.0036,
           "top_asset_share_above_60": 0.0466
         },
         "pass_rate": 0.2749,
@@ -211,7 +188,6 @@
       "years=3.0|win_rate=0.45|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5917,
-          "sequential_realized_stress_above_25": 0.104,
           "top_asset_share_above_60": 0.0476
         },
         "pass_rate": 0.2341,
@@ -220,7 +196,6 @@
       "years=3.0|win_rate=0.45|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6552,
-          "sequential_realized_stress_above_25": 0.4017,
           "top_asset_share_above_60": 0.0427
         },
         "pass_rate": 0.2071,
@@ -229,7 +204,6 @@
       "years=3.0|win_rate=0.45|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5237,
-          "sequential_realized_stress_above_25": 0.0154,
           "top_asset_share_above_60": 0.0641
         },
         "pass_rate": 0.2664,
@@ -238,7 +212,6 @@
       "years=3.0|win_rate=0.45|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6357,
-          "sequential_realized_stress_above_25": 0.1778,
           "top_asset_share_above_60": 0.0518
         },
         "pass_rate": 0.2175,
@@ -247,7 +220,6 @@
       "years=5.0|win_rate=0.25|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.721,
-          "sequential_realized_stress_above_25": 0.6421,
           "top_asset_share_above_60": 0.0947
         },
         "pass_rate": 0.3362,
@@ -256,7 +228,6 @@
       "years=5.0|win_rate=0.25|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5913,
-          "sequential_realized_stress_above_25": 0.0329,
           "top_asset_share_above_60": 0.1065
         },
         "pass_rate": 0.4696,
@@ -265,7 +236,6 @@
       "years=5.0|win_rate=0.25|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.688,
-          "sequential_realized_stress_above_25": 0.3518,
           "top_asset_share_above_60": 0.1063
         },
         "pass_rate": 0.3769,
@@ -274,7 +244,6 @@
       "years=5.0|win_rate=0.25|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7238,
-          "sequential_realized_stress_above_25": 0.7132,
           "top_asset_share_above_60": 0.1183
         },
         "pass_rate": 0.3553,
@@ -283,7 +252,6 @@
       "years=5.0|win_rate=0.25|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6361,
-          "sequential_realized_stress_above_25": 0.0768,
           "top_asset_share_above_60": 0.1115
         },
         "pass_rate": 0.4476,
@@ -292,7 +260,6 @@
       "years=5.0|win_rate=0.25|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.702,
-          "sequential_realized_stress_above_25": 0.442,
           "top_asset_share_above_60": 0.1156
         },
         "pass_rate": 0.3813,
@@ -301,7 +268,6 @@
       "years=5.0|win_rate=0.25|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7351,
-          "sequential_realized_stress_above_25": 0.7972,
           "top_asset_share_above_60": 0.1242
         },
         "pass_rate": 0.3624,
@@ -310,7 +276,6 @@
       "years=5.0|win_rate=0.25|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6733,
-          "sequential_realized_stress_above_25": 0.149,
           "top_asset_share_above_60": 0.135
         },
         "pass_rate": 0.4355,
@@ -319,7 +284,6 @@
       "years=5.0|win_rate=0.25|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7197,
-          "sequential_realized_stress_above_25": 0.5608,
           "top_asset_share_above_60": 0.1244
         },
         "pass_rate": 0.3825,
@@ -328,7 +292,6 @@
       "years=5.0|win_rate=0.35|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6576,
-          "sequential_realized_stress_above_25": 0.4477,
           "top_asset_share_above_60": 0.0507
         },
         "pass_rate": 0.3775,
@@ -337,7 +300,6 @@
       "years=5.0|win_rate=0.35|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5026,
-          "sequential_realized_stress_above_25": 0.0117,
           "top_asset_share_above_60": 0.0562
         },
         "pass_rate": 0.5039,
@@ -346,7 +308,6 @@
       "years=5.0|win_rate=0.35|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6048,
-          "sequential_realized_stress_above_25": 0.1829,
           "top_asset_share_above_60": 0.051
         },
         "pass_rate": 0.4142,
@@ -355,7 +316,6 @@
       "years=5.0|win_rate=0.35|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.682,
-          "sequential_realized_stress_above_25": 0.56,
           "top_asset_share_above_60": 0.0536
         },
         "pass_rate": 0.3597,
@@ -364,7 +324,6 @@
       "years=5.0|win_rate=0.35|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5672,
-          "sequential_realized_stress_above_25": 0.0307,
           "top_asset_share_above_60": 0.0621
         },
         "pass_rate": 0.4806,
@@ -373,7 +332,6 @@
       "years=5.0|win_rate=0.35|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6201,
-          "sequential_realized_stress_above_25": 0.2797,
           "top_asset_share_above_60": 0.0576
         },
         "pass_rate": 0.4188,
@@ -382,7 +340,6 @@
       "years=5.0|win_rate=0.35|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.679,
-          "sequential_realized_stress_above_25": 0.6668,
           "top_asset_share_above_60": 0.0689
         },
         "pass_rate": 0.377,
@@ -391,7 +348,6 @@
       "years=5.0|win_rate=0.35|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5993,
-          "sequential_realized_stress_above_25": 0.0688,
           "top_asset_share_above_60": 0.0721
         },
         "pass_rate": 0.4628,
@@ -400,7 +356,6 @@
       "years=5.0|win_rate=0.35|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.6446,
-          "sequential_realized_stress_above_25": 0.3945,
           "top_asset_share_above_60": 0.0655
         },
         "pass_rate": 0.4144,
@@ -409,7 +364,6 @@
       "years=5.0|win_rate=0.45|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5998,
-          "sequential_realized_stress_above_25": 0.3093,
           "top_asset_share_above_60": 0.0203
         },
         "pass_rate": 0.3892,
@@ -418,7 +372,6 @@
       "years=5.0|win_rate=0.45|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.4099,
-          "sequential_realized_stress_above_25": 0.0027,
           "top_asset_share_above_60": 0.0279
         },
         "pass_rate": 0.5575,
@@ -427,7 +380,6 @@
       "years=5.0|win_rate=0.45|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5396,
-          "sequential_realized_stress_above_25": 0.1025,
           "top_asset_share_above_60": 0.0249
         },
         "pass_rate": 0.4481,
@@ -436,7 +388,6 @@
       "years=5.0|win_rate=0.45|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5992,
-          "sequential_realized_stress_above_25": 0.4056,
           "top_asset_share_above_60": 0.0299
         },
         "pass_rate": 0.4062,
@@ -445,7 +396,6 @@
       "years=5.0|win_rate=0.45|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.465,
-          "sequential_realized_stress_above_25": 0.0108,
           "top_asset_share_above_60": 0.032
         },
         "pass_rate": 0.5374,
@@ -454,7 +404,6 @@
       "years=5.0|win_rate=0.45|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5612,
-          "sequential_realized_stress_above_25": 0.1751,
           "top_asset_share_above_60": 0.0252
         },
         "pass_rate": 0.4427,
@@ -463,7 +412,6 @@
       "years=5.0|win_rate=0.45|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.623,
-          "sequential_realized_stress_above_25": 0.5088,
           "top_asset_share_above_60": 0.0274
         },
         "pass_rate": 0.4055,
@@ -472,7 +420,6 @@
       "years=5.0|win_rate=0.45|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.4972,
-          "sequential_realized_stress_above_25": 0.0294,
           "top_asset_share_above_60": 0.043
         },
         "pass_rate": 0.525,
@@ -481,7 +428,6 @@
       "years=5.0|win_rate=0.45|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.5907,
-          "sequential_realized_stress_above_25": 0.2596,
           "top_asset_share_above_60": 0.0368
         },
         "pass_rate": 0.4352,
@@ -507,7 +453,7 @@
     "years": 4.92
   },
   "code": {
-    "code_sha256": "ae9cd21b659eff5bef0f08e6af2194f1c7e433fb79a80e8b0bb4f41b5c20be91",
+    "code_sha256": "4564a423237b8ec279aab06cb70ba0b270ad281601594a0c0eb61b874b5fe0f0",
     "files": [
       {
         "file": "backtesting/research_runner.py",
@@ -515,11 +461,11 @@
       },
       {
         "file": "backtesting/stf_power.py",
-        "sha256": "ae4bd12f536d06b51a4d12fc035ba712e8022cbda023bc695223e8a404210532"
+        "sha256": "524dbc8d8d3df2c5ab65613de89a81c64c4c49704ffe6e7b6ec5fb959f4c6798"
       },
       {
         "file": "backtesting/stf_protocol.py",
-        "sha256": "47b9a47c9440ac4d3ed42252131d4a8676c339fe1af76e87e3aeedd193f4e082"
+        "sha256": "2e542d3be3bf4222587c800edc1cb2b9d32430110a677c263bb8b9edc80af398"
       }
     ]
   },
@@ -561,14 +507,15 @@
   "not_assessed": {
     "asset_concentration": "reported as a diagnostic, not a gate",
     "leave_one_cluster_out": "reported as a diagnostic, not a gate",
-    "max_drawdown": "the protocol measures sleeve drawdown in calendar time including unrealized P&L. This simulation produces closed trades in an artificial order, which is NOT a bound in either direction: overlapping winners can offset losers, unrealized moves can deepen the trough. Only a sequential stress statistic is reported, and it is compared with nothing."
+    "max_drawdown": "the protocol measures sleeve drawdown in calendar time including unrealized P&L. This simulation produces closed trades in an artificial order, which is NOT a bound in either direction: overlapping winners can offset losers, unrealized moves can deepen the trough. NO drawdown quantity is computed here and nothing is compared against the limit.",
+    "sleeve_max_drawdown_pct_limit": 25.0,
+    "where_the_limit_is_evaluated": "on the calendar sleeve equity curve of a real forward trial, never in this study"
   },
   "null_world_no_edge": {
     "cells": {
       "years=3.0|win_rate=0.25|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8246,
-          "sequential_realized_stress_above_25": 0.5539,
           "top_asset_share_above_60": 0.164
         },
         "pass_rate": 0.1258,
@@ -577,7 +524,6 @@
       "years=3.0|win_rate=0.25|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8078,
-          "sequential_realized_stress_above_25": 0.0297,
           "top_asset_share_above_60": 0.1693
         },
         "pass_rate": 0.1348,
@@ -586,7 +532,6 @@
       "years=3.0|win_rate=0.25|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8221,
-          "sequential_realized_stress_above_25": 0.2948,
           "top_asset_share_above_60": 0.1649
         },
         "pass_rate": 0.1313,
@@ -595,7 +540,6 @@
       "years=3.0|win_rate=0.25|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8232,
-          "sequential_realized_stress_above_25": 0.6475,
           "top_asset_share_above_60": 0.1848
         },
         "pass_rate": 0.141,
@@ -604,7 +548,6 @@
       "years=3.0|win_rate=0.25|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8202,
-          "sequential_realized_stress_above_25": 0.0423,
           "top_asset_share_above_60": 0.1786
         },
         "pass_rate": 0.1364,
@@ -613,7 +556,6 @@
       "years=3.0|win_rate=0.25|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8208,
-          "sequential_realized_stress_above_25": 0.3973,
           "top_asset_share_above_60": 0.1651
         },
         "pass_rate": 0.1328,
@@ -622,7 +564,6 @@
       "years=3.0|win_rate=0.25|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8363,
-          "sequential_realized_stress_above_25": 0.7335,
           "top_asset_share_above_60": 0.1692
         },
         "pass_rate": 0.1461,
@@ -631,7 +572,6 @@
       "years=3.0|win_rate=0.25|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8187,
-          "sequential_realized_stress_above_25": 0.0936,
           "top_asset_share_above_60": 0.1632
         },
         "pass_rate": 0.1437,
@@ -640,7 +580,6 @@
       "years=3.0|win_rate=0.25|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.827,
-          "sequential_realized_stress_above_25": 0.4908,
           "top_asset_share_above_60": 0.1672
         },
         "pass_rate": 0.1517,
@@ -649,7 +588,6 @@
       "years=3.0|win_rate=0.35|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8,
-          "sequential_realized_stress_above_25": 0.4425,
           "top_asset_share_above_60": 0.0749
         },
         "pass_rate": 0.1293,
@@ -658,7 +596,6 @@
       "years=3.0|win_rate=0.35|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7778,
-          "sequential_realized_stress_above_25": 0.0111,
           "top_asset_share_above_60": 0.0774
         },
         "pass_rate": 0.1348,
@@ -667,7 +604,6 @@
       "years=3.0|win_rate=0.35|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7704,
-          "sequential_realized_stress_above_25": 0.1562,
           "top_asset_share_above_60": 0.0757
         },
         "pass_rate": 0.1425,
@@ -676,7 +612,6 @@
       "years=3.0|win_rate=0.35|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.777,
-          "sequential_realized_stress_above_25": 0.5088,
           "top_asset_share_above_60": 0.0839
         },
         "pass_rate": 0.1463,
@@ -685,7 +620,6 @@
       "years=3.0|win_rate=0.35|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8048,
-          "sequential_realized_stress_above_25": 0.0192,
           "top_asset_share_above_60": 0.1012
         },
         "pass_rate": 0.1307,
@@ -694,7 +628,6 @@
       "years=3.0|win_rate=0.35|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7538,
-          "sequential_realized_stress_above_25": 0.2238,
           "top_asset_share_above_60": 0.0795
         },
         "pass_rate": 0.1497,
@@ -703,7 +636,6 @@
       "years=3.0|win_rate=0.35|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7865,
-          "sequential_realized_stress_above_25": 0.5951,
           "top_asset_share_above_60": 0.0963
         },
         "pass_rate": 0.1435,
@@ -712,7 +644,6 @@
       "years=3.0|win_rate=0.35|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.805,
-          "sequential_realized_stress_above_25": 0.0477,
           "top_asset_share_above_60": 0.1042
         },
         "pass_rate": 0.1504,
@@ -721,7 +652,6 @@
       "years=3.0|win_rate=0.35|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7752,
-          "sequential_realized_stress_above_25": 0.3318,
           "top_asset_share_above_60": 0.0962
         },
         "pass_rate": 0.1423,
@@ -730,7 +660,6 @@
       "years=3.0|win_rate=0.45|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7435,
-          "sequential_realized_stress_above_25": 0.2689,
           "top_asset_share_above_60": 0.0372
         },
         "pass_rate": 0.1389,
@@ -739,7 +668,6 @@
       "years=3.0|win_rate=0.45|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7518,
-          "sequential_realized_stress_above_25": 0.0036,
           "top_asset_share_above_60": 0.0578
         },
         "pass_rate": 0.1355,
@@ -748,7 +676,6 @@
       "years=3.0|win_rate=0.45|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.74,
-          "sequential_realized_stress_above_25": 0.1041,
           "top_asset_share_above_60": 0.0406
         },
         "pass_rate": 0.1404,
@@ -757,7 +684,6 @@
       "years=3.0|win_rate=0.45|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7485,
-          "sequential_realized_stress_above_25": 0.3443,
           "top_asset_share_above_60": 0.0535
         },
         "pass_rate": 0.1468,
@@ -766,7 +692,6 @@
       "years=3.0|win_rate=0.45|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7515,
-          "sequential_realized_stress_above_25": 0.0066,
           "top_asset_share_above_60": 0.0647
         },
         "pass_rate": 0.1405,
@@ -775,7 +700,6 @@
       "years=3.0|win_rate=0.45|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7536,
-          "sequential_realized_stress_above_25": 0.1437,
           "top_asset_share_above_60": 0.0598
         },
         "pass_rate": 0.137,
@@ -784,7 +708,6 @@
       "years=3.0|win_rate=0.45|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7612,
-          "sequential_realized_stress_above_25": 0.4495,
           "top_asset_share_above_60": 0.0522
         },
         "pass_rate": 0.1511,
@@ -793,7 +716,6 @@
       "years=3.0|win_rate=0.45|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7486,
-          "sequential_realized_stress_above_25": 0.0152,
           "top_asset_share_above_60": 0.07
         },
         "pass_rate": 0.1527,
@@ -802,7 +724,6 @@
       "years=3.0|win_rate=0.45|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7506,
-          "sequential_realized_stress_above_25": 0.22,
           "top_asset_share_above_60": 0.0535
         },
         "pass_rate": 0.1605,
@@ -811,7 +732,6 @@
       "years=5.0|win_rate=0.25|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8018,
-          "sequential_realized_stress_above_25": 0.6859,
           "top_asset_share_above_60": 0.1078
         },
         "pass_rate": 0.2502,
@@ -820,7 +740,6 @@
       "years=5.0|win_rate=0.25|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7929,
-          "sequential_realized_stress_above_25": 0.0649,
           "top_asset_share_above_60": 0.1143
         },
         "pass_rate": 0.2567,
@@ -829,7 +748,6 @@
       "years=5.0|win_rate=0.25|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8067,
-          "sequential_realized_stress_above_25": 0.4078,
           "top_asset_share_above_60": 0.1147
         },
         "pass_rate": 0.2481,
@@ -838,7 +756,6 @@
       "years=5.0|win_rate=0.25|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8089,
-          "sequential_realized_stress_above_25": 0.745,
           "top_asset_share_above_60": 0.1194
         },
         "pass_rate": 0.2613,
@@ -847,7 +764,6 @@
       "years=5.0|win_rate=0.25|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8141,
-          "sequential_realized_stress_above_25": 0.1172,
           "top_asset_share_above_60": 0.1319
         },
         "pass_rate": 0.26,
@@ -856,7 +772,6 @@
       "years=5.0|win_rate=0.25|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8097,
-          "sequential_realized_stress_above_25": 0.4921,
           "top_asset_share_above_60": 0.1193
         },
         "pass_rate": 0.2628,
@@ -865,7 +780,6 @@
       "years=5.0|win_rate=0.25|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8053,
-          "sequential_realized_stress_above_25": 0.8046,
           "top_asset_share_above_60": 0.1199
         },
         "pass_rate": 0.2809,
@@ -874,7 +788,6 @@
       "years=5.0|win_rate=0.25|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8259,
-          "sequential_realized_stress_above_25": 0.1884,
           "top_asset_share_above_60": 0.1355
         },
         "pass_rate": 0.2594,
@@ -883,7 +796,6 @@
       "years=5.0|win_rate=0.25|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.8016,
-          "sequential_realized_stress_above_25": 0.5842,
           "top_asset_share_above_60": 0.1236
         },
         "pass_rate": 0.2764,
@@ -892,7 +804,6 @@
       "years=5.0|win_rate=0.35|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7789,
-          "sequential_realized_stress_above_25": 0.5343,
           "top_asset_share_above_60": 0.0472
         },
         "pass_rate": 0.2397,
@@ -901,7 +812,6 @@
       "years=5.0|win_rate=0.35|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7793,
-          "sequential_realized_stress_above_25": 0.0217,
           "top_asset_share_above_60": 0.0599
         },
         "pass_rate": 0.2492,
@@ -910,7 +820,6 @@
       "years=5.0|win_rate=0.35|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7822,
-          "sequential_realized_stress_above_25": 0.2675,
           "top_asset_share_above_60": 0.0486
         },
         "pass_rate": 0.2392,
@@ -919,7 +828,6 @@
       "years=5.0|win_rate=0.35|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7784,
-          "sequential_realized_stress_above_25": 0.6009,
           "top_asset_share_above_60": 0.0555
         },
         "pass_rate": 0.26,
@@ -928,7 +836,6 @@
       "years=5.0|win_rate=0.35|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7692,
-          "sequential_realized_stress_above_25": 0.0507,
           "top_asset_share_above_60": 0.0609
         },
         "pass_rate": 0.2633,
@@ -937,7 +844,6 @@
       "years=5.0|win_rate=0.35|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7593,
-          "sequential_realized_stress_above_25": 0.3367,
           "top_asset_share_above_60": 0.0624
         },
         "pass_rate": 0.2719,
@@ -946,7 +852,6 @@
       "years=5.0|win_rate=0.35|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7693,
-          "sequential_realized_stress_above_25": 0.6778,
           "top_asset_share_above_60": 0.0595
         },
         "pass_rate": 0.2782,
@@ -955,7 +860,6 @@
       "years=5.0|win_rate=0.35|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7718,
-          "sequential_realized_stress_above_25": 0.1002,
           "top_asset_share_above_60": 0.0692
         },
         "pass_rate": 0.2756,
@@ -964,7 +868,6 @@
       "years=5.0|win_rate=0.35|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7737,
-          "sequential_realized_stress_above_25": 0.4363,
           "top_asset_share_above_60": 0.067
         },
         "pass_rate": 0.2796,
@@ -973,7 +876,6 @@
       "years=5.0|win_rate=0.45|rho=0.5|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.751,
-          "sequential_realized_stress_above_25": 0.3744,
           "top_asset_share_above_60": 0.0289
         },
         "pass_rate": 0.2455,
@@ -982,7 +884,6 @@
       "years=5.0|win_rate=0.45|rho=0.5|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7495,
-          "sequential_realized_stress_above_25": 0.0111,
           "top_asset_share_above_60": 0.0333
         },
         "pass_rate": 0.2538,
@@ -991,7 +892,6 @@
       "years=5.0|win_rate=0.45|rho=0.5|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7409,
-          "sequential_realized_stress_above_25": 0.1474,
           "top_asset_share_above_60": 0.0255
         },
         "pass_rate": 0.2531,
@@ -1000,7 +900,6 @@
       "years=5.0|win_rate=0.45|rho=0.7|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7529,
-          "sequential_realized_stress_above_25": 0.4783,
           "top_asset_share_above_60": 0.0322
         },
         "pass_rate": 0.2631,
@@ -1009,7 +908,6 @@
       "years=5.0|win_rate=0.45|rho=0.7|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7398,
-          "sequential_realized_stress_above_25": 0.023,
           "top_asset_share_above_60": 0.038
         },
         "pass_rate": 0.2757,
@@ -1018,7 +916,6 @@
       "years=5.0|win_rate=0.45|rho=0.7|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7464,
-          "sequential_realized_stress_above_25": 0.2427,
           "top_asset_share_above_60": 0.0281
         },
         "pass_rate": 0.2603,
@@ -1027,7 +924,6 @@
       "years=5.0|win_rate=0.45|rho=0.9|loss=12.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7295,
-          "sequential_realized_stress_above_25": 0.5455,
           "top_asset_share_above_60": 0.0314
         },
         "pass_rate": 0.2888,
@@ -1036,7 +932,6 @@
       "years=5.0|win_rate=0.45|rho=0.9|loss=4.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.7341,
-          "sequential_realized_stress_above_25": 0.0485,
           "top_asset_share_above_60": 0.0476
         },
         "pass_rate": 0.2871,
@@ -1045,7 +940,6 @@
       "years=5.0|win_rate=0.45|rho=0.9|loss=8.0": {
         "diagnostics_given_minimums": {
           "loeo_pf_below_1": 0.741,
-          "sequential_realized_stress_above_25": 0.3106,
           "top_asset_share_above_60": 0.0393
         },
         "pass_rate": 0.279,

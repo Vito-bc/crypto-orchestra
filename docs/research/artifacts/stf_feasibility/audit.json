@@ -5,7 +5,7 @@
   },
   "blinding": "prices are consumed exclusively by entry_exit_events(), which returns timestamps and labels; no P&L, profit factor, expectancy, win rate, asset ranking or parameter comparison is computed anywhere in this module",
   "code": {
-    "code_sha256": "7f1b7f95a34bbbb1c2534d2cec3162e5fbc1f9142bc3e9929b34cade1aa0b604",
+    "code_sha256": "5d7be2f81941ca600c912e94b89b51570e101b844c92702819bc9f617c0939c5",
     "files": [
       {
         "file": "backtesting/research_runner.py",
@@ -17,7 +17,7 @@
       },
       {
         "file": "backtesting/stf_protocol.py",
-        "sha256": "47b9a47c9440ac4d3ed42252131d4a8676c339fe1af76e87e3aeedd193f4e082"
+        "sha256": "2e542d3be3bf4222587c800edc1cb2b9d32430110a677c263bb8b9edc80af398"
       }
     ]
   },

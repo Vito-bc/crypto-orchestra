@@ -91,6 +91,9 @@ def test_sizing_is_pinned_identically_here_and_in_ci() -> None:
     "ANTHROPIC_API_KEY", "CRYPTOPANIC_API_KEY",
     "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
     "COINBASE_PORTFOLIO_UUID",
+    # The cost probe's opt-in view-only fee key: a workstation that has one
+    # configured must not let any test build an authenticated client.
+    "STF_FEE_VIEW_ONLY_KEY_FILE",
 ])
 def test_credentials_are_empty_not_merely_absent(name) -> None:
     """

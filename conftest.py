@@ -60,6 +60,10 @@ _TEST_ENV = {
     "TELEGRAM_BOT_TOKEN": "",
     "TELEGRAM_CHAT_ID": "",
     "COINBASE_PORTFOLIO_UUID": "",
+    # The cost probe's opt-in view-only fee credential. Pinned empty so a
+    # workstation that has one configured cannot let a test build an
+    # authenticated client — the suite must exercise the unconfigured path.
+    "STF_FEE_VIEW_ONLY_KEY_FILE": "",
     # Pin models so a .env override cannot change what tests assert on.
     "SUBAGENT_MODEL": "claude-haiku-4-5-20251001",
     "ORCHESTRATOR_MODEL": "claude-sonnet-4-6",
