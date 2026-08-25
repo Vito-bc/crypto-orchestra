@@ -30,19 +30,24 @@ Wins are lognormal with a long right tail; within a cluster, win/loss direction
 is correlated through a Gaussian copula, and repeat entries by the same asset
 share the regime factor.
 
-DRAWDOWN IS NOT ASSESSED
-------------------------
+DRAWDOWN IS NOT ASSESSED — AND NO PROXY IS REPORTED
+---------------------------------------------------
 The protocol measures drawdown on the STF sleeve in calendar time, including
 unrealized P&L on open positions. This simulation produces closed trades in an
 artificial cluster/asset order, which is NOT a bound on that quantity in either
 direction: real positions overlap, so a simultaneous winner can offset a loser
-and shrink the trough, while unrealized moves can deepen it. A sequential
-realized STRESS statistic is reported and compared with nothing.
+and shrink the trough, while unrealized moves can deepen it.
 
-Two earlier readings of this were wrong and are withdrawn. The first compounded
-against total capital rather than the sleeve and concluded the gate was inert.
-The second corrected the denominator but called the result a lower bound, which
-it is not.
+Three earlier readings of this were wrong and are withdrawn. The first
+compounded against total capital rather than the sleeve and concluded the gate
+was inert. The second corrected the denominator but called the result a lower
+bound, which it is not. The third kept a "sequential realized stress" statistic
+and counted how often it exceeded the protocol's 25% limit — a comparison that
+looks like a drawdown result and is not one.
+
+This study therefore computes no drawdown quantity at all. The limit itself
+lives in `stf_protocol.SLEEVE_MAX_DRAWDOWN_PCT`, for the calendar equity curve
+a real forward trial would produce.
 
 Usage:
     python backtesting/stf_power.py            # write the study
@@ -94,6 +99,7 @@ from backtesting.stf_protocol import (  # noqa: E402
     POSITION_FRACTION_OF_CAPITAL,
     POSITION_FRACTION_OF_SLEEVE,
     SLEEVE_FRACTION_OF_CAPITAL,
+    SLEEVE_MAX_DRAWDOWN_PCT,
 )
 
 # ── FINAL protocol gates (continuation, not success) ─────────────────────────
@@ -209,18 +215,10 @@ def _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure):
     rw, rl = float(rest[rest > 0].sum()), float(-rest[rest < 0].sum())
     loeo_pf = rw / rl if rl > 0 else (float("inf") if rw > 0 else 0.0)
 
-    # Sequential realized stress: trades applied one at a time in an ARTIFICIAL
-    # cluster/asset order. This is NOT a bound on the protocol's drawdown in
-    # either direction — real positions overlap, so a simultaneous winner can
-    # offset a loser and reduce it, while unrealized moves can deepen it. It is
-    # reported as a stress statistic and compared with nothing.
-    equity = peak = 1.0
-    stress = 0.0
-    for r in arr:
-        equity *= (1.0 + r / 100.0 * POSITION_FRACTION_OF_SLEEVE)
-        peak = max(peak, equity)
-        stress = max(stress, (peak - equity) / peak * 100.0)
-
+    # No drawdown quantity is computed. Applying these trades one at a time in
+    # cluster/asset order would produce a number that looks like a drawdown and
+    # bounds nothing: real positions overlap, and the gate is measured on a
+    # calendar curve that includes unrealized P&L.
     aa = np.array(asset_of)
     shares = [float(arr[(aa == a) & (arr > 0)].sum()) for a in range(n_assets)]
     top_share = (max(shares) / gross_win) if gross_win > 0 else 0.0
@@ -228,7 +226,7 @@ def _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure):
     return {
         "n_trades": int(arr.size), "n_clusters": n_clusters, "years": years,
         "expectancy": float(arr.mean()), "pf": pf, "loeo_pf": loeo_pf,
-        "sequential_realized_stress": stress, "top_asset_share": top_share,
+        "top_asset_share": top_share,
     }
 
 
@@ -245,8 +243,7 @@ def _gates(t: dict) -> dict:
 
 def _cell(rng, years, win_rate, rho, loss_pct, edge, structure) -> dict:
     passed = reached = ran = 0
-    diag = {"loeo_pf_below_1": 0, "top_asset_share_above_60": 0,
-            "sequential_realized_stress_above_25": 0}
+    diag = {"loeo_pf_below_1": 0, "top_asset_share_above_60": 0}
     for _ in range(N_TRIALS):
         t = _simulate_one(rng, years, win_rate, rho, loss_pct, edge, structure)
         if t is None:
@@ -257,8 +254,6 @@ def _cell(rng, years, win_rate, rho, loss_pct, edge, structure) -> dict:
             reached += 1
             diag["loeo_pf_below_1"] += t["loeo_pf"] < 1.0
             diag["top_asset_share_above_60"] += t["top_asset_share"] > 0.60
-            diag["sequential_realized_stress_above_25"] += (
-                t["sequential_realized_stress"] > 25.0)
         if all(g.values()):
             passed += 1
     return {
@@ -342,9 +337,13 @@ def build_study() -> dict:
                              "produces closed trades in an artificial order, "
                              "which is NOT a bound in either direction: "
                              "overlapping winners can offset losers, unrealized "
-                             "moves can deepen the trough. Only a sequential "
-                             "stress statistic is reported, and it is compared "
-                             "with nothing."),
+                             "moves can deepen the trough. NO drawdown quantity "
+                             "is computed here and nothing is compared against "
+                             "the limit."),
+            "sleeve_max_drawdown_pct_limit": SLEEVE_MAX_DRAWDOWN_PCT,
+            "where_the_limit_is_evaluated": ("on the calendar sleeve equity "
+                                             "curve of a real forward trial, "
+                                             "never in this study"),
             "leave_one_cluster_out": "reported as a diagnostic, not a gate",
             "asset_concentration": "reported as a diagnostic, not a gate",
         },
@@ -434,8 +433,8 @@ def _report(s: dict) -> None:
           f"max {ns['max']:.1%}")
     print(f"true-pass   (edge)     min {als['min']:.1%} median {als['median']:.1%} "
           f"max {als['max']:.1%}")
-    print("\ndrawdown gate: NOT ASSESSED (needs a calendar equity curve with "
-          "unrealized P&L)")
+    print("\ndrawdown gate: NOT ASSESSED — no drawdown quantity is computed "
+          "here (it needs a calendar equity curve with unrealized P&L)")
     print("=" * 80)
 
 

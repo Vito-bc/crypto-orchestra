@@ -12,6 +12,7 @@ function, and that function returns timestamps.
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -41,26 +42,64 @@ def test_events_carry_no_price_information() -> None:
         assert ev["event"] in {"ENTRY", "EXIT"}
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize("banned", [
+# Sections of the audit that carry DATA. The prose sections ("purpose",
+# "blinding", "not_evidence") NAME what is excluded, so scanning them would
+# flag the disclaimer. These keys are asserted to exist: the previous version
+# selected "per_asset"/"portfolio", which the audit has never emitted, so eight
+# parametrised cases passed while checking an empty dict.
+_DATA_SECTIONS = ("per_asset_full_history", "common_universe", "rule")
+
+_BANNED_IN_DATA = (
     "pnl", "profit_factor", "expectancy", "win_rate", "return", "equity",
     "sharpe", "drawdown",
-])
-def test_the_audit_reports_no_performance_field(banned: str) -> None:
-    """
-    A blanket check on the whole artifact. Adding a P&L field later would have
-    to defeat this deliberately rather than by accident.
-    """
+)
+
+
+def _performance_leak(audit: dict, banned: str) -> bool:
+    """True if `banned` appears anywhere in the audit's data sections."""
     import json
 
-    audit = fz.build_audit()
-    flat = json.dumps(audit).lower()
-    # "purpose"/"blinding" prose names what is excluded, so search the DATA.
-    data = json.dumps({k: v for k, v in audit.items()
-                       if k in {"per_asset", "portfolio"}}).lower()
-    assert banned not in data, f"the audit reports {banned!r}"
-    assert banned not in json.dumps(audit["rule"]).lower()
-    del flat
+    missing = [k for k in _DATA_SECTIONS if k not in audit]
+    assert not missing, (
+        f"audit is missing data section(s) {missing} — the blind check would "
+        "silently scan nothing. Update _DATA_SECTIONS deliberately.")
+    return banned in json.dumps({k: audit[k] for k in _DATA_SECTIONS}).lower()
+
+
+@pytest.mark.parametrize("banned", _BANNED_IN_DATA)
+def test_the_blind_check_actually_catches_a_planted_field(banned: str) -> None:
+    """
+    Negative control for the check below.
+
+    The regression protection was broken for a release precisely because a
+    passing parametrised test proves nothing on its own. Every banned token
+    must be demonstrated to FAIL when planted in a data section.
+    """
+    clean = {"per_asset_full_history": {"BTC-USD": {"closed_trades": 23}},
+             "common_universe": {"clusters": []},
+             "rule": {"entry_lookback": 55}}
+    assert not _performance_leak(clean, banned)
+
+    planted = {**clean, "common_universe": {"clusters": [], banned: 1.42}}
+    assert _performance_leak(planted, banned), (
+        f"a planted {banned!r} was not detected — the blind check is inert")
+
+
+def test_the_blind_check_refuses_to_scan_a_renamed_audit() -> None:
+    """If a section is renamed the check must fail loudly, not scan nothing."""
+    with pytest.raises(AssertionError, match="missing data section"):
+        _performance_leak({"rule": {}}, "pnl")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("banned", _BANNED_IN_DATA)
+def test_the_audit_reports_no_performance_field(banned: str) -> None:
+    """
+    A blanket check on the real artifact. Adding a P&L field later would have
+    to defeat this deliberately rather than by accident.
+    """
+    assert not _performance_leak(fz.build_audit(), banned), (
+        f"the audit reports {banned!r}")
 
 
 def test_the_module_never_computes_a_return() -> None:
@@ -406,18 +445,48 @@ def test_every_stf_component_shares_one_frozen_size() -> None:
         assert cp.trial_notional() == proto.position_notional(100.0)
 
 
-def test_the_sequential_stress_is_not_called_a_bound() -> None:
+def test_the_power_study_computes_no_drawdown_proxy() -> None:
     """
-    Trades are applied in an artificial cluster/asset order. Real positions
-    overlap, so a simultaneous winner can offset a loser and SHRINK the trough
-    while unrealized moves can deepen it — the statistic bounds nothing.
+    A "sequential realized stress" counted against the protocol's 25% limit
+    read as a drawdown result and was not one: trades are applied in an
+    artificial cluster/asset order, while the gate is measured on a calendar
+    sleeve curve including unrealized P&L. Removed, not relabelled — a
+    statistic that bounds nothing has no reader-proof caption.
     """
+    import io
+    import textwrap
+    import tokenize
+
     import backtesting.stf_power as pw
 
-    src = inspect.getsource(pw)
-    assert "sequential_realized_stress" in src
-    assert "LOWER BOUND" not in src
-    assert "NOT a bound" in src
+    for fn in (pw._simulate_one, pw._cell, pw._gates):
+        code = " ".join(
+            tok.string
+            for tok in tokenize.generate_tokens(io.StringIO(
+                textwrap.dedent(inspect.getsource(fn))).readline)
+            if tok.type not in (tokenize.COMMENT, tokenize.STRING)
+        )
+        for banned in ("stress", "drawdown", "equity", "peak", "trough"):
+            assert banned not in code, f"{fn.__name__} still computes {banned!r}"
+
+    assert "NOT a bound" in inspect.getsource(pw)
+
+
+def test_the_drawdown_limit_lives_in_the_shared_protocol() -> None:
+    """
+    25.0 was hardcoded in the power study. The real limit is a risk decision
+    the future forward trial is judged against, so it belongs beside the sizing
+    it constrains — and nowhere near a simulation that cannot evaluate it.
+    """
+    import backtesting.stf_protocol as proto
+
+    assert proto.SLEEVE_MAX_DRAWDOWN_PCT == 25.0
+    committed = (Path(fz.__file__).resolve().parents[1] / "docs" / "research"
+                 / "artifacts" / "stf_feasibility" / "power.json")
+    if committed.exists():
+        text = committed.read_text(encoding="utf-8").lower()
+        assert "stress" not in text, "the artifact still carries a drawdown proxy"
+        assert "above_25" not in text
 
 
 def test_the_trade_count_poisson_preserves_its_mean() -> None:
