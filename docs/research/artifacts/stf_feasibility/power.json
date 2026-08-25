@@ -441,7 +441,7 @@
     }
   },
   "calibrated_from": {
-    "audit_sha256": "f9ae57360580498d6bc08cca109391df2189e4a4e39ecd9b166c7b956501f30b",
+    "audit_sha256": "073231f916cd613c5d8a8d26ccd50bf7ed19d2164b5ead9f4f7517f5aeb0f82e",
     "basis": "common-universe window (fixed four-asset portfolio)",
     "clusters_per_year": 1.42,
     "implied_pooled_trades_per_year": 13.8,
