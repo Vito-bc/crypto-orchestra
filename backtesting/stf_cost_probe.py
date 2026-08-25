@@ -19,10 +19,15 @@ Coinbase serves the public book from a short-lived cache, so two reads seconds
 apart can be identical. Treat each run as one sample of the quote, not as a tick
 stream.
 
-The taker FEE is tier-dependent and lives behind a private endpoint. An
-unauthenticated client cannot read it, by design — this probe must remain
-incapable of reaching an account. It is recorded as unavailable unless a
-view-only credential is deliberately supplied.
+The taker FEE is tier-dependent and lives behind a private endpoint, so the
+unauthenticated client cannot read it and must not be able to. Reading it is
+therefore OPT-IN and separate: point STF_FEE_VIEW_ONLY_KEY_FILE at a Coinbase
+key created with VIEW-ONLY permission and nothing else.
+
+    There is no fallback. With the variable unset the fee is recorded as
+    unavailable and never assumed. The repository's live trading credential is
+    refused by resolved path and by filename: a measuring instrument does not
+    get a key that can trade, even one it has no code to trade with.
 
 Run once per day inside the execution window the protocol specifies, for
 14-30 days:
@@ -46,6 +51,14 @@ if str(ROOT) not in sys.path:
 from backtesting.stf_protocol import UNIVERSE, position_notional  # noqa: E402
 
 OBSERVATIONS = ROOT / "logs" / "stf_cost_probe.jsonl"
+
+# Opt-in, view-only credential, used for the fee tier and nothing else.
+FEE_KEY_FILE_ENV = "STF_FEE_VIEW_ONLY_KEY_FILE"
+_LIVE_TRADING_KEY = ROOT / "cdp_api_key.json"
+
+# A rate outside this range is a parsing accident, not a fee schedule: the
+# highest Coinbase Advanced taker tier is far below 10%.
+_MAX_PLAUSIBLE_FEE_RATE = 0.10
 
 # The protocol executes on the first hourly bar after the daily close, so the
 # cost that matters is the cost in that window. Sampling at an arbitrary hour
@@ -71,6 +84,44 @@ def _public_client():
     from coinbase.rest import RESTClient
 
     return RESTClient()
+
+
+def _fee_client():
+    """
+    Optional client for the fee tier alone. None when not configured.
+
+    The fee used to be requested with the unauthenticated client, which can
+    never succeed — so the tier was permanently "unavailable" while the code
+    implied it could be measured, and the protocol's 1.4% stayed an assumption.
+
+    Deliberately narrow:
+      - only the path named by FEE_KEY_FILE_ENV is ever loaded;
+      - the repository's live trading key is refused by resolved path AND by
+        filename, so a copy of it cannot be slipped in;
+      - a missing path is an error, not a silent downgrade to the public
+        client: the operator asked for a measured fee and must not receive an
+        unmeasured one.
+    """
+    import os
+
+    raw = os.environ.get(FEE_KEY_FILE_ENV, "").strip()
+    if not raw:
+        return None
+
+    path = Path(raw).expanduser()
+    if (path.name == _LIVE_TRADING_KEY.name
+            or path.resolve() == _LIVE_TRADING_KEY.resolve()):
+        raise CostProbeError(
+            f"{FEE_KEY_FILE_ENV} points at the live trading credential "
+            f"({path}). This probe reads a fee tier; it must never hold a key "
+            "that can place an order. Create a view-only key instead.")
+    if not path.is_file():
+        raise CostProbeError(
+            f"{FEE_KEY_FILE_ENV} points at {path}, which is not a file")
+
+    from coinbase.rest import RESTClient
+
+    return RESTClient(key_file=str(path))
 
 
 def trial_notional() -> float:
@@ -142,26 +193,57 @@ def _sweep(levels: list[tuple[float, float]], notional: float) -> dict:
     }
 
 
-def _taker_tier(client) -> dict:
+def _validated_rate(value) -> float | None:
     """
-    The account taker rate, if a view-only credential was supplied.
+    A fee rate, or None if it is not one.
 
-    get_transaction_summary is a private endpoint. An unauthenticated client
-    cannot reach it and must not be able to: recorded as unavailable rather
-    than assumed, because an unmeasured fee is what this probe exists to remove.
+    `float(getattr(..., "nan"))` accepted NaN and infinity as measured rates
+    and raised on a non-numeric value, taking the whole reading with it. An
+    unusable rate must degrade to "unavailable": this probe exists to remove
+    assumed fees, and NaN is an assumed fee that arithmetic will not warn about.
     """
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not isfinite(rate) or rate < 0.0 or rate > _MAX_PLAUSIBLE_FEE_RATE:
+        return None
+    return rate
+
+
+def _fee_tier(client) -> dict:
+    """
+    The account fee tier, if a view-only credential was deliberately supplied.
+
+    get_transaction_summary is a private endpoint; `client` is None unless
+    FEE_KEY_FILE_ENV named a key file. Recorded as unavailable, never assumed.
+    """
+    if client is None:
+        return {"available": False, "measured": False,
+                "reason": (f"no view-only credential: set {FEE_KEY_FILE_ENV} to "
+                           "read the account fee tier")}
     try:
         summary = client.get_transaction_summary()
     except Exception as exc:
-        return {"available": False,
-                "reason": f"{type(exc).__name__}: private endpoint, no credential"}
+        return {"available": False, "measured": False,
+                "reason": f"{type(exc).__name__}: fee tier unreadable"}
     tier = getattr(summary, "fee_tier", None)
     if tier is None:
-        return {"available": False, "reason": "no fee_tier in response"}
+        return {"available": False, "measured": False,
+                "reason": "no fee_tier in response"}
+
+    taker = _validated_rate(getattr(tier, "taker_fee_rate", None))
+    maker = _validated_rate(getattr(tier, "maker_fee_rate", None))
+    if taker is None or maker is None:
+        return {"available": False, "measured": False,
+                "reason": ("fee_tier present but a rate is missing, non-numeric, "
+                           "non-finite, or outside "
+                           f"[0, {_MAX_PLAUSIBLE_FEE_RATE}]")}
     return {
         "available": True,
-        "taker_fee_rate": float(getattr(tier, "taker_fee_rate", "nan")),
-        "maker_fee_rate": float(getattr(tier, "maker_fee_rate", "nan")),
+        "measured": True,
+        "taker_fee_rate": taker,
+        "maker_fee_rate": maker,
         "pricing_tier": getattr(tier, "pricing_tier", None),
     }
 
@@ -205,6 +287,9 @@ def observe(force: bool = False) -> dict:
             "at another hour describes a different market. Use --force to record "
             "an out-of-window sample; it is flagged and excluded from the report.")
 
+    # Built before any sampling: a misconfigured credential must fail loudly
+    # rather than after a reading has been taken.
+    fee_client = _fee_client()
     client = _public_client()
     notional = trial_notional()
 
@@ -244,13 +329,20 @@ def observe(force: bool = False) -> dict:
         "execution_window_minutes": EXECUTION_WINDOW_MINUTES,
         "notional_usd": notional,
         "measures": "quoted impact against the displayed book, not realised fills",
-        "fee_tier": _taker_tier(client),
+        "fee_tier": _fee_tier(fee_client),
         "assets": rows,
     }
     OBSERVATIONS.parent.mkdir(parents=True, exist_ok=True)
     with OBSERVATIONS.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(observation, sort_keys=True) + "\n")
     return observation
+
+
+def _measurement(value) -> float | None:
+    """A finite numeric reading, or None. bool is not a measurement."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if isfinite(value) else None
 
 
 def report() -> dict:
@@ -261,26 +353,45 @@ def report() -> dict:
     import statistics
 
     per_asset: dict = {a: {"spread_bps": [], "round_trip_bps": []} for a in UNIVERSE}
-    used = skipped = no_candle = 0
+    used = out_of_window = unconfirmed_window = 0
+    no_candle = unconfirmed_candle = malformed = 0
     for line in OBSERVATIONS.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         obs = json.loads(line)
-        if not obs.get("in_execution_window", True):
-            skipped += 1          # out-of-window samples describe another market
+        # FAIL CLOSED on the cohort. `obs.get(..., True)` admitted an
+        # observation whose window flag was missing, None, or a string — a
+        # truncated or hand-edited line silently joined the sample it is
+        # supposed to be excluded from. Only an explicit True is a confirmation.
+        window = obs.get("in_execution_window")
+        if window is False:
+            out_of_window += 1    # out-of-window samples describe another market
+            continue
+        if window is not True:
+            unconfirmed_window += 1
             continue
         used += 1
-        for row in obs["assets"]:
+        for row in obs.get("assets", []):
             if "error" in row:
                 continue
-            # If the bar the signal needs was not published yet, this reading
-            # describes a moment the strategy could not have traded in.
-            if not row.get("daily_candle", {}).get("available", True):
+            # Likewise: the bar the signal needs must be CONFIRMED published,
+            # otherwise the reading describes a moment the strategy could not
+            # have traded in.
+            available = row.get("daily_candle", {}).get("available")
+            if available is False:
                 no_candle += 1
                 continue
-            buy = row["buy"].get("quoted_impact_bps")
-            sell = row["sell"].get("quoted_impact_bps")
-            per_asset[row["asset"]]["spread_bps"].append(row["spread_bps"])
+            if available is not True:
+                unconfirmed_candle += 1
+                continue
+
+            spread = _measurement(row.get("spread_bps"))
+            buy = _measurement(row.get("buy", {}).get("quoted_impact_bps"))
+            sell = _measurement(row.get("sell", {}).get("quoted_impact_bps"))
+            if spread is None or row.get("asset") not in per_asset:
+                malformed += 1
+                continue
+            per_asset[row["asset"]]["spread_bps"].append(spread)
             if buy is not None and sell is not None:
                 per_asset[row["asset"]]["round_trip_bps"].append(buy + sell)
 
@@ -299,8 +410,17 @@ def report() -> dict:
 
     return {
         "observations_used": used,
-        "observations_skipped_out_of_window": skipped,
+        "observations_skipped_out_of_window": out_of_window,
+        # Separate counters, not one bucket: "we sampled at the wrong hour" and
+        # "we cannot tell when we sampled" call for different remedies.
+        "observations_skipped_window_unconfirmed": unconfirmed_window,
         "asset_readings_skipped_no_daily_bar": no_candle,
+        "asset_readings_skipped_candle_unconfirmed": unconfirmed_candle,
+        "asset_readings_skipped_malformed": malformed,
+        "cohort_rule": ("an observation joins the sample only if its execution "
+                        "window and its daily bar are both explicitly "
+                        "confirmed; anything missing or unrecognised is "
+                        "excluded and counted"),
         "measures": ("QUOTED IMPACT against the displayed book plus the spread; "
                      "this is not realised execution slippage"),
         "percentiles_reported": [f"p{int(p * 100)}" for p in _PERCENTILES],

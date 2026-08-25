@@ -21,6 +21,25 @@ def _book_side(levels):
     return [{"price": str(p), "size": str(s)} for p, s in levels]
 
 
+def _public_client_stub():
+    """Unauthenticated client: public book and public candles only."""
+    return SimpleNamespace(
+        get_public_product_book=lambda product_id, limit: {
+            "bids": _book_side([(100.0, 50.0)]),
+            "asks": _book_side([(100.5, 50.0)]),
+        },
+        get_public_candles=lambda product_id, start, end, granularity: (
+            SimpleNamespace(candles=[SimpleNamespace(start=start)])),
+    )
+
+
+def _fee_client_stub():
+    """View-only client: the private fee endpoint and nothing else."""
+    return SimpleNamespace(get_transaction_summary=lambda: SimpleNamespace(
+        fee_tier=SimpleNamespace(taker_fee_rate="0.006", maker_fee_rate="0.004",
+                                 pricing_tier="Advanced 1")))
+
+
 # ── It cannot reach an account ───────────────────────────────────────────────
 
 def test_the_probe_cannot_place_or_cancel_an_order() -> None:
@@ -39,9 +58,61 @@ def test_the_probe_cannot_place_or_cancel_an_order() -> None:
         if tok.type not in (tokenize.COMMENT, tokenize.STRING)
     )
     for banned in ("create_order", "market_order", "limit_order", "cancel_orders",
-                   "place_limit_order", "place_order_outbox", "key_file",
-                   "cdp_api_key"):
+                   "place_limit_order", "place_order_outbox", "cdp_api_key"):
         assert banned not in code, f"{banned!r} reachable from the cost probe"
+
+    # `key_file` is deliberately NOT banned any more: the fee tier needs an
+    # opt-in view-only credential, and banning the token only pushed the
+    # capability out of sight. What matters is guarded directly below — the
+    # single path it may load, and its refusal of the live trading key.
+    assert code.count("key_file") <= 2, "key material is loaded in more than one place"
+
+
+def test_only_the_designated_env_var_can_supply_key_material() -> None:
+    src = inspect.getsource(cp._fee_client)
+    assert "FEE_KEY_FILE_ENV" in src
+    assert cp.FEE_KEY_FILE_ENV == "STF_FEE_VIEW_ONLY_KEY_FILE"
+    # No other function may build an authenticated client.
+    for name, fn in vars(cp).items():
+        if name != "_fee_client" and callable(fn) and getattr(fn, "__module__", "") == cp.__name__:
+            assert "key_file" not in inspect.getsource(fn), f"{name} loads key material"
+
+
+def test_no_credential_means_no_client_and_no_assumed_fee(monkeypatch) -> None:
+    monkeypatch.delenv(cp.FEE_KEY_FILE_ENV, raising=False)
+    assert cp._fee_client() is None
+
+    tier = cp._fee_tier(None)
+    assert tier["available"] is False
+    assert tier["measured"] is False
+    assert cp.FEE_KEY_FILE_ENV in tier["reason"]
+    assert "taker_fee_rate" not in tier
+
+
+def test_the_live_trading_credential_is_refused_by_path(monkeypatch) -> None:
+    """A measuring instrument must not hold a key that can trade."""
+    monkeypatch.setenv(cp.FEE_KEY_FILE_ENV, str(cp._LIVE_TRADING_KEY))
+    with pytest.raises(cp.CostProbeError, match="live trading credential"):
+        cp._fee_client()
+
+
+def test_a_copy_of_the_live_credential_is_refused_by_name(tmp_path, monkeypatch) -> None:
+    """Refusing only the exact path would be defeated by `cp` to another dir."""
+    copy = tmp_path / cp._LIVE_TRADING_KEY.name
+    copy.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(cp.FEE_KEY_FILE_ENV, str(copy))
+    with pytest.raises(cp.CostProbeError, match="live trading credential"):
+        cp._fee_client()
+
+
+def test_a_missing_key_file_is_an_error_not_a_silent_downgrade(tmp_path, monkeypatch) -> None:
+    """
+    The operator asked for a measured fee. Falling back to the public client
+    would hand them an unmeasured one under the same field name.
+    """
+    monkeypatch.setenv(cp.FEE_KEY_FILE_ENV, str(tmp_path / "absent.json"))
+    with pytest.raises(cp.CostProbeError, match="not a file"):
+        cp._fee_client()
 
 
 def test_the_client_is_built_without_key_material() -> None:
@@ -57,29 +128,100 @@ def test_only_public_endpoints_are_swept() -> None:
     assert "client.get_product_book" not in src
 
 
-def test_an_unauthenticated_fee_tier_is_unavailable_not_assumed() -> None:
+def test_an_unreadable_fee_tier_is_unavailable_not_assumed() -> None:
     """
-    get_transaction_summary is private. The probe must record that it could not
-    read the fee, never substitute a guess — an unmeasured fee is what it exists
-    to remove.
+    The probe must record that it could not read the fee, never substitute a
+    guess — an unmeasured fee is what it exists to remove.
     """
     client = SimpleNamespace(
         get_transaction_summary=lambda: (_ for _ in ()).throw(
             RuntimeError("Unauthenticated request to private endpoint")))
-    tier = cp._taker_tier(client)
+    tier = cp._fee_tier(client)
     assert tier["available"] is False
-    assert "credential" in tier["reason"]
     assert "taker_fee_rate" not in tier
 
 
 def test_a_view_only_credential_can_supply_the_tier() -> None:
     """The path must work if a view-only key is deliberately provided."""
-    client = SimpleNamespace(get_transaction_summary=lambda: SimpleNamespace(
-        fee_tier=SimpleNamespace(taker_fee_rate="0.006", maker_fee_rate="0.004",
-                                 pricing_tier="Advanced 1")))
-    tier = cp._taker_tier(client)
-    assert tier == {"available": True, "taker_fee_rate": 0.006,
+    tier = cp._fee_tier(_fee_client_stub())
+    assert tier == {"available": True, "measured": True, "taker_fee_rate": 0.006,
                     "maker_fee_rate": 0.004, "pricing_tier": "Advanced 1"}
+
+
+@pytest.mark.parametrize("rate", ["nan", "inf", "-inf", "-0.006", "abc", None,
+                                  "0.5", ""])
+def test_an_unusable_fee_rate_degrades_to_unavailable(rate) -> None:
+    """
+    float("nan") passed straight through as a measured rate, and a non-numeric
+    value raised out of the whole reading. NaN is an assumed fee that
+    arithmetic will never warn about; 50% is a parsing accident.
+    """
+    client = SimpleNamespace(get_transaction_summary=lambda: SimpleNamespace(
+        fee_tier=SimpleNamespace(taker_fee_rate=rate, maker_fee_rate="0.004",
+                                 pricing_tier="Advanced 1")))
+    tier = cp._fee_tier(client)
+    assert tier["available"] is False
+    assert tier["measured"] is False
+    assert "taker_fee_rate" not in tier
+
+
+def test_a_fee_tier_without_rates_is_unavailable() -> None:
+    client = SimpleNamespace(get_transaction_summary=lambda: SimpleNamespace(
+        fee_tier=SimpleNamespace(pricing_tier="Advanced 1")))
+    assert cp._fee_tier(client)["available"] is False
+
+
+def test_observe_reads_the_tier_through_the_view_only_client(tmp_path, monkeypatch) -> None:
+    """
+    End to end through observe(), not just the parser: the previous version
+    passed the UNAUTHENTICATED client to the fee call, so the tier could never
+    be available no matter what the parser did.
+    """
+    key = tmp_path / "view_only_fee_key.json"
+    key.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(cp.FEE_KEY_FILE_ENV, str(key))
+    monkeypatch.setattr(cp, "OBSERVATIONS", tmp_path / "probe.jsonl")
+
+    public, fee = _public_client_stub(), _fee_client_stub()
+    built = []
+
+    def _restclient(**kwargs):
+        built.append(kwargs)
+        return fee if kwargs else public
+
+    with patch("coinbase.rest.RESTClient", side_effect=_restclient):
+        obs = cp.observe(force=True)
+
+    assert built == [{"key_file": str(key)}, {}], (
+        "the fee client must be the only one built with key material")
+    assert obs["fee_tier"]["measured"] is True
+    assert obs["fee_tier"]["taker_fee_rate"] == 0.006
+    assert obs["assets"][0]["daily_candle"]["available"] is True
+
+
+def test_observe_without_a_credential_records_the_fee_as_unavailable(
+        tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv(cp.FEE_KEY_FILE_ENV, raising=False)
+    monkeypatch.setattr(cp, "OBSERVATIONS", tmp_path / "probe.jsonl")
+
+    with patch("coinbase.rest.RESTClient", side_effect=lambda **kw: _public_client_stub()):
+        obs = cp.observe(force=True)
+
+    assert obs["fee_tier"]["available"] is False
+    assert obs["fee_tier"]["measured"] is False
+
+
+def test_a_misconfigured_credential_fails_before_any_sampling(
+        tmp_path, monkeypatch) -> None:
+    """Fail loudly first, rather than after a reading has been taken."""
+    monkeypatch.setenv(cp.FEE_KEY_FILE_ENV, str(tmp_path / "absent.json"))
+    monkeypatch.setattr(cp, "OBSERVATIONS", tmp_path / "probe.jsonl")
+
+    with patch("coinbase.rest.RESTClient",
+               side_effect=AssertionError("no client may be built")):
+        with pytest.raises(cp.CostProbeError, match="not a file"):
+            cp.observe(force=True)
+    assert not (tmp_path / "probe.jsonl").exists()
 
 
 # ── Book parsing ─────────────────────────────────────────────────────────────
@@ -161,19 +303,24 @@ def test_sampling_outside_the_execution_window_is_refused(monkeypatch) -> None:
 
 # ── Report arithmetic ────────────────────────────────────────────────────────
 
+_ABSENT = object()
+
+
 def _write_obs(path, rows, in_window=True, candle=True):
     with path.open("a", encoding="utf-8") as fh:
         for spread in rows:
-            fh.write(json.dumps({
-                "observed_at": "2026-08-21T00:10:00+00:00",
-                "in_execution_window": in_window,
-                "assets": [{
-                    "asset": "BTC-USD", "spread_bps": spread,
-                    "buy": {"quoted_impact_bps": spread / 2},
-                    "sell": {"quoted_impact_bps": spread / 2},
-                    "daily_candle": {"available": candle},
-                }],
-            }) + "\n")
+            asset = {
+                "asset": "BTC-USD", "spread_bps": spread,
+                "buy": {"quoted_impact_bps": spread / 2 if isinstance(spread, (int, float)) else None},
+                "sell": {"quoted_impact_bps": spread / 2 if isinstance(spread, (int, float)) else None},
+            }
+            if candle is not _ABSENT:
+                asset["daily_candle"] = {"available": candle}
+            obs = {"observed_at": "2026-08-21T00:10:00+00:00",
+                   "assets": [asset]}
+            if in_window is not _ABSENT:
+                obs["in_execution_window"] = in_window
+            fh.write(json.dumps(obs) + "\n")
 
 
 def test_out_of_window_observations_are_excluded(tmp_path, monkeypatch) -> None:
@@ -202,6 +349,72 @@ def test_readings_without_a_published_daily_bar_are_excluded(tmp_path, monkeypat
     assert r["asset_readings_skipped_no_daily_bar"] == 1
     assert r["per_asset"]["BTC-USD"]["spread_bps"]["n"] == 2
     assert r["per_asset"]["BTC-USD"]["spread_bps"]["max"] == 2.0
+
+
+@pytest.mark.parametrize("flag", [_ABSENT, None, "true", 1, "yes"])
+def test_an_unconfirmed_execution_window_is_excluded(tmp_path, monkeypatch, flag) -> None:
+    """
+    FAIL CLOSED. `obs.get("in_execution_window", True)` admitted a truncated or
+    hand-edited line into the sample it exists to filter. Only an explicit True
+    confirms the window; everything else is excluded and counted separately —
+    "sampled at the wrong hour" and "cannot tell when we sampled" are different
+    problems with different remedies.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0, 2.0], in_window=True)
+    _write_obs(obs, [900.0], in_window=flag)
+
+    r = cp.report()
+    assert r["observations_used"] == 2
+    assert r["observations_skipped_window_unconfirmed"] == 1
+    assert r["observations_skipped_out_of_window"] == 0
+    assert r["per_asset"]["BTC-USD"]["spread_bps"]["max"] == 2.0
+
+
+@pytest.mark.parametrize("flag", [_ABSENT, None, "true", 1])
+def test_an_unconfirmed_daily_bar_is_excluded(tmp_path, monkeypatch, flag) -> None:
+    """Same contract for the bar the signal depends on."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0, 2.0], candle=True)
+    _write_obs(obs, [500.0], candle=flag)
+
+    r = cp.report()
+    assert r["asset_readings_skipped_candle_unconfirmed"] == 1
+    assert r["asset_readings_skipped_no_daily_bar"] == 0
+    assert r["per_asset"]["BTC-USD"]["spread_bps"]["n"] == 2
+
+
+@pytest.mark.parametrize("spread", ["12.5", None, float("inf"), float("nan"), True])
+def test_a_non_numeric_or_non_finite_reading_is_excluded(tmp_path, monkeypatch, spread) -> None:
+    """A corrupted number must not become a percentile."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0, 2.0])
+    _write_obs(obs, [spread])
+
+    r = cp.report()
+    assert r["asset_readings_skipped_malformed"] == 1
+    assert r["per_asset"]["BTC-USD"]["spread_bps"]["n"] == 2
+
+
+def test_an_unknown_asset_is_not_silently_dropped_into_the_universe(
+        tmp_path, monkeypatch) -> None:
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    with obs.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "in_execution_window": True,
+            "assets": [{"asset": "DOGE-USD", "spread_bps": 5.0,
+                        "buy": {"quoted_impact_bps": 1.0},
+                        "sell": {"quoted_impact_bps": 1.0},
+                        "daily_candle": {"available": True}}],
+        }) + "\n")
+
+    r = cp.report()
+    assert r["asset_readings_skipped_malformed"] == 1
+    assert all(v["spread_bps"]["n"] == 0 for v in r["per_asset"].values())
 
 
 def test_percentiles_use_nearest_rank(tmp_path, monkeypatch) -> None:

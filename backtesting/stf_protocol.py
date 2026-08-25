@@ -31,6 +31,17 @@ POSITION_FRACTION_OF_CAPITAL = 0.02
 POSITION_FRACTION_OF_SLEEVE = POSITION_FRACTION_OF_CAPITAL / SLEEVE_FRACTION_OF_CAPITAL
 MAX_CONCURRENT_POSITIONS = 4
 
+# The sleeve drawdown limit a future forward trial would be judged against.
+# It lives here, beside the sizing it constrains, because it is a RISK
+# DECISION: a study that finds the limit inconvenient must shrink the position,
+# never raise the number.
+#
+# It is measured on the SLEEVE in CALENDAR time, including unrealized P&L on
+# open positions. Nothing that produces closed trades in an artificial order
+# may compare against it — such a sequence is not a bound on a calendar
+# drawdown in either direction.
+SLEEVE_MAX_DRAWDOWN_PCT = 25.0
+
 # ── Rule ─────────────────────────────────────────────────────────────────────
 ENTRY_LOOKBACK = 55
 EXIT_LOOKBACK = 20
