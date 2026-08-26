@@ -40,6 +40,11 @@ Run once per day inside the execution window the protocol specifies, for
     python backtesting/stf_cost_probe.py           # append one observation
     python backtesting/stf_cost_probe.py --force   # sample outside the window
     python backtesting/stf_cost_probe.py --report  # summarise what was collected
+
+--report states how much of the intended sample exists (unique UTC days, and
+coverage of every asset) alongside the measurements. It does NOT decide whether
+the measured components replace the protocol's assumed 1.4% round trip. That is
+the protocol's decision; this is an instrument.
 """
 
 from __future__ import annotations
@@ -80,8 +85,16 @@ EXECUTION_WINDOW_MINUTES = 90
 _PERCENTILES = (0.5, 0.9)
 
 # What the draft protocol assumed, carried in the report so the measurement is
-# always shown next to the number it exists to replace.
+# always shown beside it. The probe does NOT declare it replaced — see
+# _readiness().
 _DRAFT_ASSUMED_ROUND_TRIP_PCT = 1.4
+
+# Declared in advance, so "enough data" is not decided after seeing the data.
+# The protocol's own sampling instruction is 14-30 daily readings; 14 is the
+# lower bound, counted in UNIQUE UTC days (two readings on one day are one
+# day's worth of market) and required of EVERY asset separately.
+MIN_UNIQUE_UTC_DAYS = 14
+MIN_READINGS_PER_ASSET = 14
 
 
 class CostProbeError(RuntimeError):
@@ -400,26 +413,45 @@ def observe(force: bool = False) -> dict:
     return observation
 
 
-def _collect_fee(obs: dict, tiers: dict) -> str:
+def _permissions_verified(permissions) -> bool:
+    """
+    Did the key that produced this rate prove it could not trade?
+
+    observe() checks this before reading a rate, but report() reads a FILE:
+    lines written by an older build, a hand-edited entry, or a run whose
+    credential has since gained trade rights all arrive here with measured
+    true. The recorded proof is re-checked against the same strict contract
+    rather than trusted.
+    """
+    if not isinstance(permissions, dict):
+        return False
+    return all(isinstance(permissions.get(field), bool)
+               and permissions.get(field) is want
+               for field, want in _REQUIRED_PERMISSIONS.items())
+
+
+def _collect_fee(obs: dict, moment: datetime, tiers: dict) -> str:
     """
     Fold one observation's fee reading into the tier tally.
 
-    Returns "measured", "unavailable" or "unconfirmed". Same fail-closed
-    contract as the rest of the cohort: only an explicitly measured tier with
-    two usable rates counts as measured.
+    Returns "measured", "unavailable", "unverified_key" or "unconfirmed". Same
+    fail-closed contract as the rest of the cohort: only an explicitly measured
+    tier, with two usable rates, produced by a key proven view-only, counts as
+    measured.
     """
     row = obs.get("fee_tier")
     if not isinstance(row, dict):
         return "unconfirmed"
     if row.get("measured") is not True or row.get("available") is not True:
         return "unavailable" if row.get("available") is False else "unconfirmed"
+    if not _permissions_verified(row.get("key_permissions")):
+        return "unverified_key"
 
     taker = _validated_rate(row.get("taker_fee_rate"))
     maker = _validated_rate(row.get("maker_fee_rate"))
     if taker is None or maker is None:
         return "unconfirmed"
 
-    at = obs.get("observed_at")
     # Keyed on the RATES as well as the tier name: a tier that keeps its label
     # while its rates move is still a different fee schedule.
     key = (str(row.get("pricing_tier")), taker, maker)
@@ -428,35 +460,44 @@ def _collect_fee(obs: dict, tiers: dict) -> str:
         "taker_fee_rate": taker,
         "maker_fee_rate": maker,
         "observations": 0,
-        "first_seen": at,
-        "last_seen": at,
+        "_first": moment,
+        "_last": moment,
     })
     seen["observations"] += 1
-    seen["last_seen"] = at
+    # min/max, not first and last line: the log is appended to by separate runs
+    # and nothing guarantees the file is in chronological order.
+    seen["_first"] = min(seen["_first"], moment)
+    seen["_last"] = max(seen["_last"], moment)
     return "measured"
 
 
-def _fee_summary(measured: int, unavailable: int, unconfirmed: int,
-                 tiers: dict) -> dict:
+def _fee_summary(counts: dict, tiers: dict) -> dict:
     """
     What the probe learned about the FEE half of the cost.
 
     The report used to omit this entirely: observe() recorded the tier and
-    report() dropped it, so thirty days of sampling could not replace the
+    report() dropped it, so thirty days of sampling could not have replaced the
     protocol's assumed 1.4% round trip with anything.
 
     Rates from different tiers are never averaged. A mean of two schedules is a
     rate the account never paid, and the useful signal in two tiers is that the
     tier CHANGED.
     """
-    observed = sorted(tiers.values(),
-                      key=lambda t: (t["first_seen"] or "", t["taker_fee_rate"]))
+    observed = sorted(tiers.values(), key=lambda t: (t["_first"],
+                                                     t["taker_fee_rate"]))
     single = observed[0] if len(observed) == 1 else None
     return {
-        "observations_measured": measured,
-        "observations_unavailable": unavailable,
-        "observations_unconfirmed": unconfirmed,
-        "observed_tiers": observed,
+        "observations_measured": counts["measured"],
+        "observations_unavailable": counts["unavailable"],
+        "observations_unconfirmed": counts["unconfirmed"],
+        # Broken out of the unconfirmed bucket because it needs a different
+        # response: the credential, not the plumbing, is the problem.
+        "observations_rejected_on_key_permissions": counts["unverified_key"],
+        "observed_tiers": [
+            {k: v for k, v in t.items() if not k.startswith("_")}
+            | {"first_seen": t["_first"].isoformat(),
+               "last_seen": t["_last"].isoformat()}
+            for t in observed],
         "tier_changed_during_the_probe": len(observed) > 1,
         "rates_are_never_averaged_because": (
             "distinct tiers are distinct fee schedules; their mean is a rate "
@@ -466,14 +507,66 @@ def _fee_summary(measured: int, unavailable: int, unconfirmed: int,
         "round_trip_taker_fee_pct": (
             round(single["taker_fee_rate"] * 2 * 100, 4) if single else None),
         "draft_protocol_assumed_round_trip_pct": _DRAFT_ASSUMED_ROUND_TRIP_PCT,
-        "assumption_status": (
-            "still an assumption: no fee tier was measured" if not measured else
-            "measured, but the tier changed during the probe — pick a tier "
-            "deliberately rather than blending them" if single is None else
-            "measurable: this fee plus the quoted impact above replaces the "
-            "assumed round trip. They are reported separately and NOT summed "
-            "here; combining them is a modelling decision for the protocol"),
     }
+
+
+def _readiness(unique_days: set, per_asset: dict, fee: dict) -> dict:
+    """
+    Whether enough has been measured to be worth taking to the protocol.
+
+    An earlier version announced that the fee "plus the quoted impact replaces
+    the assumed round trip" after a SINGLE measured reading — true of one
+    minute of one day with no asset coverage at all. Three separate facts are
+    now reported separately, and none of them is a decision:
+
+      fee_component_measured   one fee schedule, seen and key-verified
+      execution_sample_ready   the declared per-day and per-asset coverage
+      ready_for_...            both, and still only an input
+
+    Whether measured components replace the protocol's assumption is the
+    PROTOCOL's decision. This instrument supplies numbers and says how much of
+    the intended sample it has.
+    """
+    short = sorted(a for a, n in per_asset.items() if n < MIN_READINGS_PER_ASSET)
+    days = len(unique_days)
+    fee_measured = (fee["observations_measured"] > 0
+                    and not fee["tier_changed_during_the_probe"])
+    sample_ready = days >= MIN_UNIQUE_UTC_DAYS and not short
+    return {
+        "fee_component_measured": fee_measured,
+        "execution_sample_ready": sample_ready,
+        "ready_for_protocol_cost_decision": fee_measured and sample_ready,
+        "unique_utc_days": days,
+        "minimum_unique_utc_days": MIN_UNIQUE_UTC_DAYS,
+        "readings_per_asset": dict(sorted(per_asset.items())),
+        "minimum_readings_per_asset": MIN_READINGS_PER_ASSET,
+        "assets_below_minimum": short,
+        "this_is_not_a_verdict": (
+            "the probe measures components and reports its coverage. Whether "
+            f"they replace the protocol's assumed "
+            f"{_DRAFT_ASSUMED_ROUND_TRIP_PCT}% round trip is a decision for the "
+            "protocol, not for this instrument. Fee and quoted impact are "
+            "reported separately and never summed here."),
+    }
+
+
+def _utc_moment(value) -> datetime | None:
+    """
+    A reading's instant in UTC, or None if it cannot be placed in time.
+
+    A naive stamp is refused rather than assumed UTC: this probe exists because
+    the cost depends on WHICH 90 minutes the reading came from, and a stamp
+    that could be any timezone answers the wrong question.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return moment.astimezone(timezone.utc)
 
 
 def _measurement(value) -> float | None:
@@ -491,10 +584,12 @@ def report() -> dict:
     import statistics
 
     per_asset: dict = {a: {"spread_bps": [], "round_trip_bps": []} for a in UNIVERSE}
-    used = out_of_window = unconfirmed_window = 0
+    used = out_of_window = unconfirmed_window = untimed = 0
     no_candle = unconfirmed_candle = malformed = 0
-    fee_measured = fee_unavailable = fee_unconfirmed = 0
+    fee_counts = {"measured": 0, "unavailable": 0, "unconfirmed": 0,
+                  "unverified_key": 0}
     fee_tiers: dict = {}
+    unique_days: set = set()
     for line in OBSERVATIONS.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -510,11 +605,15 @@ def report() -> dict:
         if window is not True:
             unconfirmed_window += 1
             continue
+        # A reading that cannot be placed in time cannot be counted towards a
+        # per-DAY sample, and its tier sighting has no first/last seen.
+        moment = _utc_moment(obs.get("observed_at"))
+        if moment is None:
+            untimed += 1
+            continue
         used += 1
-        status = _collect_fee(obs, fee_tiers)
-        fee_measured += status == "measured"
-        fee_unavailable += status == "unavailable"
-        fee_unconfirmed += status == "unconfirmed"
+        unique_days.add(moment.date().isoformat())
+        fee_counts[_collect_fee(obs, moment, fee_tiers)] += 1
         for row in obs.get("assets", []):
             if "error" in row:
                 continue
@@ -552,21 +651,24 @@ def report() -> dict:
             out[f"p{int(p * 100)}"] = round(s[min(rank, len(s)) - 1], 2)
         return out
 
+    fee = _fee_summary(fee_counts, fee_tiers)
+    readings = {a: len(v["spread_bps"]) for a, v in per_asset.items()}
     return {
         "observations_used": used,
-        "fee_tier": _fee_summary(fee_measured, fee_unavailable, fee_unconfirmed,
-                                 fee_tiers),
+        "readiness": _readiness(unique_days, readings, fee),
+        "fee_tier": fee,
         "observations_skipped_out_of_window": out_of_window,
         # Separate counters, not one bucket: "we sampled at the wrong hour" and
         # "we cannot tell when we sampled" call for different remedies.
         "observations_skipped_window_unconfirmed": unconfirmed_window,
+        "observations_skipped_unusable_timestamp": untimed,
         "asset_readings_skipped_no_daily_bar": no_candle,
         "asset_readings_skipped_candle_unconfirmed": unconfirmed_candle,
         "asset_readings_skipped_malformed": malformed,
         "cohort_rule": ("an observation joins the sample only if its execution "
-                        "window and its daily bar are both explicitly "
-                        "confirmed; anything missing or unrecognised is "
-                        "excluded and counted"),
+                        "window, its UTC timestamp and its daily bar are all "
+                        "explicitly confirmed; anything missing or "
+                        "unrecognised is excluded and counted"),
         "measures": ("QUOTED IMPACT against the displayed book plus the spread; "
                      "this is not realised execution slippage"),
         "percentiles_reported": [f"p{int(p * 100)}" for p in _PERCENTILES],

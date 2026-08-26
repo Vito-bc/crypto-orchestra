@@ -390,18 +390,22 @@ def _fee(taker=0.006, maker=0.004, pricing_tier="Advanced 1"):
                                 "can_transfer": False}}
 
 
-def _write_obs(path, rows, in_window=True, candle=True, fee=_ABSENT):
+def _write_obs(path, rows, in_window=True, candle=True, fee=_ABSENT,
+               observed_at="2026-08-21T00:10:00+00:00", assets=("BTC-USD",)):
     with path.open("a", encoding="utf-8") as fh:
         for spread in rows:
-            asset = {
-                "asset": "BTC-USD", "spread_bps": spread,
-                "buy": {"quoted_impact_bps": spread / 2 if isinstance(spread, (int, float)) else None},
-                "sell": {"quoted_impact_bps": spread / 2 if isinstance(spread, (int, float)) else None},
-            }
-            if candle is not _ABSENT:
-                asset["daily_candle"] = {"available": candle}
-            obs = {"observed_at": "2026-08-21T00:10:00+00:00",
-                   "assets": [asset]}
+            impact = spread / 2 if isinstance(spread, (int, float)) else None
+            rows_out = []
+            for name in assets:
+                asset = {"asset": name, "spread_bps": spread,
+                         "buy": {"quoted_impact_bps": impact},
+                         "sell": {"quoted_impact_bps": impact}}
+                if candle is not _ABSENT:
+                    asset["daily_candle"] = {"available": candle}
+                rows_out.append(asset)
+            obs = {"assets": rows_out}
+            if observed_at is not _ABSENT:
+                obs["observed_at"] = observed_at
             if fee is not _ABSENT:
                 obs["fee_tier"] = fee
             if in_window is not _ABSENT:
@@ -492,6 +496,7 @@ def test_an_unknown_asset_is_not_silently_dropped_into_the_universe(
     with obs.open("w", encoding="utf-8") as fh:
         fh.write(json.dumps({
             "in_execution_window": True,
+            "observed_at": "2026-08-21T00:10:00+00:00",
             "assets": [{"asset": "DOGE-USD", "spread_bps": 5.0,
                         "buy": {"quoted_impact_bps": 1.0},
                         "sell": {"quoted_impact_bps": 1.0},
@@ -545,7 +550,6 @@ def test_a_measured_fee_reaches_the_report(tmp_path, monkeypatch) -> None:
     assert fee["tier_changed_during_the_probe"] is False
     assert fee["round_trip_taker_fee_pct"] == 1.2
     assert fee["draft_protocol_assumed_round_trip_pct"] == 1.4
-    assert "measurable" in fee["assumption_status"]
 
 
 def test_a_tier_change_is_surfaced_and_never_averaged(tmp_path, monkeypatch) -> None:
@@ -562,7 +566,6 @@ def test_a_tier_change_is_surfaced_and_never_averaged(tmp_path, monkeypatch) -> 
     assert fee["tier_changed_during_the_probe"] is True
     assert len(fee["observed_tiers"]) == 2
     assert fee["round_trip_taker_fee_pct"] is None, "two tiers must not blend"
-    assert "changed" in fee["assumption_status"]
     assert 0.005 not in [t["taker_fee_rate"] for t in fee["observed_tiers"]]
 
 
@@ -584,9 +587,8 @@ def test_a_relabelled_tier_with_moved_rates_is_a_separate_schedule(
      "observations_unavailable"),
     (_ABSENT, "observations_unconfirmed"),
     ("Advanced 1", "observations_unconfirmed"),
-    ({"available": True, "measured": True, "taker_fee_rate": "nan",
-      "maker_fee_rate": 0.004}, "observations_unconfirmed"),
-    ({"available": True, "measured": True, "taker_fee_rate": 0.006},
+    ({**_fee(), "taker_fee_rate": "nan"}, "observations_unconfirmed"),
+    ({k: v for k, v in _fee().items() if k != "maker_fee_rate"},
      "observations_unconfirmed"),
 ])
 def test_an_unusable_fee_reading_is_counted_not_dropped(
@@ -601,7 +603,193 @@ def test_an_unusable_fee_reading_is_counted_not_dropped(
     assert fee["observations_measured"] == 0
     assert fee["observed_tiers"] == []
     assert fee["round_trip_taker_fee_pct"] is None
-    assert "still an assumption" in fee["assumption_status"]
+    assert cp.report()["readiness"]["fee_component_measured"] is False
+
+
+# ── Finding 2: the recorded permissions are re-checked ──────────────────────
+
+@pytest.mark.parametrize("perms", [
+    None,                                                        # absent
+    {"can_view": True, "can_trade": True, "can_transfer": False},
+    {"can_view": True, "can_trade": False, "can_transfer": True},
+    {"can_view": False, "can_trade": False, "can_transfer": False},
+    {"can_view": True, "can_trade": False},                      # missing field
+    {"can_view": True, "can_trade": "false", "can_transfer": False},
+    {"can_view": 1, "can_trade": 0, "can_transfer": 0},          # not bools
+    "view-only",                                                 # not a dict
+])
+def test_a_rate_from_an_unverified_key_never_counts_as_measured(
+        tmp_path, monkeypatch, perms) -> None:
+    """
+    observe() checks the key before reading a rate, but report() reads a FILE.
+    A line from an older build, a hand-edited entry, or a run whose credential
+    has since gained trade rights all arrive with measured=true. The recorded
+    proof is re-checked rather than trusted.
+    """
+    row = {**_fee()}
+    if perms is None:
+        del row["key_permissions"]
+    else:
+        row["key_permissions"] = perms
+
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=row)
+
+    r = cp.report()
+    assert r["fee_tier"]["observations_measured"] == 0
+    assert r["fee_tier"]["observations_rejected_on_key_permissions"] == 1
+    assert r["fee_tier"]["observed_tiers"] == []
+    assert r["readiness"]["fee_component_measured"] is False
+
+
+def test_a_verified_key_is_reported_apart_from_ordinary_failures(
+        tmp_path, monkeypatch) -> None:
+    """The credential and the plumbing need different responses."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=_fee())
+    _write_obs(obs, [1.0], fee={**_fee(), "key_permissions":
+                                {"can_view": True, "can_trade": True,
+                                 "can_transfer": False}})
+    _write_obs(obs, [1.0], fee={"available": False, "measured": False,
+                                "reason": "no credential"})
+
+    fee = cp.report()["fee_tier"]
+    assert fee["observations_measured"] == 1
+    assert fee["observations_rejected_on_key_permissions"] == 1
+    assert fee["observations_unavailable"] == 1
+    assert fee["observations_unconfirmed"] == 0
+
+
+# ── Timestamps ──────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("stamp", [_ABSENT, None, "yesterday",
+                                   "2026-08-21T00:10:00"])
+def test_a_reading_that_cannot_be_placed_in_time_is_excluded(
+        tmp_path, monkeypatch, stamp) -> None:
+    """
+    A naive stamp is refused rather than assumed UTC: the whole point is WHICH
+    90 minutes the reading came from, and "any timezone" answers a different
+    question.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=_fee())
+    _write_obs(obs, [900.0], fee=_fee(), observed_at=stamp)
+
+    r = cp.report()
+    assert r["observations_used"] == 1
+    assert r["observations_skipped_unusable_timestamp"] == 1
+    assert r["per_asset"]["BTC-USD"]["spread_bps"]["max"] == 1.0
+
+
+def test_first_and_last_seen_are_min_and_max_not_file_order(
+        tmp_path, monkeypatch) -> None:
+    """Separate runs append to this log; nothing keeps it chronological."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=_fee(), observed_at="2026-08-20T00:10:00+00:00")
+    _write_obs(obs, [1.0], fee=_fee(), observed_at="2026-08-18T00:10:00+00:00")
+    _write_obs(obs, [1.0], fee=_fee(), observed_at="2026-08-19T00:10:00+00:00")
+
+    tier = cp.report()["fee_tier"]["observed_tiers"][0]
+    assert tier["first_seen"] == "2026-08-18T00:10:00+00:00"
+    assert tier["last_seen"] == "2026-08-20T00:10:00+00:00"
+    assert tier["observations"] == 3
+
+
+def test_a_non_utc_stamp_is_normalised_before_the_day_is_counted(
+        tmp_path, monkeypatch) -> None:
+    """22:30 in New York on the 20th is the 21st in UTC — one day, not two."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], observed_at="2026-08-21T00:30:00+00:00")
+    _write_obs(obs, [1.0], observed_at="2026-08-20T20:30:00-04:00")
+
+    assert cp.report()["readiness"]["unique_utc_days"] == 1
+
+
+# ── Readiness ───────────────────────────────────────────────────────────────
+
+def test_one_measured_reading_is_not_a_cost_decision(tmp_path, monkeypatch) -> None:
+    """
+    The report used to announce that the fee "replaces the assumed round trip"
+    after a SINGLE reading — one minute of one day, no asset coverage at all.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=_fee(), assets=cp.UNIVERSE)
+
+    ready = cp.report()["readiness"]
+    assert ready["fee_component_measured"] is True
+    assert ready["execution_sample_ready"] is False
+    assert ready["ready_for_protocol_cost_decision"] is False
+    assert ready["unique_utc_days"] == 1
+    assert ready["assets_below_minimum"] == sorted(cp.UNIVERSE)
+
+
+def test_the_declared_minimum_is_counted_in_unique_days(tmp_path, monkeypatch) -> None:
+    """
+    Sampling twice on one day is one day's worth of market. Counting rows
+    instead would let a single afternoon satisfy a fourteen-day contract.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    for _ in range(cp.MIN_UNIQUE_UTC_DAYS + 2):
+        _write_obs(obs, [1.0], fee=_fee(), assets=cp.UNIVERSE,
+                   observed_at="2026-08-21T00:10:00+00:00")
+
+    ready = cp.report()["readiness"]
+    assert ready["unique_utc_days"] == 1
+    assert ready["execution_sample_ready"] is False
+
+
+def test_full_coverage_reports_ready_but_still_not_a_verdict(
+        tmp_path, monkeypatch) -> None:
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    for day in range(1, cp.MIN_UNIQUE_UTC_DAYS + 1):
+        _write_obs(obs, [1.0], fee=_fee(), assets=cp.UNIVERSE,
+                   observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
+
+    ready = cp.report()["readiness"]
+    assert ready["unique_utc_days"] == cp.MIN_UNIQUE_UTC_DAYS
+    assert ready["assets_below_minimum"] == []
+    assert ready["execution_sample_ready"] is True
+    assert ready["ready_for_protocol_cost_decision"] is True
+    # Ready is an input, not a conclusion.
+    assert "decision for the protocol" in ready["this_is_not_a_verdict"]
+
+
+def test_one_uncovered_asset_blocks_readiness(tmp_path, monkeypatch) -> None:
+    """Three assets measured and one not is not a portfolio cost measurement."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    covered = [a for a in cp.UNIVERSE if a != "ZEC-USD"]
+    for day in range(1, cp.MIN_UNIQUE_UTC_DAYS + 1):
+        _write_obs(obs, [1.0], fee=_fee(), assets=covered,
+                   observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
+
+    ready = cp.report()["readiness"]
+    assert ready["assets_below_minimum"] == ["ZEC-USD"]
+    assert ready["execution_sample_ready"] is False
+    assert ready["ready_for_protocol_cost_decision"] is False
+
+
+def test_a_tier_change_blocks_the_fee_component(tmp_path, monkeypatch) -> None:
+    """Two schedules is not one measured fee, however many days were sampled."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    for day in range(1, cp.MIN_UNIQUE_UTC_DAYS + 1):
+        _write_obs(obs, [1.0], assets=cp.UNIVERSE,
+                   fee=_fee(taker=0.006 if day % 2 else 0.004),
+                   observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
+
+    ready = cp.report()["readiness"]
+    assert ready["execution_sample_ready"] is True
+    assert ready["fee_component_measured"] is False
+    assert ready["ready_for_protocol_cost_decision"] is False
 
 
 def test_an_out_of_window_observation_contributes_no_fee(tmp_path, monkeypatch) -> None:
@@ -625,8 +813,10 @@ def test_fee_and_impact_are_reported_separately_not_summed(tmp_path, monkeypatch
     _write_obs(obs, [1.0], fee=_fee())
 
     r = cp.report()
-    assert "NOT summed" in r["fee_tier"]["assumption_status"]
+    assert "never summed here" in r["readiness"]["this_is_not_a_verdict"]
     assert "total" not in json.dumps(r).lower()
+    # No field claims the assumption has been replaced.
+    assert "replace" not in json.dumps(r["fee_tier"]).lower()
 
 
 def test_the_report_says_it_measures_quoted_impact(tmp_path, monkeypatch) -> None:
