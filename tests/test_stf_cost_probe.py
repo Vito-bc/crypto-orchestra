@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -360,6 +361,76 @@ def test_the_probe_does_not_track_the_live_default() -> None:
     src = inspect.getsource(cp.trial_notional)
     assert "trade_size_pct" not in src
     assert "position_notional" in src
+
+
+# ── The unattended runner ────────────────────────────────────────────────────
+
+def _runner_script() -> str:
+    root = Path(cp.__file__).resolve().parents[1]
+    return (root / "scripts" / "run_stf_cost_probe.bat").read_text(encoding="utf-8")
+
+
+def _runner_commands() -> list[str]:
+    """Executable lines only — the script's own prose explains what it omits."""
+    return [line.strip() for line in _runner_script().splitlines()
+            if line.strip() and not line.strip().upper().startswith("REM")]
+
+
+def test_the_scheduled_runner_never_forces_an_out_of_window_sample() -> None:
+    """
+    A missed day stays missed. --force in an unattended script would silently
+    turn every outage into a sample of the wrong hour, and the cohort would
+    exclude it anyway — after it had already been recorded as a reading.
+    """
+    assert "--force" not in " ".join(_runner_commands())
+
+
+def test_the_scheduled_runner_cannot_block() -> None:
+    """`pause` waits for a keypress nobody is there to press."""
+    commands = " ".join(_runner_commands()).lower()
+    assert "pause" not in commands
+
+
+def test_the_scheduled_runner_carries_no_key_material() -> None:
+    """
+    The fee credential is opt-in through the environment. A path in a committed
+    script is a path in the repository.
+
+    Checked on COMMANDS, not the whole file: the script's own comments explain
+    which secrets it deliberately omits, and a raw text search would flag that
+    explanation.
+    """
+    commands = " ".join(_runner_commands()).lower()
+    for banned in ("cdp_api_key", ".pem", "api_key", "secret", "token",
+                   "key_file"):
+        assert banned not in commands, f"{banned!r} appears in the runner"
+
+    # The variable may be NAMED in prose; it must never be assigned here, or
+    # the opt-in credential stops being opt-in.
+    assert "stf_fee_view_only_key_file=" not in _runner_script().lower()
+
+
+def test_the_scheduled_runner_uses_the_pinned_interpreter() -> None:
+    """Not `python`: the ambient one on PATH is not the project environment."""
+    commands = " ".join(_runner_commands())
+    assert "venv\\Scripts\\python.exe" in commands
+    assert "stf_cost_probe.py" in commands
+
+
+def test_the_scheduled_runner_returns_the_probe_exit_code() -> None:
+    """The scheduler decides whether to retry from this code."""
+    assert "exit /b %ERRORLEVEL%" in _runner_script()
+
+
+def test_the_operational_log_is_separate_from_the_observations() -> None:
+    """
+    Mixing run diagnostics into the JSONL would corrupt the file report()
+    parses. They are different artifacts with different readers.
+    """
+    script = _runner_script()
+    assert "stf_cost_probe_runs.log" in script
+    assert "stf_cost_probe.jsonl" not in _runner_commands().__str__()
+    assert cp.OBSERVATIONS.name == "stf_cost_probe.jsonl"
 
 
 # ── Sampling window ──────────────────────────────────────────────────────────
