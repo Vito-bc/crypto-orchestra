@@ -391,15 +391,16 @@ def _fee(taker=0.006, maker=0.004, pricing_tier="Advanced 1"):
 
 
 def _write_obs(path, rows, in_window=True, candle=True, fee=_ABSENT,
-               observed_at="2026-08-21T00:10:00+00:00", assets=("BTC-USD",)):
+               observed_at="2026-08-21T00:10:00+00:00", assets=("BTC-USD",),
+               complete=True):
     with path.open("a", encoding="utf-8") as fh:
         for spread in rows:
             impact = spread / 2 if isinstance(spread, (int, float)) else None
             rows_out = []
             for name in assets:
                 asset = {"asset": name, "spread_bps": spread,
-                         "buy": {"quoted_impact_bps": impact},
-                         "sell": {"quoted_impact_bps": impact}}
+                         "buy": {"quoted_impact_bps": impact, "complete": complete},
+                         "sell": {"quoted_impact_bps": impact, "complete": complete}}
                 if candle is not _ABSENT:
                     asset["daily_candle"] = {"available": candle}
                 rows_out.append(asset)
@@ -417,7 +418,9 @@ def test_out_of_window_observations_are_excluded(tmp_path, monkeypatch) -> None:
     obs = tmp_path / "probe.jsonl"
     monkeypatch.setattr(cp, "OBSERVATIONS", obs)
     _write_obs(obs, [1.0, 2.0], in_window=True)
-    _write_obs(obs, [900.0], in_window=False)
+    # Out of window AND stamped out of window: the record agrees with itself.
+    _write_obs(obs, [900.0], in_window=False,
+               observed_at="2026-08-21T12:00:00+00:00")
 
     r = cp.report()
     assert r["observations_used"] == 2
@@ -707,7 +710,7 @@ def test_a_non_utc_stamp_is_normalised_before_the_day_is_counted(
     _write_obs(obs, [1.0], observed_at="2026-08-21T00:30:00+00:00")
     _write_obs(obs, [1.0], observed_at="2026-08-20T20:30:00-04:00")
 
-    assert cp.report()["readiness"]["unique_utc_days"] == 1
+    assert cp.report()["readiness"]["unique_utc_days_sampled"] == 1
 
 
 # ── Readiness ───────────────────────────────────────────────────────────────
@@ -725,7 +728,8 @@ def test_one_measured_reading_is_not_a_cost_decision(tmp_path, monkeypatch) -> N
     assert ready["fee_component_measured"] is True
     assert ready["execution_sample_ready"] is False
     assert ready["ready_for_protocol_cost_decision"] is False
-    assert ready["unique_utc_days"] == 1
+    assert ready["unique_utc_days_sampled"] == 1
+    assert ready["usable_days_per_asset"] == {a: 1 for a in cp.UNIVERSE}
     assert ready["assets_below_minimum"] == sorted(cp.UNIVERSE)
 
 
@@ -736,12 +740,13 @@ def test_the_declared_minimum_is_counted_in_unique_days(tmp_path, monkeypatch) -
     """
     obs = tmp_path / "probe.jsonl"
     monkeypatch.setattr(cp, "OBSERVATIONS", obs)
-    for _ in range(cp.MIN_UNIQUE_UTC_DAYS + 2):
+    for minute in range(cp.MIN_USABLE_DAYS_PER_ASSET + 2):
         _write_obs(obs, [1.0], fee=_fee(), assets=cp.UNIVERSE,
-                   observed_at="2026-08-21T00:10:00+00:00")
+                   observed_at=f"2026-08-21T00:{minute:02d}:00+00:00")
 
     ready = cp.report()["readiness"]
-    assert ready["unique_utc_days"] == 1
+    assert ready["unique_utc_days_sampled"] == 1
+    assert ready["usable_days_per_asset"] == {a: 1 for a in cp.UNIVERSE}
     assert ready["execution_sample_ready"] is False
 
 
@@ -749,12 +754,13 @@ def test_full_coverage_reports_ready_but_still_not_a_verdict(
         tmp_path, monkeypatch) -> None:
     obs = tmp_path / "probe.jsonl"
     monkeypatch.setattr(cp, "OBSERVATIONS", obs)
-    for day in range(1, cp.MIN_UNIQUE_UTC_DAYS + 1):
+    for day in range(1, cp.MIN_USABLE_DAYS_PER_ASSET + 1):
         _write_obs(obs, [1.0], fee=_fee(), assets=cp.UNIVERSE,
                    observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
 
     ready = cp.report()["readiness"]
-    assert ready["unique_utc_days"] == cp.MIN_UNIQUE_UTC_DAYS
+    assert ready["usable_days_per_asset"] == {
+        a: cp.MIN_USABLE_DAYS_PER_ASSET for a in cp.UNIVERSE}
     assert ready["assets_below_minimum"] == []
     assert ready["execution_sample_ready"] is True
     assert ready["ready_for_protocol_cost_decision"] is True
@@ -767,7 +773,7 @@ def test_one_uncovered_asset_blocks_readiness(tmp_path, monkeypatch) -> None:
     obs = tmp_path / "probe.jsonl"
     monkeypatch.setattr(cp, "OBSERVATIONS", obs)
     covered = [a for a in cp.UNIVERSE if a != "ZEC-USD"]
-    for day in range(1, cp.MIN_UNIQUE_UTC_DAYS + 1):
+    for day in range(1, cp.MIN_USABLE_DAYS_PER_ASSET + 1):
         _write_obs(obs, [1.0], fee=_fee(), assets=covered,
                    observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
 
@@ -777,11 +783,160 @@ def test_one_uncovered_asset_blocks_readiness(tmp_path, monkeypatch) -> None:
     assert ready["ready_for_protocol_cost_decision"] is False
 
 
+def _full_days(obs, days, assets=None, complete=True, first=1):
+    """`days` distinct UTC days of complete readings across the universe."""
+    for day in range(first, first + days):
+        _write_obs(obs, [1.0], fee=_fee(), complete=complete,
+                   assets=assets or cp.UNIVERSE,
+                   observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
+
+
+def test_an_incomplete_sweep_is_not_a_usable_reading(tmp_path, monkeypatch) -> None:
+    """
+    _sweep() reports `complete`, and the report ignored it. If the visible book
+    could not cover the intended notional, the VWAP prices a SMALLER order than
+    the protocol would send — understating cost exactly where it matters.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _full_days(obs, cp.MIN_USABLE_DAYS_PER_ASSET, complete=False)
+
+    r = cp.report()
+    assert r["asset_readings_with_incomplete_book"] == (
+        cp.MIN_USABLE_DAYS_PER_ASSET * len(cp.UNIVERSE))
+    assert r["readiness"]["usable_days_per_asset"] == {a: 0 for a in cp.UNIVERSE}
+    assert r["readiness"]["execution_sample_ready"] is False
+    # The spread still stands on its own; only impact needed a filled sweep.
+    assert r["per_asset"]["BTC-USD"]["spread_bps"]["n"] == cp.MIN_USABLE_DAYS_PER_ASSET
+    assert r["per_asset"]["BTC-USD"]["quoted_impact_round_trip_bps"]["n"] == 0
+
+
+def test_one_side_failing_to_fill_is_enough_to_reject(tmp_path, monkeypatch) -> None:
+    """A round trip needs both legs; a filled buy and a partial sell is not one."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    with obs.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "observed_at": "2026-08-21T00:10:00+00:00",
+            "in_execution_window": True,
+            "assets": [{"asset": "BTC-USD", "spread_bps": 2.0,
+                        "buy": {"quoted_impact_bps": 1.0, "complete": True},
+                        "sell": {"quoted_impact_bps": 1.0, "complete": False},
+                        "daily_candle": {"available": True}}],
+        }) + "\n")
+
+    r = cp.report()
+    assert r["asset_readings_with_incomplete_book"] == 1
+    assert r["readiness"]["usable_days_per_asset"]["BTC-USD"] == 0
+
+
+@pytest.mark.parametrize("missing", ["complete", "quoted_impact_bps"])
+def test_a_sweep_that_does_not_say_it_filled_is_not_assumed_to_have(
+        tmp_path, monkeypatch, missing) -> None:
+    """Fail closed: an absent field is not a completed fill."""
+    side = {"quoted_impact_bps": 1.0, "complete": True}
+    del side[missing]
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    with obs.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "observed_at": "2026-08-21T00:10:00+00:00",
+            "in_execution_window": True,
+            "assets": [{"asset": "BTC-USD", "spread_bps": 2.0,
+                        "buy": dict(side), "sell": dict(side),
+                        "daily_candle": {"available": True}}],
+        }) + "\n")
+
+    assert cp.report()["readiness"]["usable_days_per_asset"]["BTC-USD"] == 0
+
+
+def test_repeat_readings_of_one_day_padded_with_empty_days_are_not_coverage(
+        tmp_path, monkeypatch) -> None:
+    """
+    The exact hole in the old contract: fourteen readings of ONE asset on ONE
+    afternoon, plus thirteen days on which nothing usable was captured, cleared
+    both "14 unique days" and "14 readings per asset" while three assets went
+    unmeasured.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    for minute in range(cp.MIN_USABLE_DAYS_PER_ASSET):
+        _write_obs(obs, [1.0], fee=_fee(), assets=["BTC-USD"],
+                   observed_at=f"2026-08-01T00:{minute:02d}:00+00:00")
+    # Thirteen further days that yield nothing usable.
+    for day in range(2, cp.MIN_USABLE_DAYS_PER_ASSET + 1):
+        _write_obs(obs, [1.0], fee=_fee(), assets=cp.UNIVERSE, complete=False,
+                   observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
+
+    ready = cp.report()["readiness"]
+    assert ready["unique_utc_days_sampled"] == cp.MIN_USABLE_DAYS_PER_ASSET
+    assert ready["usable_days_per_asset"]["BTC-USD"] == 1
+    assert ready["assets_below_minimum"] == sorted(cp.UNIVERSE)
+    assert ready["execution_sample_ready"] is False
+
+
+def test_a_window_flag_contradicted_by_its_own_timestamp_is_excluded(
+        tmp_path, monkeypatch) -> None:
+    """
+    in_execution_window was believed on sight. A line stamped noon UTC with the
+    flag set to True is internally inconsistent — one of the two is wrong and
+    nothing says which — so it is excluded rather than half-believed.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], observed_at="2026-08-21T00:10:00+00:00")
+    _write_obs(obs, [900.0], observed_at="2026-08-21T12:00:00+00:00")
+
+    r = cp.report()
+    assert r["observations_used"] == 1
+    assert r["observations_skipped_window_flag_disputed_by_timestamp"] == 1
+    assert r["per_asset"]["BTC-USD"]["spread_bps"]["max"] == 1.0
+
+
+def test_a_false_flag_on_an_in_window_timestamp_is_also_excluded(
+        tmp_path, monkeypatch) -> None:
+    """The disagreement is what disqualifies it, in either direction."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], in_window=False,
+               observed_at="2026-08-21T00:10:00+00:00")
+
+    r = cp.report()
+    assert r["observations_used"] == 0
+    assert r["observations_skipped_window_flag_disputed_by_timestamp"] == 1
+    assert r["observations_skipped_out_of_window"] == 0
+
+
+def test_an_honestly_out_of_window_reading_is_still_just_out_of_window(
+        tmp_path, monkeypatch) -> None:
+    """A --force sample agrees with its own clock; it is excluded, not disputed."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], in_window=False,
+               observed_at="2026-08-21T12:00:00+00:00")
+
+    r = cp.report()
+    assert r["observations_skipped_out_of_window"] == 1
+    assert r["observations_skipped_window_flag_disputed_by_timestamp"] == 0
+
+
+def test_the_window_edge_matches_the_declared_width(tmp_path, monkeypatch) -> None:
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    edge = cp.EXECUTION_WINDOW_MINUTES
+    _write_obs(obs, [1.0], observed_at=f"2026-08-21T{edge // 60:02d}:{edge % 60:02d}:00+00:00")
+    _write_obs(obs, [2.0], observed_at=f"2026-08-22T{(edge + 1) // 60:02d}:{(edge + 1) % 60:02d}:00+00:00")
+
+    r = cp.report()
+    assert r["observations_used"] == 1
+    assert r["observations_skipped_window_flag_disputed_by_timestamp"] == 1
+
+
 def test_a_tier_change_blocks_the_fee_component(tmp_path, monkeypatch) -> None:
     """Two schedules is not one measured fee, however many days were sampled."""
     obs = tmp_path / "probe.jsonl"
     monkeypatch.setattr(cp, "OBSERVATIONS", obs)
-    for day in range(1, cp.MIN_UNIQUE_UTC_DAYS + 1):
+    for day in range(1, cp.MIN_USABLE_DAYS_PER_ASSET + 1):
         _write_obs(obs, [1.0], assets=cp.UNIVERSE,
                    fee=_fee(taker=0.006 if day % 2 else 0.004),
                    observed_at=f"2026-08-{day:02d}T00:10:00+00:00")
