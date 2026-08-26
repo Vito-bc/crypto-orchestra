@@ -453,7 +453,7 @@
     "years": 4.92
   },
   "code": {
-    "code_sha256": "4564a423237b8ec279aab06cb70ba0b270ad281601594a0c0eb61b874b5fe0f0",
+    "code_sha256": "92ef546ddd513e5da1baa38c2606947651cf306a1a377c8f63cd8cf5d39d0b1e",
     "files": [
       {
         "file": "backtesting/research_runner.py",
@@ -461,7 +461,7 @@
       },
       {
         "file": "backtesting/stf_power.py",
-        "sha256": "524dbc8d8d3df2c5ab65613de89a81c64c4c49704ffe6e7b6ec5fb959f4c6798"
+        "sha256": "b5ec01798ae8b9e8298f250231dcb39c861a85278ca091c918a9dc4e6d412d97"
       },
       {
         "file": "backtesting/stf_protocol.py",
@@ -469,11 +469,14 @@
       }
     ]
   },
-  "diagnostics_are_not_gates": [
-    "leave_one_cluster_out",
-    "asset_concentration",
-    "max_drawdown"
-  ],
+  "computed_but_not_gated": {
+    "asset_concentration": "computed and reported; measures universe correlation, not skill",
+    "leave_one_cluster_out": "computed and reported; invalid as a gate at 5-7 clusters",
+    "quantities": [
+      "leave_one_cluster_out",
+      "asset_concentration"
+    ]
+  },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
@@ -505,9 +508,10 @@
     "win_distribution": "lognormal, sigma=0.9"
   },
   "not_assessed": {
-    "asset_concentration": "reported as a diagnostic, not a gate",
-    "leave_one_cluster_out": "reported as a diagnostic, not a gate",
     "max_drawdown": "the protocol measures sleeve drawdown in calendar time including unrealized P&L. This simulation produces closed trades in an artificial order, which is NOT a bound in either direction: overlapping winners can offset losers, unrealized moves can deepen the trough. NO drawdown quantity is computed here and nothing is compared against the limit.",
+    "quantities": [
+      "max_drawdown"
+    ],
     "sleeve_max_drawdown_pct_limit": 25.0,
     "where_the_limit_is_evaluated": "on the calendar sleeve equity curve of a real forward trial, never in this study"
   },
