@@ -91,10 +91,10 @@ _DRAFT_ASSUMED_ROUND_TRIP_PCT = 1.4
 
 # Declared in advance, so "enough data" is not decided after seeing the data.
 # The protocol's own sampling instruction is 14-30 daily readings; 14 is the
-# lower bound, counted in UNIQUE UTC days (two readings on one day are one
-# day's worth of market) and required of EVERY asset separately.
-MIN_UNIQUE_UTC_DAYS = 14
-MIN_READINGS_PER_ASSET = 14
+# lower bound, counted in UNIQUE UTC days per ASSET — two readings on one day
+# are one day's worth of market, and fourteen readings of one asset on one
+# afternoon are not fourteen days of anything.
+MIN_USABLE_DAYS_PER_ASSET = 14
 
 
 class CostProbeError(RuntimeError):
@@ -510,7 +510,7 @@ def _fee_summary(counts: dict, tiers: dict) -> dict:
     }
 
 
-def _readiness(unique_days: set, per_asset: dict, fee: dict) -> dict:
+def _readiness(unique_days: set, usable_days: dict, fee: dict) -> dict:
     """
     Whether enough has been measured to be worth taking to the protocol.
 
@@ -526,21 +526,30 @@ def _readiness(unique_days: set, per_asset: dict, fee: dict) -> dict:
     Whether measured components replace the protocol's assumption is the
     PROTOCOL's decision. This instrument supplies numbers and says how much of
     the intended sample it has.
+
+    Coverage is counted per ASSET in unique UTC DAYS, and only days on which a
+    COMPLETE reading was taken. Counting rows against a global day total let a
+    sample pass that had never measured what it claimed: fourteen readings of
+    one asset in one afternoon, padded out by thirteen empty days, satisfied
+    "fourteen days" and "fourteen readings" while three assets went unmeasured.
     """
-    short = sorted(a for a, n in per_asset.items() if n < MIN_READINGS_PER_ASSET)
-    days = len(unique_days)
+    covered = {a: len(days) for a, days in sorted(usable_days.items())}
+    short = sorted(a for a, n in covered.items() if n < MIN_USABLE_DAYS_PER_ASSET)
     fee_measured = (fee["observations_measured"] > 0
                     and not fee["tier_changed_during_the_probe"])
-    sample_ready = days >= MIN_UNIQUE_UTC_DAYS and not short
+    sample_ready = bool(covered) and not short
     return {
         "fee_component_measured": fee_measured,
         "execution_sample_ready": sample_ready,
         "ready_for_protocol_cost_decision": fee_measured and sample_ready,
-        "unique_utc_days": days,
-        "minimum_unique_utc_days": MIN_UNIQUE_UTC_DAYS,
-        "readings_per_asset": dict(sorted(per_asset.items())),
-        "minimum_readings_per_asset": MIN_READINGS_PER_ASSET,
+        "usable_days_per_asset": covered,
+        "minimum_usable_days_per_asset": MIN_USABLE_DAYS_PER_ASSET,
         "assets_below_minimum": short,
+        "unique_utc_days_sampled": len(unique_days),
+        "what_counts_as_a_usable_day": (
+            "a day on which this asset was read inside the execution window "
+            "with a confirmed daily bar, a finite spread, and BOTH sweeps "
+            "filling the intended notional against the visible book"),
         "this_is_not_a_verdict": (
             "the probe measures components and reports its coverage. Whether "
             f"they replace the protocol's assumed "
@@ -548,6 +557,16 @@ def _readiness(unique_days: set, per_asset: dict, fee: dict) -> dict:
             "protocol, not for this instrument. Fee and quoted impact are "
             "reported separately and never summed here."),
     }
+
+
+def _minutes_after_utc_midnight(moment: datetime) -> float:
+    midnight = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    return (moment - midnight).total_seconds() / 60.0
+
+
+def _within_execution_window(moment: datetime) -> bool:
+    """Recomputed from the clock, never taken from the record's own flag."""
+    return 0.0 <= _minutes_after_utc_midnight(moment) <= EXECUTION_WINDOW_MINUTES
 
 
 def _utc_moment(value) -> datetime | None:
@@ -584,32 +603,45 @@ def report() -> dict:
     import statistics
 
     per_asset: dict = {a: {"spread_bps": [], "round_trip_bps": []} for a in UNIVERSE}
-    used = out_of_window = unconfirmed_window = untimed = 0
-    no_candle = unconfirmed_candle = malformed = 0
+    used = out_of_window = unconfirmed_window = untimed = disputed_window = 0
+    no_candle = unconfirmed_candle = malformed = incomplete_book = 0
     fee_counts = {"measured": 0, "unavailable": 0, "unconfirmed": 0,
                   "unverified_key": 0}
     fee_tiers: dict = {}
     unique_days: set = set()
+    # Per asset, the set of UTC days on which a COMPLETE execution reading was
+    # taken. A day is the unit because the protocol samples daily; sets because
+    # repeat readings on one day add no days.
+    usable_days: dict = {a: set() for a in UNIVERSE}
     for line in OBSERVATIONS.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         obs = json.loads(line)
+        # The timestamp is read FIRST, because the window flag is checked
+        # against it rather than believed. A reading that cannot be placed in
+        # time cannot be placed in a window or counted towards a per-day sample.
+        moment = _utc_moment(obs.get("observed_at"))
+        if moment is None:
+            untimed += 1
+            continue
+
         # FAIL CLOSED on the cohort. `obs.get(..., True)` admitted an
         # observation whose window flag was missing, None, or a string — a
         # truncated or hand-edited line silently joined the sample it is
         # supposed to be excluded from. Only an explicit True is a confirmation.
         window = obs.get("in_execution_window")
-        if window is False:
-            out_of_window += 1    # out-of-window samples describe another market
-            continue
-        if window is not True:
+        if window is not True and window is not False:
             unconfirmed_window += 1
             continue
-        # A reading that cannot be placed in time cannot be counted towards a
-        # per-DAY sample, and its tier sighting has no first/last seen.
-        moment = _utc_moment(obs.get("observed_at"))
-        if moment is None:
-            untimed += 1
+        # ... and an explicit True is not evidence either. A line claiming the
+        # window while its own timestamp says noon is internally inconsistent:
+        # one of the two is wrong and there is no way to tell which, so the
+        # record is excluded rather than half-believed.
+        if window is not _within_execution_window(moment):
+            disputed_window += 1
+            continue
+        if window is False:
+            out_of_window += 1    # out-of-window samples describe another market
             continue
         used += 1
         unique_days.add(moment.date().isoformat())
@@ -628,15 +660,29 @@ def report() -> dict:
                 unconfirmed_candle += 1
                 continue
 
+            buy_side = row.get("buy") if isinstance(row.get("buy"), dict) else {}
+            sell_side = row.get("sell") if isinstance(row.get("sell"), dict) else {}
             spread = _measurement(row.get("spread_bps"))
-            buy = _measurement(row.get("buy", {}).get("quoted_impact_bps"))
-            sell = _measurement(row.get("sell", {}).get("quoted_impact_bps"))
+            buy = _measurement(buy_side.get("quoted_impact_bps"))
+            sell = _measurement(sell_side.get("quoted_impact_bps"))
             if spread is None or row.get("asset") not in per_asset:
                 malformed += 1
                 continue
+
+            # The spread is a property of the top of book and stands on its own.
             per_asset[row["asset"]]["spread_bps"].append(spread)
-            if buy is not None and sell is not None:
-                per_asset[row["asset"]]["round_trip_bps"].append(buy + sell)
+
+            # Impact does NOT. If the visible book could not cover the intended
+            # notional, the sweep's VWAP describes a smaller order than the one
+            # the protocol would send, and quoting it would understate the cost
+            # exactly where the cost matters most.
+            filled = (buy_side.get("complete") is True
+                      and sell_side.get("complete") is True)
+            if not filled or buy is None or sell is None:
+                incomplete_book += 1
+                continue
+            per_asset[row["asset"]]["round_trip_bps"].append(buy + sell)
+            usable_days[row["asset"]].add(moment.date().isoformat())
 
     def _pcts(values: list[float]) -> dict:
         if not values:
@@ -652,25 +698,33 @@ def report() -> dict:
         return out
 
     fee = _fee_summary(fee_counts, fee_tiers)
-    readings = {a: len(v["spread_bps"]) for a, v in per_asset.items()}
     return {
         "observations_used": used,
-        "readiness": _readiness(unique_days, readings, fee),
+        "readiness": _readiness(unique_days, usable_days, fee),
         "fee_tier": fee,
         "observations_skipped_out_of_window": out_of_window,
         # Separate counters, not one bucket: "we sampled at the wrong hour" and
         # "we cannot tell when we sampled" call for different remedies.
         "observations_skipped_window_unconfirmed": unconfirmed_window,
         "observations_skipped_unusable_timestamp": untimed,
+        # The flag said one thing and the record's own clock said another.
+        "observations_skipped_window_flag_disputed_by_timestamp": disputed_window,
         "asset_readings_skipped_no_daily_bar": no_candle,
         "asset_readings_skipped_candle_unconfirmed": unconfirmed_candle,
         "asset_readings_skipped_malformed": malformed,
-        "cohort_rule": ("an observation joins the sample only if its execution "
-                        "window, its UTC timestamp and its daily bar are all "
-                        "explicitly confirmed; anything missing or "
-                        "unrecognised is excluded and counted"),
+        # Counted apart from malformed: the book was readable, it simply could
+        # not cover the order. That is information about liquidity, not a fault.
+        "asset_readings_with_incomplete_book": incomplete_book,
+        "cohort_rule": ("an observation joins the sample only if its UTC "
+                        "timestamp is readable, its window flag AGREES with "
+                        "that timestamp, and its daily bar is confirmed "
+                        "published; anything missing, unrecognised or "
+                        "self-contradictory is excluded and counted"),
         "measures": ("QUOTED IMPACT against the displayed book plus the spread; "
-                     "this is not realised execution slippage"),
+                     "this is not realised execution slippage. Impact "
+                     "percentiles cover only sweeps that FILLED the intended "
+                     "notional — a partial sweep prices a smaller order than "
+                     "the protocol would send"),
         "percentiles_reported": [f"p{int(p * 100)}" for p in _PERCENTILES],
         "why_no_p99": ("at 14-30 observations p99 is the single worst reading, "
                        "not an estimate of the tail"),
