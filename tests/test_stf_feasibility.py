@@ -22,6 +22,19 @@ from unittest.mock import patch
 import backtesting.stf_feasibility as fz
 
 
+def _clean_audit() -> dict:
+    """A minimal audit with the shape the guard expects and no performance."""
+    return {
+        "purpose": "sizing only; reports no profit_factor, expectancy or pnl",
+        "blinding": "prices reach one function, which returns timestamps",
+        "not_evidence": "this is not a backtest and no return is computed",
+        "trial_id": "2026-08-stf-feasibility.7R1",
+        "per_asset_full_history": {"BTC-USD": {"closed_trades": 23}},
+        "common_universe": {"clusters": []},
+        "rule": {"entry_lookback": 55},
+    }
+
+
 def _closes(values, start="2024-01-01") -> pd.Series:
     idx = pd.date_range(start, periods=len(values), freq="D", tz="UTC")
     return pd.Series([float(v) for v in values], index=idx)
@@ -42,12 +55,17 @@ def test_events_carry_no_price_information() -> None:
         assert ev["event"] in {"ENTRY", "EXIT"}
 
 
-# Sections of the audit that carry DATA. The prose sections ("purpose",
-# "blinding", "not_evidence") NAME what is excluded, so scanning them would
-# flag the disclaimer. These keys are asserted to exist: the previous version
-# selected "per_asset"/"portfolio", which the audit has never emitted, so eight
-# parametrised cases passed while checking an empty dict.
-_DATA_SECTIONS = ("per_asset_full_history", "common_universe", "rule")
+# DENY BY DEFAULT: every top-level section is scanned except the prose ones
+# listed here, which NAME what the audit refuses to compute and would flag
+# their own disclaimer.
+#
+# Two earlier versions of this guard were inert. The first selected
+# "per_asset"/"portfolio", sections the audit has never emitted, so eight
+# parametrised cases passed against an empty dict. The second named the real
+# data sections but still allow-listed them, so a NEW top-level section —
+# {"backtest": {"profit_factor": 2}} — would have sailed through untouched. An
+# allow-list cannot guard against a section nobody has thought of yet.
+_NARRATIVE_SECTIONS = ("purpose", "blinding", "not_evidence")
 
 _BANNED_IN_DATA = (
     "pnl", "profit_factor", "expectancy", "win_rate", "return", "equity",
@@ -56,14 +74,16 @@ _BANNED_IN_DATA = (
 
 
 def _performance_leak(audit: dict, banned: str) -> bool:
-    """True if `banned` appears anywhere in the audit's data sections."""
+    """True if `banned` appears anywhere outside the declared prose sections."""
     import json
 
-    missing = [k for k in _DATA_SECTIONS if k not in audit]
+    missing = [k for k in _NARRATIVE_SECTIONS if k not in audit]
     assert not missing, (
-        f"audit is missing data section(s) {missing} — the blind check would "
-        "silently scan nothing. Update _DATA_SECTIONS deliberately.")
-    return banned in json.dumps({k: audit[k] for k in _DATA_SECTIONS}).lower()
+        f"audit is missing narrative section(s) {missing} — the exclusion list "
+        "must describe the artifact that exists. Update it deliberately.")
+    scanned = {k: v for k, v in audit.items() if k not in _NARRATIVE_SECTIONS}
+    assert scanned, "nothing left to scan — the guard would be inert"
+    return banned in json.dumps(scanned).lower()
 
 
 @pytest.mark.parametrize("banned", _BANNED_IN_DATA)
@@ -75,20 +95,46 @@ def test_the_blind_check_actually_catches_a_planted_field(banned: str) -> None:
     passing parametrised test proves nothing on its own. Every banned token
     must be demonstrated to FAIL when planted in a data section.
     """
-    clean = {"per_asset_full_history": {"BTC-USD": {"closed_trades": 23}},
-             "common_universe": {"clusters": []},
-             "rule": {"entry_lookback": 55}}
-    assert not _performance_leak(clean, banned)
+    assert not _performance_leak(_clean_audit(), banned)
 
-    planted = {**clean, "common_universe": {"clusters": [], banned: 1.42}}
+    planted = {**_clean_audit(),
+               "common_universe": {"clusters": [], banned: 1.42}}
     assert _performance_leak(planted, banned), (
         f"a planted {banned!r} was not detected — the blind check is inert")
 
 
+@pytest.mark.parametrize("banned", _BANNED_IN_DATA)
+def test_a_brand_new_top_level_section_is_scanned_too(banned: str) -> None:
+    """
+    The failure mode an allow-list cannot cover: someone adds a section the
+    guard was never told about. Deny-by-default means the guard does not have
+    to have anticipated the name.
+    """
+    smuggled = {**_clean_audit(), "backtest": {banned: 2.0}}
+    assert _performance_leak(smuggled, banned), (
+        f"a new top-level section hid {banned!r} from the blind check")
+
+
 def test_the_blind_check_refuses_to_scan_a_renamed_audit() -> None:
-    """If a section is renamed the check must fail loudly, not scan nothing."""
-    with pytest.raises(AssertionError, match="missing data section"):
-        _performance_leak({"rule": {}}, "pnl")
+    """
+    If a narrative section is renamed the exclusion list no longer describes
+    the artifact, and the check must say so rather than proceed.
+    """
+    audit = _clean_audit()
+    del audit["blinding"]
+    with pytest.raises(AssertionError, match="missing narrative section"):
+        _performance_leak(audit, "pnl")
+
+
+def test_a_renamed_data_section_is_still_scanned() -> None:
+    """
+    The mirror image: renaming a DATA section must not create a blind spot,
+    because the guard never names the data sections in the first place.
+    """
+    renamed = {k: v for k, v in _clean_audit().items()
+               if k != "per_asset_full_history"}
+    renamed["per_asset_v2"] = {"BTC-USD": {"profit_factor": 1.9}}
+    assert _performance_leak(renamed, "profit_factor")
 
 
 @pytest.mark.integration
@@ -404,17 +450,21 @@ def test_drawdown_uses_the_sleeve_denominator() -> None:
     assert pw.POSITION_FRACTION_OF_SLEEVE == pytest.approx(0.10)
 
 
-def test_drawdown_is_declared_not_assessed() -> None:
+def test_drawdown_is_declared_not_assessed_rather_than_demoted() -> None:
     """
     A realized-only trade sequence cannot produce the protocol's calendar-time,
-    unrealized-inclusive drawdown. Saying so is required; silently evaluating a
-    different quantity is not acceptable.
+    unrealized-inclusive drawdown.
+
+    "Diagnostic" and "not assessed" are different statuses: a diagnostic has a
+    number that does not decide anything, while drawdown has no number at all.
+    Listing it among the diagnostics implied a computed-but-demoted quantity.
     """
     import backtesting.stf_power as pw
 
-    assert "max_drawdown" in pw.DIAGNOSTIC_ONLY
-    src = inspect.getsource(pw)
-    assert "NOT ASSESSED" in src
+    assert "max_drawdown" in pw.NOT_ASSESSED
+    assert "max_drawdown" not in pw.DIAGNOSTIC_ONLY
+    assert set(pw.NOT_ASSESSED).isdisjoint(pw.DIAGNOSTIC_ONLY)
+    assert "NOT ASSESSED" in inspect.getsource(pw)
 
 
 def test_the_power_study_evaluates_the_final_gates() -> None:

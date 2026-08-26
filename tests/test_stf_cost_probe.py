@@ -33,11 +33,17 @@ def _public_client_stub():
     )
 
 
-def _fee_client_stub():
-    """View-only client: the private fee endpoint and nothing else."""
-    return SimpleNamespace(get_transaction_summary=lambda: SimpleNamespace(
-        fee_tier=SimpleNamespace(taker_fee_rate="0.006", maker_fee_rate="0.004",
-                                 pricing_tier="Advanced 1")))
+_VIEW_ONLY = SimpleNamespace(can_view=True, can_trade=False, can_transfer=False)
+
+
+def _fee_client_stub(permissions=_VIEW_ONLY, taker="0.006", maker="0.004",
+                     pricing_tier="Advanced 1"):
+    """View-only client: the permission call and the private fee endpoint."""
+    return SimpleNamespace(
+        get_api_key_permissions=lambda: permissions,
+        get_transaction_summary=lambda: SimpleNamespace(
+            fee_tier=SimpleNamespace(taker_fee_rate=taker, maker_fee_rate=maker,
+                                     pricing_tier=pricing_tier)))
 
 
 # ── It cannot reach an account ───────────────────────────────────────────────
@@ -80,7 +86,7 @@ def test_only_the_designated_env_var_can_supply_key_material() -> None:
 
 def test_no_credential_means_no_client_and_no_assumed_fee(monkeypatch) -> None:
     monkeypatch.delenv(cp.FEE_KEY_FILE_ENV, raising=False)
-    assert cp._fee_client() is None
+    assert cp._fee_client() == (None, None)
 
     tier = cp._fee_tier(None)
     assert tier["available"] is False
@@ -143,9 +149,11 @@ def test_an_unreadable_fee_tier_is_unavailable_not_assumed() -> None:
 
 def test_a_view_only_credential_can_supply_the_tier() -> None:
     """The path must work if a view-only key is deliberately provided."""
-    tier = cp._fee_tier(_fee_client_stub())
+    perms = {"can_view": True, "can_trade": False, "can_transfer": False}
+    tier = cp._fee_tier(_fee_client_stub(), perms)
     assert tier == {"available": True, "measured": True, "taker_fee_rate": 0.006,
-                    "maker_fee_rate": 0.004, "pricing_tier": "Advanced 1"}
+                    "maker_fee_rate": 0.004, "pricing_tier": "Advanced 1",
+                    "key_permissions": perms}
 
 
 @pytest.mark.parametrize("rate", ["nan", "inf", "-inf", "-0.006", "abc", None,
@@ -196,6 +204,8 @@ def test_observe_reads_the_tier_through_the_view_only_client(tmp_path, monkeypat
         "the fee client must be the only one built with key material")
     assert obs["fee_tier"]["measured"] is True
     assert obs["fee_tier"]["taker_fee_rate"] == 0.006
+    assert obs["fee_tier"]["key_permissions"] == {
+        "can_view": True, "can_trade": False, "can_transfer": False}
     assert obs["assets"][0]["daily_candle"]["available"] is True
 
 
@@ -221,6 +231,73 @@ def test_a_misconfigured_credential_fails_before_any_sampling(
                side_effect=AssertionError("no client may be built")):
         with pytest.raises(cp.CostProbeError, match="not a file"):
             cp.observe(force=True)
+    assert not (tmp_path / "probe.jsonl").exists()
+
+
+def test_a_view_only_key_is_accepted_and_its_permissions_recorded() -> None:
+    assert cp._assert_view_only(_fee_client_stub()) == {
+        "can_view": True, "can_trade": False, "can_transfer": False}
+
+
+@pytest.mark.parametrize("perms", [
+    SimpleNamespace(can_view=True, can_trade=True, can_transfer=False),
+    SimpleNamespace(can_view=True, can_trade=False, can_transfer=True),
+    SimpleNamespace(can_view=False, can_trade=False, can_transfer=False),
+])
+def test_a_key_that_can_trade_or_transfer_is_refused(perms) -> None:
+    """
+    The path and filename checks only recognise a credential we already know
+    about. A RENAMED trading key, or a view-only key later granted trade
+    rights, passes both and is caught only here.
+    """
+    with pytest.raises(cp.CostProbeError, match="required"):
+        cp._assert_view_only(_fee_client_stub(permissions=perms))
+
+
+@pytest.mark.parametrize("perms", [
+    SimpleNamespace(can_view=True, can_trade=False),                 # missing
+    SimpleNamespace(can_view=True, can_trade=None, can_transfer=False),
+    SimpleNamespace(can_view=True, can_trade="false", can_transfer=False),
+    SimpleNamespace(can_view=1, can_trade=0, can_transfer=0),        # not bools
+])
+def test_an_unreadable_permission_is_refused_not_assumed_benign(perms) -> None:
+    with pytest.raises(cp.CostProbeError, match="not a boolean"):
+        cp._assert_view_only(_fee_client_stub(permissions=perms))
+
+
+def test_a_failing_permission_call_is_treated_as_a_trading_key() -> None:
+    client = SimpleNamespace(
+        get_api_key_permissions=lambda: (_ for _ in ()).throw(
+            RuntimeError("Unauthorized")))
+    with pytest.raises(cp.CostProbeError, match="treated as a trading key"):
+        cp._assert_view_only(client)
+
+
+def test_permissions_are_verified_before_any_market_request(
+        tmp_path, monkeypatch) -> None:
+    """
+    A key that should not be here must be refused BEFORE it is used, not after
+    a reading has been taken.
+    """
+    key = tmp_path / "not_actually_view_only.json"
+    key.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(cp.FEE_KEY_FILE_ENV, str(key))
+    monkeypatch.setattr(cp, "OBSERVATIONS", tmp_path / "probe.jsonl")
+
+    trading_key = _fee_client_stub(
+        permissions=SimpleNamespace(can_view=True, can_trade=True,
+                                    can_transfer=False))
+    touched = []
+    public = SimpleNamespace(
+        get_public_product_book=lambda **kw: touched.append("book"),
+        get_public_candles=lambda **kw: touched.append("candles"))
+
+    with patch("coinbase.rest.RESTClient",
+               side_effect=lambda **kw: trading_key if kw else public):
+        with pytest.raises(cp.CostProbeError, match="required"):
+            cp.observe(force=True)
+
+    assert touched == [], "the book was swept before the key was verified"
     assert not (tmp_path / "probe.jsonl").exists()
 
 
@@ -306,7 +383,14 @@ def test_sampling_outside_the_execution_window_is_refused(monkeypatch) -> None:
 _ABSENT = object()
 
 
-def _write_obs(path, rows, in_window=True, candle=True):
+def _fee(taker=0.006, maker=0.004, pricing_tier="Advanced 1"):
+    return {"available": True, "measured": True, "taker_fee_rate": taker,
+            "maker_fee_rate": maker, "pricing_tier": pricing_tier,
+            "key_permissions": {"can_view": True, "can_trade": False,
+                                "can_transfer": False}}
+
+
+def _write_obs(path, rows, in_window=True, candle=True, fee=_ABSENT):
     with path.open("a", encoding="utf-8") as fh:
         for spread in rows:
             asset = {
@@ -318,6 +402,8 @@ def _write_obs(path, rows, in_window=True, candle=True):
                 asset["daily_candle"] = {"available": candle}
             obs = {"observed_at": "2026-08-21T00:10:00+00:00",
                    "assets": [asset]}
+            if fee is not _ABSENT:
+                obs["fee_tier"] = fee
             if in_window is not _ABSENT:
                 obs["in_execution_window"] = in_window
             fh.write(json.dumps(obs) + "\n")
@@ -438,6 +524,109 @@ def test_p99_is_not_reported() -> None:
     assert 0.99 not in cp._PERCENTILES
     src = inspect.getsource(cp)
     assert "why_no_p99" in src
+
+
+def test_a_measured_fee_reaches_the_report(tmp_path, monkeypatch) -> None:
+    """
+    observe() recorded the tier and report() dropped it, so thirty days of
+    sampling could not replace the protocol's assumed 1.4% with anything.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0, 2.0, 3.0], fee=_fee())
+
+    fee = cp.report()["fee_tier"]
+    assert fee["observations_measured"] == 3
+    assert fee["observed_tiers"] == [{
+        "pricing_tier": "Advanced 1", "taker_fee_rate": 0.006,
+        "maker_fee_rate": 0.004, "observations": 3,
+        "first_seen": "2026-08-21T00:10:00+00:00",
+        "last_seen": "2026-08-21T00:10:00+00:00"}]
+    assert fee["tier_changed_during_the_probe"] is False
+    assert fee["round_trip_taker_fee_pct"] == 1.2
+    assert fee["draft_protocol_assumed_round_trip_pct"] == 1.4
+    assert "measurable" in fee["assumption_status"]
+
+
+def test_a_tier_change_is_surfaced_and_never_averaged(tmp_path, monkeypatch) -> None:
+    """
+    Two schedules must not collapse into one hidden mean: the account never
+    paid the average, and the useful signal is that the tier CHANGED.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=_fee(taker=0.006, pricing_tier="Advanced 1"))
+    _write_obs(obs, [1.0], fee=_fee(taker=0.004, pricing_tier="Advanced 2"))
+
+    fee = cp.report()["fee_tier"]
+    assert fee["tier_changed_during_the_probe"] is True
+    assert len(fee["observed_tiers"]) == 2
+    assert fee["round_trip_taker_fee_pct"] is None, "two tiers must not blend"
+    assert "changed" in fee["assumption_status"]
+    assert 0.005 not in [t["taker_fee_rate"] for t in fee["observed_tiers"]]
+
+
+def test_a_relabelled_tier_with_moved_rates_is_a_separate_schedule(
+        tmp_path, monkeypatch) -> None:
+    """Same label, different rates: still a different fee schedule."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=_fee(taker=0.006))
+    _write_obs(obs, [1.0], fee=_fee(taker=0.0075))
+
+    fee = cp.report()["fee_tier"]
+    assert len(fee["observed_tiers"]) == 2
+    assert fee["tier_changed_during_the_probe"] is True
+
+
+@pytest.mark.parametrize("bad,bucket", [
+    ({"available": False, "measured": False, "reason": "no credential"},
+     "observations_unavailable"),
+    (_ABSENT, "observations_unconfirmed"),
+    ("Advanced 1", "observations_unconfirmed"),
+    ({"available": True, "measured": True, "taker_fee_rate": "nan",
+      "maker_fee_rate": 0.004}, "observations_unconfirmed"),
+    ({"available": True, "measured": True, "taker_fee_rate": 0.006},
+     "observations_unconfirmed"),
+])
+def test_an_unusable_fee_reading_is_counted_not_dropped(
+        tmp_path, monkeypatch, bad, bucket) -> None:
+    """Same fail-closed contract as the rest of the cohort."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=bad)
+
+    fee = cp.report()["fee_tier"]
+    assert fee[bucket] == 1
+    assert fee["observations_measured"] == 0
+    assert fee["observed_tiers"] == []
+    assert fee["round_trip_taker_fee_pct"] is None
+    assert "still an assumption" in fee["assumption_status"]
+
+
+def test_an_out_of_window_observation_contributes_no_fee(tmp_path, monkeypatch) -> None:
+    """The fee cohort is the same cohort as the cost one."""
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], in_window=False, fee=_fee())
+
+    fee = cp.report()["fee_tier"]
+    assert fee["observations_measured"] == 0
+    assert fee["observations_unconfirmed"] == 0
+
+
+def test_fee_and_impact_are_reported_separately_not_summed(tmp_path, monkeypatch) -> None:
+    """
+    Combining a fee with quoted impact against a static book is a modelling
+    decision for the protocol, not something the instrument should decide.
+    """
+    obs = tmp_path / "probe.jsonl"
+    monkeypatch.setattr(cp, "OBSERVATIONS", obs)
+    _write_obs(obs, [1.0], fee=_fee())
+
+    r = cp.report()
+    assert "NOT summed" in r["fee_tier"]["assumption_status"]
+    assert "total" not in json.dumps(r).lower()
 
 
 def test_the_report_says_it_measures_quoted_impact(tmp_path, monkeypatch) -> None:

@@ -25,9 +25,15 @@ therefore OPT-IN and separate: point STF_FEE_VIEW_ONLY_KEY_FILE at a Coinbase
 key created with VIEW-ONLY permission and nothing else.
 
     There is no fallback. With the variable unset the fee is recorded as
-    unavailable and never assumed. The repository's live trading credential is
-    refused by resolved path and by filename: a measuring instrument does not
-    get a key that can trade, even one it has no code to trade with.
+    unavailable and never assumed.
+
+    The key's PERMISSIONS are verified against the exchange before any market
+    request: can_view true, can_trade false, can_transfer false, each an actual
+    boolean. A key that fails, errors, or answers with a missing field is
+    refused. Path and filename checks also refuse the repository's own trading
+    credential, but those only recognise a key we already know about — a
+    renamed trading key, or a view-only key that was later granted trade
+    rights, is caught by the permission call and nothing else.
 
 Run once per day inside the execution window the protocol specifies, for
 14-30 days:
@@ -60,6 +66,10 @@ _LIVE_TRADING_KEY = ROOT / "cdp_api_key.json"
 # highest Coinbase Advanced taker tier is far below 10%.
 _MAX_PLAUSIBLE_FEE_RATE = 0.10
 
+# What the exchange must say about the key before this probe will use it.
+# Checking the file name proves nothing about what the key can do.
+_REQUIRED_PERMISSIONS = {"can_view": True, "can_trade": False, "can_transfer": False}
+
 # The protocol executes on the first hourly bar after the daily close, so the
 # cost that matters is the cost in that window. Sampling at an arbitrary hour
 # would measure a different market.
@@ -68,6 +78,10 @@ EXECUTION_WINDOW_MINUTES = 90
 # Percentiles worth quoting at this sample size. p99 from 14-30 observations is
 # an order statistic of the single worst reading, so it is not reported.
 _PERCENTILES = (0.5, 0.9)
+
+# What the draft protocol assumed, carried in the report so the measurement is
+# always shown next to the number it exists to replace.
+_DRAFT_ASSUMED_ROUND_TRIP_PCT = 1.4
 
 
 class CostProbeError(RuntimeError):
@@ -88,7 +102,9 @@ def _public_client():
 
 def _fee_client():
     """
-    Optional client for the fee tier alone. None when not configured.
+    Optional client for the fee tier alone, with its verified permissions.
+
+    Returns (client, permissions), or (None, None) when not configured.
 
     The fee used to be requested with the unauthenticated client, which can
     never succeed — so the tier was permanently "unavailable" while the code
@@ -100,13 +116,15 @@ def _fee_client():
         filename, so a copy of it cannot be slipped in;
       - a missing path is an error, not a silent downgrade to the public
         client: the operator asked for a measured fee and must not receive an
-        unmeasured one.
+        unmeasured one;
+      - the exchange must confirm the key cannot trade or transfer BEFORE any
+        market request is made.
     """
     import os
 
     raw = os.environ.get(FEE_KEY_FILE_ENV, "").strip()
     if not raw:
-        return None
+        return None, None
 
     path = Path(raw).expanduser()
     if (path.name == _LIVE_TRADING_KEY.name
@@ -121,7 +139,47 @@ def _fee_client():
 
     from coinbase.rest import RESTClient
 
-    return RESTClient(key_file=str(path))
+    client = RESTClient(key_file=str(path))
+    return client, _assert_view_only(client)
+
+
+def _assert_view_only(client) -> dict:
+    """
+    Verify with the EXCHANGE that this key cannot trade. Raises otherwise.
+
+    Path and filename checks recognise a credential we already know about. They
+    say nothing about a renamed trading key, or about a view-only key that was
+    later granted trade rights — only the exchange knows that. This runs before
+    any market request, so a key that should not be here never gets used.
+
+    Fails closed on everything: a request error, a missing field, or a value
+    that is not an actual boolean is treated as "this key can trade".
+    """
+    try:
+        perms = client.get_api_key_permissions()
+    except Exception as exc:
+        raise CostProbeError(
+            f"{type(exc).__name__}: could not read the key's permissions. A key "
+            "whose permissions cannot be verified is treated as a trading key "
+            "and refused.") from exc
+
+    granted = {}
+    for field in _REQUIRED_PERMISSIONS:
+        value = getattr(perms, field, None)
+        if not isinstance(value, bool):
+            raise CostProbeError(
+                f"key_permissions.{field} is {value!r}, not a boolean. An "
+                "unreadable permission is refused rather than assumed benign.")
+        granted[field] = value
+
+    wrong = {f: granted[f] for f, want in _REQUIRED_PERMISSIONS.items()
+             if granted[f] is not want}
+    if wrong:
+        raise CostProbeError(
+            f"{FEE_KEY_FILE_ENV} names a key with {wrong} — required "
+            f"{_REQUIRED_PERMISSIONS}. This probe reads a fee tier; it must not "
+            "hold a key that can trade or transfer. Create a view-only key.")
+    return granted
 
 
 def trial_notional() -> float:
@@ -211,12 +269,13 @@ def _validated_rate(value) -> float | None:
     return rate
 
 
-def _fee_tier(client) -> dict:
+def _fee_tier(client, permissions: dict | None = None) -> dict:
     """
     The account fee tier, if a view-only credential was deliberately supplied.
 
     get_transaction_summary is a private endpoint; `client` is None unless
-    FEE_KEY_FILE_ENV named a key file. Recorded as unavailable, never assumed.
+    FEE_KEY_FILE_ENV named a key file whose permissions checked out. Recorded
+    as unavailable, never assumed.
     """
     if client is None:
         return {"available": False, "measured": False,
@@ -245,6 +304,9 @@ def _fee_tier(client) -> dict:
         "taker_fee_rate": taker,
         "maker_fee_rate": maker,
         "pricing_tier": getattr(tier, "pricing_tier", None),
+        # Provenance: which key produced this rate, and what it was allowed to
+        # do at the moment of reading.
+        "key_permissions": permissions,
     }
 
 
@@ -287,9 +349,9 @@ def observe(force: bool = False) -> dict:
             "at another hour describes a different market. Use --force to record "
             "an out-of-window sample; it is flagged and excluded from the report.")
 
-    # Built before any sampling: a misconfigured credential must fail loudly
-    # rather than after a reading has been taken.
-    fee_client = _fee_client()
+    # Built and permission-checked before any sampling: a key that should not
+    # be here must be refused before it is used, not after.
+    fee_client, fee_permissions = _fee_client()
     client = _public_client()
     notional = trial_notional()
 
@@ -329,13 +391,89 @@ def observe(force: bool = False) -> dict:
         "execution_window_minutes": EXECUTION_WINDOW_MINUTES,
         "notional_usd": notional,
         "measures": "quoted impact against the displayed book, not realised fills",
-        "fee_tier": _fee_tier(fee_client),
+        "fee_tier": _fee_tier(fee_client, fee_permissions),
         "assets": rows,
     }
     OBSERVATIONS.parent.mkdir(parents=True, exist_ok=True)
     with OBSERVATIONS.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(observation, sort_keys=True) + "\n")
     return observation
+
+
+def _collect_fee(obs: dict, tiers: dict) -> str:
+    """
+    Fold one observation's fee reading into the tier tally.
+
+    Returns "measured", "unavailable" or "unconfirmed". Same fail-closed
+    contract as the rest of the cohort: only an explicitly measured tier with
+    two usable rates counts as measured.
+    """
+    row = obs.get("fee_tier")
+    if not isinstance(row, dict):
+        return "unconfirmed"
+    if row.get("measured") is not True or row.get("available") is not True:
+        return "unavailable" if row.get("available") is False else "unconfirmed"
+
+    taker = _validated_rate(row.get("taker_fee_rate"))
+    maker = _validated_rate(row.get("maker_fee_rate"))
+    if taker is None or maker is None:
+        return "unconfirmed"
+
+    at = obs.get("observed_at")
+    # Keyed on the RATES as well as the tier name: a tier that keeps its label
+    # while its rates move is still a different fee schedule.
+    key = (str(row.get("pricing_tier")), taker, maker)
+    seen = tiers.setdefault(key, {
+        "pricing_tier": row.get("pricing_tier"),
+        "taker_fee_rate": taker,
+        "maker_fee_rate": maker,
+        "observations": 0,
+        "first_seen": at,
+        "last_seen": at,
+    })
+    seen["observations"] += 1
+    seen["last_seen"] = at
+    return "measured"
+
+
+def _fee_summary(measured: int, unavailable: int, unconfirmed: int,
+                 tiers: dict) -> dict:
+    """
+    What the probe learned about the FEE half of the cost.
+
+    The report used to omit this entirely: observe() recorded the tier and
+    report() dropped it, so thirty days of sampling could not replace the
+    protocol's assumed 1.4% round trip with anything.
+
+    Rates from different tiers are never averaged. A mean of two schedules is a
+    rate the account never paid, and the useful signal in two tiers is that the
+    tier CHANGED.
+    """
+    observed = sorted(tiers.values(),
+                      key=lambda t: (t["first_seen"] or "", t["taker_fee_rate"]))
+    single = observed[0] if len(observed) == 1 else None
+    return {
+        "observations_measured": measured,
+        "observations_unavailable": unavailable,
+        "observations_unconfirmed": unconfirmed,
+        "observed_tiers": observed,
+        "tier_changed_during_the_probe": len(observed) > 1,
+        "rates_are_never_averaged_because": (
+            "distinct tiers are distinct fee schedules; their mean is a rate "
+            "the account never paid"),
+        # Taker on both legs: the strategy exits on a signal, so it cannot
+        # count on a maker fill. Reported only when ONE tier was observed.
+        "round_trip_taker_fee_pct": (
+            round(single["taker_fee_rate"] * 2 * 100, 4) if single else None),
+        "draft_protocol_assumed_round_trip_pct": _DRAFT_ASSUMED_ROUND_TRIP_PCT,
+        "assumption_status": (
+            "still an assumption: no fee tier was measured" if not measured else
+            "measured, but the tier changed during the probe — pick a tier "
+            "deliberately rather than blending them" if single is None else
+            "measurable: this fee plus the quoted impact above replaces the "
+            "assumed round trip. They are reported separately and NOT summed "
+            "here; combining them is a modelling decision for the protocol"),
+    }
 
 
 def _measurement(value) -> float | None:
@@ -355,6 +493,8 @@ def report() -> dict:
     per_asset: dict = {a: {"spread_bps": [], "round_trip_bps": []} for a in UNIVERSE}
     used = out_of_window = unconfirmed_window = 0
     no_candle = unconfirmed_candle = malformed = 0
+    fee_measured = fee_unavailable = fee_unconfirmed = 0
+    fee_tiers: dict = {}
     for line in OBSERVATIONS.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -371,6 +511,10 @@ def report() -> dict:
             unconfirmed_window += 1
             continue
         used += 1
+        status = _collect_fee(obs, fee_tiers)
+        fee_measured += status == "measured"
+        fee_unavailable += status == "unavailable"
+        fee_unconfirmed += status == "unconfirmed"
         for row in obs.get("assets", []):
             if "error" in row:
                 continue
@@ -410,6 +554,8 @@ def report() -> dict:
 
     return {
         "observations_used": used,
+        "fee_tier": _fee_summary(fee_measured, fee_unavailable, fee_unconfirmed,
+                                 fee_tiers),
         "observations_skipped_out_of_window": out_of_window,
         # Separate counters, not one bucket: "we sampled at the wrong hour" and
         # "we cannot tell when we sampled" call for different remedies.
