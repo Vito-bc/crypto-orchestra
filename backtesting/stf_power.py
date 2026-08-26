@@ -107,10 +107,15 @@ GATE_MIN_TRADES = 30
 GATE_MIN_CLUSTERS = 5
 GATE_MIN_YEARS = 3.0
 GATE_MIN_PF = 1.30
-# Reported, NOT gated: leave-one-cluster-out (invalid at 5-7 clusters),
-# asset concentration (measures universe correlation), drawdown (needs a
-# calendar equity curve this simulation does not produce).
-DIAGNOSTIC_ONLY = ("leave_one_cluster_out", "asset_concentration", "max_drawdown")
+# Computed and reported, but NOT gated: leave-one-cluster-out (invalid at 5-7
+# clusters) and asset concentration (measures universe correlation).
+DIAGNOSTIC_ONLY = ("leave_one_cluster_out", "asset_concentration")
+
+# NOT COMPUTED AT ALL — a different category, and the distinction matters. A
+# quantity listed here has no number anywhere in the artifact, so a reader
+# cannot mistake one for a weak result: drawdown needs a calendar equity curve
+# with unrealized P&L, which this simulation does not produce.
+NOT_ASSESSED = ("max_drawdown",)
 
 
 class PowerError(RuntimeError):
@@ -331,7 +336,18 @@ def build_study() -> dict:
             "min_pf": GATE_MIN_PF,
             "expectancy_above_zero": True,
         },
+        # Two different statuses, kept apart on purpose. Listing drawdown
+        # among the diagnostics implied a number existed somewhere and had
+        # merely been demoted; it does not exist.
+        "computed_but_not_gated": {
+            "quantities": list(DIAGNOSTIC_ONLY),
+            "leave_one_cluster_out": ("computed and reported; invalid as a gate "
+                                      "at 5-7 clusters"),
+            "asset_concentration": ("computed and reported; measures universe "
+                                    "correlation, not skill"),
+        },
         "not_assessed": {
+            "quantities": list(NOT_ASSESSED),
             "max_drawdown": ("the protocol measures sleeve drawdown in calendar "
                              "time including unrealized P&L. This simulation "
                              "produces closed trades in an artificial order, "
@@ -344,10 +360,7 @@ def build_study() -> dict:
             "where_the_limit_is_evaluated": ("on the calendar sleeve equity "
                                              "curve of a real forward trial, "
                                              "never in this study"),
-            "leave_one_cluster_out": "reported as a diagnostic, not a gate",
-            "asset_concentration": "reported as a diagnostic, not a gate",
         },
-        "diagnostics_are_not_gates": list(DIAGNOSTIC_ONLY),
         "null_world_no_edge": {"cells": null_cells, "summary": _summary(null_cells)},
         "alternative_world_with_edge": {"cells": alt_cells,
                                         "summary": _summary(alt_cells)},
