@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -431,6 +432,126 @@ def test_the_operational_log_is_separate_from_the_observations() -> None:
     assert "stf_cost_probe_runs.log" in script
     assert "stf_cost_probe.jsonl" not in _runner_commands().__str__()
     assert cp.OBSERVATIONS.name == "stf_cost_probe.jsonl"
+
+
+# ── The schedule ─────────────────────────────────────────────────────────────
+
+def _register_script() -> str:
+    root = Path(cp.__file__).resolve().parents[1]
+    return (root / "scripts"
+            / "register_stf_cost_probe_task.ps1").read_text(encoding="utf-8")
+
+
+def _register_commands() -> str:
+    """
+    Executable lines only.
+
+    Both comment forms are stripped: the leading <# ... #> block explains the
+    defect this script exists to fix and quotes the offending code verbatim, so
+    scanning the raw text would flag the explanation.
+    """
+    script = _register_script()
+    script = script[script.index("#>") + 2:] if "#>" in script else script
+    return " ".join(line.strip() for line in script.splitlines()
+                    if line.strip() and not line.strip().startswith("#"))
+
+
+def test_the_schedule_is_never_pinned_to_a_local_wall_clock_time() -> None:
+    """
+    `-At "20:05"` looks like a local-time rule and is not one: Task Scheduler
+    stamps the boundary with the offset in force AT REGISTRATION, and an
+    offset-bearing StartBoundary is an absolute instant. Registering the same
+    script in winter would therefore have pinned 01:05 UTC instead of 00:05 —
+    the sampling time would depend on the season someone happened to run it in.
+    """
+    assert not re.search(r'-At\s+["\']\d{1,2}:\d{2}', _register_commands()), (
+        "the trigger is pinned to a local wall-clock string")
+
+
+def test_the_schedule_is_computed_from_utc() -> None:
+    commands = _register_commands()
+    assert "[DateTime]::UtcNow" in commands
+    assert "DateTimeKind]::Utc" in commands
+    # Get-Date returns local time with no kind; that is how the defect entered.
+    assert "Get-Date" not in commands
+
+
+def test_the_registration_verifies_the_instant_it_stored() -> None:
+    """
+    The spelling is not ours to control — the service restates the boundary
+    with the machine's own offset — so the script parses it back to UTC and
+    compares. That check is what would have caught the seasonal defect.
+    """
+    commands = _register_commands()
+    assert "ToUniversalTime()" in commands
+    assert "throw" in commands
+
+
+def test_the_scheduled_instant_lands_inside_the_execution_window() -> None:
+    """
+    The one number that must agree with the probe. If the window were ever
+    narrowed below the scheduled minute, every future sample would be refused
+    and the log would fill with exit code 2.
+    """
+    script = _register_script()
+    hour = int(re.search(r"\$TargetUtcHour\s*=\s*(\d+)", script).group(1))
+    minute = int(re.search(r"\$TargetUtcMinute\s*=\s*(\d+)", script).group(1))
+
+    minute_of_day = hour * 60 + minute
+    assert 0 <= minute_of_day <= cp.EXECUTION_WINDOW_MINUTES, (
+        f"scheduled at minute {minute_of_day} of the UTC day, outside the "
+        f"{cp.EXECUTION_WINDOW_MINUTES}-minute window")
+    # Not at the very edge either: retries are ten minutes apart, and all three
+    # attempts have to land inside the window.
+    assert minute_of_day + 20 <= cp.EXECUTION_WINDOW_MINUTES, (
+        "no room for two retries before the window closes")
+
+
+def test_a_missed_day_is_not_made_up_later() -> None:
+    """StartWhenAvailable would run the task late — at the wrong hour."""
+    assert "$settings.StartWhenAvailable = $false" in _register_script()
+
+
+def test_a_per_asset_failure_does_not_fail_the_run(tmp_path, monkeypatch) -> None:
+    """
+    The retry policy depends on this. One unreachable asset must still exit 0,
+    because retrying would re-sample the assets that already succeeded and give
+    those duplicates extra weight in the percentiles. The day is recorded as
+    partial, and the per-asset coverage contract refuses to call it complete.
+    """
+    import datetime as dt
+
+    class InWindow(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 8, 21, 0, 10, tzinfo=dt.timezone.utc)
+
+    monkeypatch.setattr(cp, "datetime", InWindow)
+    monkeypatch.delenv(cp.FEE_KEY_FILE_ENV, raising=False)
+    monkeypatch.setattr(cp, "OBSERVATIONS", tmp_path / "probe.jsonl")
+
+    def _book(product_id, limit):
+        if product_id == "ZEC-USD":
+            raise RuntimeError("upstream unavailable")
+        return {"bids": _book_side([(100.0, 50.0)]),
+                "asks": _book_side([(100.5, 50.0)])}
+
+    public = SimpleNamespace(
+        get_public_product_book=_book,
+        get_public_candles=lambda product_id, start, end, granularity: (
+            SimpleNamespace(candles=[SimpleNamespace(start=start)])))
+
+    with patch("coinbase.rest.RESTClient", side_effect=lambda **kw: public):
+        obs = cp.observe()
+
+    failed = [r for r in obs["assets"] if "error" in r]
+    assert [r["asset"] for r in failed] == ["ZEC-USD"]
+    assert len(obs["assets"]) == len(cp.UNIVERSE), "the other assets still sampled"
+
+    # And the partial day counts for the assets that did succeed, for nobody else.
+    days = cp.report()["readiness"]["usable_days_per_asset"]
+    assert days["ZEC-USD"] == 0
+    assert days["BTC-USD"] == 1
 
 
 # ── Sampling window ──────────────────────────────────────────────────────────

@@ -2,10 +2,15 @@
 REM One STF execution-cost observation. Read-only: sweeps the PUBLIC order book
 REM and places no orders.
 REM
-REM Scheduled daily at 20:05 America/New_York, which is 00:05 UTC on eastern
-REM daylight time and 01:05 UTC on standard time. Both fall inside the
-REM protocol's 90-minute execution window, and Task Scheduler follows the
-REM local-time change on its own.
+REM Scheduled daily at 00:05 UTC -- five minutes into the protocol's 90-minute
+REM execution window, year round. That instant displays as 20:05 Eastern
+REM daylight time and 19:05 Eastern standard time; the schedule is anchored to
+REM the UTC instant, not to either wall-clock reading. See
+REM scripts\register_stf_cost_probe_task.ps1 for why that distinction matters.
+REM
+REM The task runs as the logged-in user with no stored password, so a day is
+REM lost if the machine is asleep or the user has signed out. A locked screen
+REM is fine. A lost day stays lost: see --force below.
 REM
 REM Deliberately NOT here:
 REM   --force   a sample taken outside the window describes a different market.
