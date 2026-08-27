@@ -76,6 +76,23 @@ worth a password on disk), but it means a day is lost unless:
 
 Expect the calendar to run longer than the fourteen days of coverage require.
 That is honest sampling, not a fault to work around.
+
+OBSERVED, 2026-08-27: StartWhenAvailable IS NOT A GUARANTEE
+-----------------------------------------------------------
+The first scheduled run did not happen at the trigger. The machine was not
+awake at 00:05 UTC, and Windows launched the elapsed daily trigger on resume
+instead -- LastRunTime 00:01 local, 04:01 UTC, three hours and fifty-six
+minutes late -- with StartWhenAvailable unset, which means false.
+
+Nothing here can fix that, and this script does not pretend to. What held is
+the probe itself: it recomputed the window, refused, wrote the reason and
+exited 2, so no out-of-hour reading entered the sample. The scheduler is
+best-effort; the instrument is the guard. That is why the window check lives in
+the probe and not in this file, and why --force is absent from the runner.
+
+A refused late run also trips RestartOnFailure, so expect up to three refusals
+in the operational log for one missed day. They record the miss; they cannot
+record data.
 #>
 
 $ErrorActionPreference = "Stop"
