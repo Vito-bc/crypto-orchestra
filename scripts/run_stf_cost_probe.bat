@@ -8,9 +8,16 @@ REM daylight time and 19:05 Eastern standard time; the schedule is anchored to
 REM the UTC instant, not to either wall-clock reading. See
 REM scripts\register_stf_cost_probe_task.ps1 for why that distinction matters.
 REM
-REM The task runs as the logged-in user with no stored password, so a day is
-REM lost if the machine is asleep or the user has signed out. A locked screen
-REM is fine. A lost day stays lost: see --force below.
+REM The task runs as the logged-in user with no stored password. WakeToRun is
+REM armed, so ordinary standby is not a miss -- Windows wakes the machine for
+REM the trigger and lets it sleep again afterwards. A day is still lost if the
+REM machine hibernated (an RTC timer cannot resume S4; on battery, modern
+REM standby hibernates once the standby budget runs out, so AC is recommended)
+REM or if the user signed out. A locked screen is fine.
+REM
+REM A lost day stays lost: see --force below. Three attempts are made, at
+REM +0/+10/+20 minutes, all inside the 90-minute window; they are redundancy
+REM for ONE observation, never extra observations.
 REM
 REM Deliberately NOT here:
 REM   --force   a sample taken outside the window describes a different market.

@@ -512,6 +512,63 @@ def test_a_missed_day_is_not_made_up_later() -> None:
     assert "$settings.StartWhenAvailable = $false" in _register_script()
 
 
+def test_the_task_is_registered_to_wake_the_machine() -> None:
+    """
+    The observation was being lost to ordinary sleep, not to any fault of the
+    probe. Without -WakeToRun in the settings set, re-running this script
+    silently reverts the hardening on the live task.
+    """
+    assert "-WakeToRun" in _register_commands()
+
+
+def test_nothing_may_stop_the_probe_because_idle_ended() -> None:
+    """
+    StopOnIdleEnd is inert while RunOnlyIfIdle is false, but a wake-to-run
+    start happens precisely when the machine is idle, so the default is a
+    latent way to kill a run that has only just begun.
+    """
+    assert "-DontStopOnIdleEnd" in _register_commands()
+
+
+def test_waking_never_becomes_permission_to_sample_late() -> None:
+    """
+    The pairing that matters: wake FOR the trigger, never run an ELAPSED one.
+    If both were on, a resume hours later would launch the probe at the wrong
+    hour and rely entirely on the probe refusing itself.
+    """
+    commands = _register_commands()
+    assert "-WakeToRun" in commands
+    assert "$settings.StartWhenAvailable = $false" in commands
+    assert "$settings.StartWhenAvailable = $true" not in commands
+
+
+def test_the_registration_reports_both_wake_timer_rails() -> None:
+    """
+    WakeToRun is inert unless the ACTIVE power plan allows wake timers, and the
+    task runs -AllowStartIfOnBatteries, so the DC rail is not decoration: left
+    at Disable it thins the schedule every night the laptop is unplugged. An
+    earlier version checked AC only and said nothing about DC.
+    """
+    commands = _register_commands()
+    assert "Current AC Power Setting Index" in commands
+    assert "Current DC Power Setting Index" in commands
+    # Both rails go through the same warning loop rather than one being read
+    # for display and quietly dropped.
+    assert "foreach ($rail in $rails.Keys)" in commands
+
+
+def test_the_registration_reads_back_what_it_claims_to_have_set() -> None:
+    """
+    Settings are asserted against the REGISTERED task, not against the local
+    variables that were passed in — the two disagree whenever Task Scheduler
+    silently declines something.
+    """
+    commands = _register_commands()
+    assert "Get-ScheduledTask -TaskName" in commands
+    assert "if (-not $registered.Settings.WakeToRun) { throw" in commands
+    assert "$registered.Settings.StartWhenAvailable" in commands
+
+
 def test_a_per_asset_failure_does_not_fail_the_run(tmp_path, monkeypatch) -> None:
     """
     The retry policy depends on this. One unreachable asset must still exit 0,
