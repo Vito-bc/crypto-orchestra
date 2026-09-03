@@ -431,6 +431,62 @@ def dependency_fingerprint() -> dict:
     }
 
 
+def _marker_applies(marker: str) -> bool:
+    """
+    Evaluate the narrow subset of PEP 508 markers this runner accepts.
+
+    Deliberately not `packaging`: pulling a marker evaluator into the runtime
+    would add a dependency to the very closure this module exists to pin. Only
+    sys_platform equality is understood, which is the single form in use, and
+    anything else is REFUSED rather than guessed — a marker silently evaluated
+    wrong would skip a version check without saying so.
+    """
+    match = re.fullmatch(
+        r"""sys_platform\s*(==|!=)\s*['"]([A-Za-z0-9_]+)['"]""", marker.strip())
+    if match is None:
+        raise ProvenanceError(
+            f"unsupported dependency marker {marker!r}: this runner evaluates "
+            "only sys_platform equality and refuses rather than guessing")
+    return (sys.platform == match.group(2)) if match.group(1) == "==" \
+        else (sys.platform != match.group(2))
+
+
+def assert_declared_dependencies_installed() -> None:
+    """
+    Every declared pin that APPLIES on this platform must be installed exactly.
+
+    `environment` cannot carry the platform-conditional packages: it has to
+    compare equal between the Windows workstation that writes the artifacts and
+    the Linux runner that verifies them, and tzdata is in the closure of only
+    one of them. That exclusion left a hole — tzdata==0.0.0 installed on
+    Windows did not invalidate --verify-code, even though the declared pin says
+    2026.1. Cross-platform IDENTITY and this-machine CORRECTNESS are two
+    different questions; the manifest answers the first, this answers the
+    second, and it runs on both the verify and the write path.
+    """
+    import importlib.metadata as md
+
+    declared = dependency_fingerprint()
+    conditional = declared["platform_conditional"]
+    problems = []
+    for name, pinned in declared["packages"].items():
+        marker = conditional.get(name)
+        if marker is not None and not _marker_applies(marker):
+            continue  # not in this platform's closure; nothing to install
+        try:
+            installed = md.version(name)
+        except md.PackageNotFoundError:
+            problems.append(f"{name}: pinned {pinned}, NOT INSTALLED")
+            continue
+        if installed != pinned:
+            problems.append(f"{name}: pinned {pinned}, installed {installed}")
+    if problems:
+        raise ProvenanceError(
+            "declared result-determining pins do not match this environment:\n  "
+            + "\n  ".join(problems)
+            + "\nInstall the pinned requirements before trusting these numbers.")
+
+
 def provenance_fingerprint(paths: Optional[list[str]] = None) -> dict:
     """Authoritative content identity shared by every research artifact."""
     code = code_fingerprint(paths)
@@ -799,6 +855,11 @@ def verify_code_and_environment() -> bool:
     if not isinstance(committed, dict):
         raise ProvenanceError("manifest root must be a JSON object")
 
+    # Platform-conditional pins are absent from `environment` by design, so the
+    # field comparison below cannot see them. Check them against what is
+    # actually installed here before anything else is believed.
+    assert_declared_dependencies_installed()
+
     fresh = provenance_fingerprint()
     ok = True
     for field in ("code", "dependencies", "environment", "provenance_schema",
@@ -1144,6 +1205,7 @@ def write_artifacts(out_dir: Optional[Path] = None) -> tuple[Path, Path]:
     # publishing numbers from uncommitted code on an unregistered interpreter is
     # not.
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     assert_code_is_committed()
     out_dir = out_dir or ARTIFACT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)

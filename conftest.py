@@ -29,12 +29,21 @@ Two guarantees:
 
      A CHILD PROCESS gets a fresh interpreter without these patches, so it is
      outside the socket guard entirely and process creation is denied by
-     default too. That guard ENUMERATES CPython's process-entry points —
-     subprocess, os.system/popen, the os.spawn* and os.exec* families,
-     os.posix_spawn*, and multiprocessing.Process.start. Enumeration is weaker
-     than the socket layer: it can go stale if CPython grows a new entry point,
-     and `test_no_unguarded_process_entry_point_exists` in
-     tests/test_test_bootstrap.py exists to fail when that happens.
+     default too. Two mechanisms:
+
+       * subprocess.Popen.__init__ is patched ON THE CLASS, so every subclass
+         inherits the guard. This is what covers asyncio: its
+         create_subprocess_exec/_shell go through asyncio.windows_utils.Popen,
+         a subclass that captured the ORIGINAL class at import time and sailed
+         straight past the earlier guard, which only rebound the module
+         attribute. Patching the class needs no list of the libraries that
+         wrap subprocess, present or future.
+       * the os-level entry points are ENUMERATED: os.system/popen, the
+         os.spawn*, os.exec* and os.posix_spawn* families, os.startfile, and
+         multiprocessing.Process.start. Enumeration is the weaker half — it
+         can go stale if CPython grows a new one — so
+         `test_no_unguarded_process_entry_point_exists` in
+         tests/test_test_bootstrap.py fails when that happens.
 
      os.fork is deliberately NOT guarded. A fork keeps the patched interpreter
      image, so the child is still inside the socket guard — it is not an
@@ -114,7 +123,14 @@ _real_create_connection = socket.create_connection
 # a stronger claim than the code made good on.
 _real_sendto = socket.socket.sendto
 _real_sendmsg = getattr(socket.socket, "sendmsg", None)
-_real_popen = subprocess.Popen
+# The CLASS's __init__, not the module attribute. Rebinding subprocess.Popen
+# only redirects callers that look the name up at call time; a SUBCLASS created
+# at import time captured the original class as its base and calls straight
+# through to it. asyncio.windows_utils.Popen is exactly that, which is how
+# asyncio.create_subprocess_exec/_shell escaped a guard that looked complete.
+# Patching __init__ on the class itself is inherited by every subclass, present
+# or future, so it needs no enumeration of the libraries that wrap subprocess.
+_real_popen_init = subprocess.Popen.__init__
 _real_os_system = os.system
 _real_os_popen = os.popen
 _real_mp_start = multiprocessing.process.BaseProcess.start
@@ -135,6 +151,10 @@ _OS_PROCESS_ENTRY_POINTS = (
     ("posix_spawn", 0), ("posix_spawnp", 0),
     ("execv", 0), ("execve", 0), ("execvp", 0), ("execvpe", 0),
     ("execl", 0), ("execle", 0), ("execlp", 0), ("execlpe", 0),
+    # Windows-only ShellExecute wrapper. It starts no interpreter itself, but
+    # it hands an arbitrary path to the shell to open however it likes, which
+    # is the same escape by a longer route.
+    ("startfile", 0),
 )
 _real_os_process_entries: dict[str, object] = {
     name: getattr(os, name) for name, _ in _OS_PROCESS_ENTRY_POINTS
@@ -290,12 +310,19 @@ def _authorised():
         _authorised_depth -= 1
 
 
-def _guard_popen(args, *popen_args, **kwargs):
-    """Refuse process escape unless the individual test names the executable."""
+def _guard_popen_init(self, args, *popen_args, **kwargs):
+    """
+    Refuse process escape unless the individual test names the executable.
+
+    Installed on subprocess.Popen.__init__ so that SUBCLASSES are covered too:
+    asyncio.windows_utils.Popen subclasses the original class and would sail
+    past a guard that only rebound the subprocess.Popen name.
+    """
     if kwargs.get("shell"):
         raise NetworkAccessBlocked(
             "Blocked shell subprocess. Tests may opt in only to an explicitly "
-            "named executable, never to shell=True."
+            "named executable, never to shell=True. This covers "
+            "asyncio.create_subprocess_shell, which is the same call underneath."
         )
     executable = kwargs.get("executable")
     if executable is None:
@@ -305,7 +332,7 @@ def _guard_popen(args, *popen_args, **kwargs):
             executable = args
     _require_process_permission(executable, "subprocess")
     with _authorised():
-        return _real_popen(args, *popen_args, **kwargs)
+        return _real_popen_init(self, args, *popen_args, **kwargs)
 
 
 def _guard_shell_process(*args, **kwargs):
@@ -354,7 +381,7 @@ def pytest_configure(config: pytest.Config) -> None:
     socket.socket.sendto = _guard_sendto
     if _real_sendmsg is not None:
         socket.socket.sendmsg = _guard_sendmsg
-    subprocess.Popen = _guard_popen
+    subprocess.Popen.__init__ = _guard_popen_init
     os.system = _guard_shell_process
     os.popen = _guard_shell_process
     for _name, _index in _OS_PROCESS_ENTRY_POINTS:
@@ -409,7 +436,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     socket.socket.sendto = _real_sendto
     if _real_sendmsg is not None:
         socket.socket.sendmsg = _real_sendmsg
-    subprocess.Popen = _real_popen
+    subprocess.Popen.__init__ = _real_popen_init
     os.system = _real_os_system
     os.popen = _real_os_popen
     for _name, _real in _real_os_process_entries.items():

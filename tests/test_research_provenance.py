@@ -434,6 +434,91 @@ def test_the_recorded_closure_is_the_real_one() -> None:
     assert set(_RESULT_DETERMINING_PACKAGES) == declared - conditional
 
 
+def test_a_platform_conditional_pin_is_still_checked_against_what_is_installed(
+        monkeypatch) -> None:
+    """
+    Keeping tzdata out of `environment` was necessary and left a hole.
+
+    `environment` must compare equal between the Windows workstation that
+    writes the artifacts and the Linux runner that verifies them, so a
+    package that exists in only one of those closures cannot live there. But
+    excluding it from the recorded identity also excluded it from every check:
+    tzdata==0.0.0 installed on Windows did NOT fail --verify-code while the
+    declared pin said 2026.1. Identity and correctness are separate questions,
+    and this is the one that answers the second.
+    """
+    import importlib.metadata as md
+
+    import backtesting.research_runner as rr
+
+    conditional = rr.dependency_fingerprint()["platform_conditional"]
+    if not conditional:
+        pytest.skip("no platform-conditional pins declared")
+    name = sorted(conditional)[0]
+    if not rr._marker_applies(conditional[name]):
+        pytest.skip(f"{name} is not in this platform's closure")
+
+    real_version = md.version
+
+    def wrong(package):
+        return "0.0.0" if package == name else real_version(package)
+
+    monkeypatch.setattr(md, "version", wrong)
+    with pytest.raises(rr.ProvenanceError, match=f"{name}: pinned"):
+        rr.assert_declared_dependencies_installed()
+
+
+def test_an_uninstalled_applicable_pin_fails_closed(monkeypatch) -> None:
+    """A missing package must be an error, never a silently skipped check."""
+    import importlib.metadata as md
+
+    import backtesting.research_runner as rr
+
+    real_version = md.version
+
+    def absent(package):
+        if package == "numpy":
+            raise md.PackageNotFoundError(package)
+        return real_version(package)
+
+    monkeypatch.setattr(md, "version", absent)
+    with pytest.raises(rr.ProvenanceError, match="numpy: pinned .* NOT INSTALLED"):
+        rr.assert_declared_dependencies_installed()
+
+
+def test_an_unrecognised_marker_is_refused_rather_than_guessed() -> None:
+    """
+    The evaluator understands one marker form. Anything else must raise: a
+    marker guessed wrong would skip a version check without saying so, which
+    is exactly the failure this check exists to remove.
+    """
+    import backtesting.research_runner as rr
+
+    assert rr._marker_applies('sys_platform == "win32"') is (sys.platform == "win32")
+    assert rr._marker_applies('sys_platform != "win32"') is (sys.platform != "win32")
+    for unsupported in ('python_version >= "3.13"', 'extra == "test"',
+                        'sys_platform == "win32" and python_version > "3"', ""):
+        with pytest.raises(rr.ProvenanceError, match="unsupported dependency marker"):
+            rr._marker_applies(unsupported)
+
+
+def test_the_installed_check_runs_on_both_the_verify_and_write_paths() -> None:
+    """
+    A check nobody calls is decoration. Both entry points must invoke it —
+    verify so CI catches a bad environment, write so bad numbers are never
+    published in the first place.
+    """
+    import inspect
+
+    import backtesting.research_runner as rr
+
+    for fn in (rr.verify_code_and_environment, rr.write_artifacts):
+        assert "assert_declared_dependencies_installed" in inspect.getsource(fn), (
+            f"{fn.__name__} does not check the declared pins against this "
+            "environment"
+        )
+
+
 @pytest.mark.allow_subprocess("git", "git.exe", "python", "python.exe")
 def test_verify_code_survives_rewritten_shallow_and_history_free_checkout(
         tmp_path) -> None:

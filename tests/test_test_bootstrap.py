@@ -356,8 +356,8 @@ def test_no_unguarded_process_entry_point_exists(bootstrap) -> None:
     known = {name for name, _ in bootstrap._OS_PROCESS_ENTRY_POINTS}
     present = {
         name for name in dir(os)
-        if name.startswith(("spawn", "exec", "posix_spawn")) and callable(
-            getattr(os, name, None))
+        if name.startswith(("spawn", "exec", "posix_spawn", "startfile"))
+        and callable(getattr(os, name, None))
     }
     unguarded = present - known - {"execle"} - {"fork", "forkpty"}
     assert not unguarded, (
@@ -365,6 +365,110 @@ def test_no_unguarded_process_entry_point_exists(bootstrap) -> None:
         "to _OS_PROCESS_ENTRY_POINTS with the index of the executable argument, "
         "or document why they cannot start a fresh interpreter."
     )
+
+
+@pytest.mark.skipif(not hasattr(os, "startfile"), reason="Windows-only API")
+def test_os_startfile_cannot_hand_a_path_to_the_shell(bootstrap, tmp_path) -> None:
+    """
+    startfile starts no interpreter itself, but it asks the shell to open an
+    arbitrary path however it likes — the same escape by a longer route. It was
+    missed by the first pass because it does not share the spawn/exec prefix.
+    """
+    target = tmp_path / "harmless.txt"
+    target.write_text("x", encoding="utf-8")
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked os.startfile"):
+        os.startfile(str(target))
+
+
+@pytest.mark.allow_loopback
+def test_asyncio_subprocess_cannot_escape_through_a_popen_subclass(
+        bootstrap, tmp_path) -> None:
+    """
+    The subclass hole, pinned.
+
+    asyncio.windows_utils.Popen subclasses subprocess.Popen and captured the
+    ORIGINAL class at import time, so rebinding the subprocess.Popen NAME left
+    asyncio.create_subprocess_exec free to start a child. Verified before the
+    fix: it ran, and the child wrote its marker file.
+
+    allow_loopback is required only so the proactor event loop can build its
+    own self-pipe; without it the loop dies for an unrelated reason and this
+    test would pass without ever exercising the guard.
+    """
+    import asyncio
+
+    marker = tmp_path / "child_ran.txt"
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys\npathlib.Path(sys.argv[1]).write_text('escaped')\n",
+        encoding="utf-8")
+
+    async def spawn():
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, str(script), str(marker))
+        await process.wait()
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked subprocess"):
+        asyncio.run(spawn())
+    assert not marker.exists(), "the child ran despite the guard"
+
+
+@pytest.mark.allow_loopback
+def test_asyncio_shell_subprocess_is_denied(bootstrap) -> None:
+    """create_subprocess_shell is subprocess(shell=True) underneath."""
+    import asyncio
+
+    async def spawn():
+        process = await asyncio.create_subprocess_shell("echo escape")
+        await process.wait()
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell subprocess"):
+        asyncio.run(spawn())
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+@pytest.mark.allow_loopback
+def test_a_marked_test_may_use_asyncio_subprocess(bootstrap, tmp_path) -> None:
+    """The class-level guard must not break a legitimately authorised child."""
+    import asyncio
+
+    marker = tmp_path / "ran.txt"
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys\npathlib.Path(sys.argv[1]).write_text('ok')\n",
+        encoding="utf-8")
+
+    async def spawn():
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, str(script), str(marker))
+        await process.wait()
+        return process.returncode
+
+    assert asyncio.run(spawn()) == 0
+    assert marker.read_text() == "ok"
+
+
+def test_the_guard_is_installed_on_the_class_not_the_module_attribute() -> None:
+    """
+    Rebinding the name is what let the subclass through, so the shape of the
+    fix is itself worth pinning: a future refactor back to `subprocess.Popen =`
+    would silently reopen asyncio.
+    """
+    import subprocess
+
+    assert subprocess.Popen.__init__.__name__ == "_guard_popen_init"
+    if sys.platform == "win32":
+        from asyncio import windows_utils
+
+        # asyncio's Popen defines its OWN __init__ and delegates upward, so the
+        # guard is reached through the MRO rather than by inheriting the slot
+        # directly. What matters is that the base is the class we patched.
+        assert issubclass(windows_utils.Popen, subprocess.Popen)
+        assert subprocess.Popen.__init__ in (
+            base.__dict__.get("__init__")
+            for base in windows_utils.Popen.__mro__
+            if "__init__" in base.__dict__
+        )
 
 
 def test_every_guarded_entry_point_was_actually_patched(bootstrap) -> None:
@@ -383,7 +487,7 @@ def test_real_socket_functions_are_kept_for_restoration(bootstrap) -> None:
     for name in ("_real_connect", "_real_connect_ex", "_real_getaddrinfo",
                  "_real_gethostbyname", "_real_gethostbyname_ex",
                  "_real_gethostbyaddr", "_real_getnameinfo",
-                 "_real_create_connection", "_real_sendto", "_real_popen",
+                 "_real_create_connection", "_real_sendto", "_real_popen_init",
                  "_real_mp_start",
                  "_real_os_system", "_real_os_popen"):
         assert getattr(bootstrap, name) is not None
