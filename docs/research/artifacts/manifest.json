@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "5db3db42c5428eed8c11afab07903b718c3297df9f399873cba1e4814564defa",
+    "code_sha256": "56ecd769051793f0eafa899099654a201e0ca60e3146d4958189db699d031602",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -16,7 +16,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "bd8eafb1ca35e3f2c73f189cc45a84c7a587b5863c161ee29f12b94e488c3508"
+        "sha256": "f41a12d87e55809d697e12dba09cb33dd72c4d2ac973a17159f0d2da479ae1b0"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -28,7 +28,7 @@
       }
     ]
   },
-  "code_commit": "5494af4dff430b326bd9bf6316c00f636e7d96d1",
+  "code_commit": "12561497f0f091afe125d963aca5cd5cdd6dd970",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
@@ -134,20 +134,28 @@
   "config_id": "2026-08-warmup-semantics.v1",
   "dependencies": {
     "file": "requirements.txt",
-    "hash_scheme": "declared-research-requirements-v1",
+    "hash_scheme": "declared-research-closure-v1",
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
-      "ta": "0.11.0"
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
+      "ta": "0.11.0",
+      "tzdata": "2026.1"
     },
-    "sha256": "206d855465b2a05eea4d36386f390cb01214bee55d7765c7e2f51482b0bc456b"
+    "platform_conditional": {
+      "tzdata": "sys_platform == \"win32\""
+    },
+    "sha256": "448257628af731772233ec10abf7653071d6139ed3704c53b159b4d9aa937858"
   },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
       "ta": "0.11.0"
     },
     "python": "3.13.5"
@@ -363,5 +371,5 @@
     }
   ],
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "804cb2b5c89a1336788ca0be42fc001d7d8facb6bd79b8aa9ab7e0afab56c1b0"
+  "provenance_sha256": "b7f207a4a41f9f1861dc60d111a46ffcb7079f540fc91d5c21fb427a368d5fcb"
 }

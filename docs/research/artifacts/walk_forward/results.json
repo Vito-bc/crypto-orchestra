@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "173249bae6e34173e7d232d082b569a6187818243154872a17db5d767c1faa1f",
+    "code_sha256": "135aff6a572d3184c2e8d8d752c231fcce13c7c063b9e9a5d25b202975a1121a",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -8,7 +8,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "bd8eafb1ca35e3f2c73f189cc45a84c7a587b5863c161ee29f12b94e488c3508"
+        "sha256": "f41a12d87e55809d697e12dba09cb33dd72c4d2ac973a17159f0d2da479ae1b0"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -26,20 +26,28 @@
   },
   "dependencies": {
     "file": "requirements.txt",
-    "hash_scheme": "declared-research-requirements-v1",
+    "hash_scheme": "declared-research-closure-v1",
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
-      "ta": "0.11.0"
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
+      "ta": "0.11.0",
+      "tzdata": "2026.1"
     },
-    "sha256": "206d855465b2a05eea4d36386f390cb01214bee55d7765c7e2f51482b0bc456b"
+    "platform_conditional": {
+      "tzdata": "sys_platform == \"win32\""
+    },
+    "sha256": "448257628af731772233ec10abf7653071d6139ed3704c53b159b4d9aa937858"
   },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
       "ta": "0.11.0"
     },
     "python": "3.13.5"
@@ -169,7 +177,7 @@
     ]
   },
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "97c062e1bff78ae955a6e62ac2b63d7b8543d9ecfda979110b2fe5def0ee7807",
+  "provenance_sha256": "30728823f9fef73b196702fcfc20b550ff647310df78f6c2305eda78ddf72418",
   "rows": [
     {
       "asset": "BTC-USD",

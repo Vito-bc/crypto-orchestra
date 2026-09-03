@@ -5,11 +5,11 @@
   },
   "blinding": "prices are consumed exclusively by entry_exit_events(), which returns timestamps and labels; no P&L, profit factor, expectancy, win rate, asset ranking or parameter comparison is computed anywhere in this module",
   "code": {
-    "code_sha256": "974396b4a491ab0f61de95d0723098249ffa49cb19a1d9b86667e49f7ac1f1a2",
+    "code_sha256": "8fc47f854fd492b9c3392c67cb66ae22038dff992e2ef1985dfdb727232905cb",
     "files": [
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "bd8eafb1ca35e3f2c73f189cc45a84c7a587b5863c161ee29f12b94e488c3508"
+        "sha256": "f41a12d87e55809d697e12dba09cb33dd72c4d2ac973a17159f0d2da479ae1b0"
       },
       {
         "file": "backtesting/stf_feasibility.py",
@@ -134,20 +134,28 @@
   },
   "dependencies": {
     "file": "requirements.txt",
-    "hash_scheme": "declared-research-requirements-v1",
+    "hash_scheme": "declared-research-closure-v1",
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
-      "ta": "0.11.0"
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
+      "ta": "0.11.0",
+      "tzdata": "2026.1"
     },
-    "sha256": "206d855465b2a05eea4d36386f390cb01214bee55d7765c7e2f51482b0bc456b"
+    "platform_conditional": {
+      "tzdata": "sys_platform == \"win32\""
+    },
+    "sha256": "448257628af731772233ec10abf7653071d6139ed3704c53b159b4d9aa937858"
   },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
       "ta": "0.11.0"
     },
     "python": "3.13.5"
@@ -322,7 +330,7 @@
     }
   },
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "30ae6d9acb5e5c757546a5a1ce491ea004047874827a36864cade4a14ad50efa",
+  "provenance_sha256": "b5423b0c679221daa06d22d33b2426bb49af754cc782513d35d4df812af6eb2c",
   "purpose": "BLINDED feasibility audit \u2014 event rates, exposure structure and data quality only",
   "rule": {
     "direction": "long only",

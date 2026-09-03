@@ -441,7 +441,7 @@
     }
   },
   "calibrated_from": {
-    "audit_sha256": "fa545d54d91e640983ca5f38e921d0e159895094072942cb9752b2bd16ac00eb",
+    "audit_sha256": "4c22a5f629411a4aec04373a2fc1c6db6a7e2179b81b325ab34fc250af425375",
     "basis": "common-universe window (fixed four-asset portfolio)",
     "clusters_per_year": 1.42,
     "implied_pooled_trades_per_year": 13.8,
@@ -453,11 +453,11 @@
     "years": 4.92
   },
   "code": {
-    "code_sha256": "5e8d404f82a8e68a0739be167f4c9711822add8635fcd8c5f9ca419d8950b51a",
+    "code_sha256": "060b3a733d40099a9a815c570d65428bebafa1ebe68e36b30326945602cdf178",
     "files": [
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "bd8eafb1ca35e3f2c73f189cc45a84c7a587b5863c161ee29f12b94e488c3508"
+        "sha256": "f41a12d87e55809d697e12dba09cb33dd72c4d2ac973a17159f0d2da479ae1b0"
       },
       {
         "file": "backtesting/stf_power.py",
@@ -479,20 +479,28 @@
   },
   "dependencies": {
     "file": "requirements.txt",
-    "hash_scheme": "declared-research-requirements-v1",
+    "hash_scheme": "declared-research-closure-v1",
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
-      "ta": "0.11.0"
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
+      "ta": "0.11.0",
+      "tzdata": "2026.1"
     },
-    "sha256": "206d855465b2a05eea4d36386f390cb01214bee55d7765c7e2f51482b0bc456b"
+    "platform_conditional": {
+      "tzdata": "sys_platform == \"win32\""
+    },
+    "sha256": "448257628af731772233ec10abf7653071d6139ed3704c53b159b4d9aa937858"
   },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
       "ta": "0.11.0"
     },
     "python": "3.13.5"
@@ -968,7 +976,7 @@
     }
   },
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "12d4355a9bcba73041d536e1639aec0c554934569854d998b46a258e67d3fa2d",
+  "provenance_sha256": "4675bd1cee0b44ebcdfda2917bc56cfd21e4747eee4b8f67c829dfc232850161",
   "purpose": "power of the FINAL STF continuation gates under a declared payoff model \u2014 no historical strategy returns are used",
   "sizing": {
     "position_fraction_of_capital": 0.02,
