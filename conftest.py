@@ -17,20 +17,40 @@ Two guarantees:
   1. The suite runs on pinned, safe configuration regardless of the developer's
      local .env. Verified by running with an external DRY_RUN=false: the
      bootstrap still forces DRY_RUN=true.
-  2. No test can reach the network. Enforced at the socket layer — TCP connect,
-     DNS resolution and connectionless UDP sends alike — so it covers
+  2. No test reaches the network IN THIS INTERPRETER, and no test starts a new
+     one without saying so. Two guards, and they are not equally strong:
+
+     The socket layer is closed by construction. TCP connect, DNS resolution
+     and connectionless UDP sends are all patched, so it covers
      requests/urllib/httpx/anthropic/coinbase-advanced-py and any SDK that
-     hides its transport, rather than enumerating call sites. Loopback is also
+     hides its transport, rather than enumerating call sites. Loopback is
      denied unless the individual test carries the explicit `allow_loopback`
      marker; one local-socket test must not open localhost to the whole suite.
+
+     A CHILD PROCESS gets a fresh interpreter without these patches, so it is
+     outside the socket guard entirely and process creation is denied by
+     default too. That guard ENUMERATES CPython's process-entry points —
+     subprocess, os.system/popen, the os.spawn* and os.exec* families,
+     os.posix_spawn*, and multiprocessing.Process.start. Enumeration is weaker
+     than the socket layer: it can go stale if CPython grows a new entry point,
+     and `test_no_unguarded_process_entry_point_exists` in
+     tests/test_test_bootstrap.py exists to fail when that happens.
+
+     os.fork is deliberately NOT guarded. A fork keeps the patched interpreter
+     image, so the child is still inside the socket guard — it is not an
+     escape, and blocking it would break tooling for no gain. Only a FRESH
+     interpreter escapes, which is what the list above covers.
 """
 
 from __future__ import annotations
 
+import contextlib
+import multiprocessing.process
 import os
 import platform
 import socket
 import subprocess
+import sys
 import traceback
 from pathlib import Path
 
@@ -97,7 +117,36 @@ _real_sendmsg = getattr(socket.socket, "sendmsg", None)
 _real_popen = subprocess.Popen
 _real_os_system = os.system
 _real_os_popen = os.popen
+_real_mp_start = multiprocessing.process.BaseProcess.start
 _allowed_subprocesses: frozenset[str] = frozenset()
+
+# Every os-level way to start a FRESH interpreter, with the position of the
+# executable in the call's positional arguments. os.spawn* takes the mode
+# first, so the program is argument 1; os.exec* and os.posix_spawn* take the
+# program first. Absent names are skipped: the spawn*p/exec*p/posix_spawn
+# variants are POSIX-only and simply do not exist on Windows.
+#
+# NOT in this list, on purpose: os.fork (keeps the patched image — see the
+# module docstring) and _winapi/_posixsubprocess (private primitives reached
+# only THROUGH the entry points above, which are already guarded).
+_OS_PROCESS_ENTRY_POINTS = (
+    ("spawnv", 1), ("spawnve", 1), ("spawnvp", 1), ("spawnvpe", 1),
+    ("spawnl", 1), ("spawnle", 1), ("spawnlp", 1), ("spawnlpe", 1),
+    ("posix_spawn", 0), ("posix_spawnp", 0),
+    ("execv", 0), ("execve", 0), ("execvp", 0), ("execvpe", 0),
+    ("execl", 0), ("execle", 0), ("execlp", 0), ("execlpe", 0),
+)
+_real_os_process_entries: dict[str, object] = {
+    name: getattr(os, name) for name, _ in _OS_PROCESS_ENTRY_POINTS
+    if hasattr(os, name)
+}
+
+# subprocess.Popen reaches os.posix_spawn internally on POSIX, and
+# multiprocessing reaches the spawn family. Once the outer call has been
+# authorised, the inner one must not be re-checked against a basename it never
+# saw ("python3" vs the marker's "python") — that would fail the suite on Linux
+# while passing on Windows.
+_authorised_depth = 0
 
 # On Windows, platform.machine() may shell out to the built-in `ver` command on
 # its first call. Prime that standard-library cache before the process guard is
@@ -204,6 +253,43 @@ def _guard_getnameinfo(sockaddr, flags):
     raise _refuse(sockaddr, "reverse DNS getnameinfo")
 
 
+def _basename_of(executable) -> str:
+    """Lowercased file name of whatever a process API was handed, or ''."""
+    if executable is None:
+        return ""
+    try:
+        return Path(os.fsdecode(executable)).name.lower()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _require_process_permission(executable, how: str) -> None:
+    """One rule for every process-entry point, so they cannot disagree."""
+    if _authorised_depth:
+        return  # inner call of an already-approved outer one
+    name = _basename_of(executable)
+    if name not in _allowed_subprocesses:
+        site = "".join(traceback.format_stack()[-6:-1])
+        raise NetworkAccessBlocked(
+            f"Blocked {how} executable {name or executable!r}. A child process "
+            "runs a fresh interpreter with none of this file's patches, so it "
+            "is outside the socket guard; mark this test with allow_subprocess "
+            "and list only the executable basenames it needs.\n"
+            f"Attempted from:\n{site}"
+        )
+
+
+@contextlib.contextmanager
+def _authorised():
+    """Suppress re-checking while an approved call runs its own inner spawn."""
+    global _authorised_depth
+    _authorised_depth += 1
+    try:
+        yield
+    finally:
+        _authorised_depth -= 1
+
+
 def _guard_popen(args, *popen_args, **kwargs):
     """Refuse process escape unless the individual test names the executable."""
     if kwargs.get("shell"):
@@ -215,18 +301,11 @@ def _guard_popen(args, *popen_args, **kwargs):
     if executable is None:
         if isinstance(args, (list, tuple)) and args:
             executable = args[0]
-        elif isinstance(args, (str, os.PathLike)):
+        elif isinstance(args, (str, bytes, os.PathLike)):
             executable = args
-    name = Path(os.fspath(executable)).name.lower() if executable else ""
-    if name not in _allowed_subprocesses:
-        site = "".join(traceback.format_stack()[-6:-1])
-        raise NetworkAccessBlocked(
-            f"Blocked subprocess executable {name or executable!r}. "
-            "Subprocesses can bypass the socket guard; mark this test with "
-            "allow_subprocess and list only the executable basenames it needs.\n"
-            f"Attempted from:\n{site}"
-        )
-    return _real_popen(args, *popen_args, **kwargs)
+    _require_process_permission(executable, "subprocess")
+    with _authorised():
+        return _real_popen(args, *popen_args, **kwargs)
 
 
 def _guard_shell_process(*args, **kwargs):
@@ -235,6 +314,32 @@ def _guard_shell_process(*args, **kwargs):
         "Blocked shell process. Use subprocess with an explicit "
         "allow_subprocess marker; shell execution is never authorized in tests."
     )
+
+
+def _make_os_process_guard(name: str, index: int, real):
+    """Wrap one os.spawn*/exec*/posix_spawn* entry point with the shared rule."""
+    def guard(*args, **kwargs):
+        executable = args[index] if len(args) > index else None
+        _require_process_permission(executable, f"os.{name}")
+        with _authorised():
+            return real(*args, **kwargs)
+    guard.__name__ = f"_guard_os_{name}"
+    return guard
+
+
+def _guard_mp_start(self, *args, **kwargs):
+    """
+    multiprocessing never goes through subprocess.Popen.
+
+    On Windows the default start method is "spawn", which reaches
+    _winapi.CreateProcess directly and produces a fresh interpreter — a real
+    escape. "fork" would keep the patched image and is not one, but a single
+    rule here is simpler than a per-start-method exception, and no test uses
+    multiprocessing at all.
+    """
+    _require_process_permission(sys.executable, "multiprocessing.Process.start")
+    with _authorised():
+        return _real_mp_start(self, *args, **kwargs)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -252,6 +357,11 @@ def pytest_configure(config: pytest.Config) -> None:
     subprocess.Popen = _guard_popen
     os.system = _guard_shell_process
     os.popen = _guard_shell_process
+    for _name, _index in _OS_PROCESS_ENTRY_POINTS:
+        _real = _real_os_process_entries.get(_name)
+        if _real is not None:
+            setattr(os, _name, _make_os_process_guard(_name, _index, _real))
+    multiprocessing.process.BaseProcess.start = _guard_mp_start
     config.addinivalue_line(
         "markers",
         "allow_loopback: this test alone may use localhost/127.0.0.1/::1; "
@@ -302,3 +412,6 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     subprocess.Popen = _real_popen
     os.system = _real_os_system
     os.popen = _real_os_popen
+    for _name, _real in _real_os_process_entries.items():
+        setattr(os, _name, _real)
+    multiprocessing.process.BaseProcess.start = _real_mp_start

@@ -371,8 +371,67 @@ def test_dependency_declaration_is_content_addressed() -> None:
 
     recorded = _load(MANIFEST)["dependencies"]
     assert dependency_fingerprint() == recorded
-    assert recorded["hash_scheme"] == "declared-research-requirements-v1"
-    assert set(recorded["packages"]) == {"numpy", "pandas", "ta", "pyarrow"}
+    assert recorded["hash_scheme"] == "declared-research-closure-v1"
+    assert set(recorded["packages"]) == {
+        "numpy", "pandas", "ta", "pyarrow", "python-dateutil", "six", "tzdata"}
+    assert recorded["platform_conditional"] == {
+        "tzdata": 'sys_platform == "win32"'}
+
+
+def test_the_recorded_closure_is_the_real_one() -> None:
+    """
+    The declared set must BE the computational closure, not a hand-kept list.
+
+    Pinning only numpy/pandas/ta/pyarrow left python-dateutil, six and tzdata
+    resolved by whatever pip felt like, so a fresh install could compute
+    different numbers while --verify-code stayed green. If a future upgrade
+    adds a dependency underneath one of the roots, this fails and someone has
+    to pin it on purpose.
+    """
+    import importlib.metadata as md
+
+    Requirement = pytest.importorskip("packaging.requirements").Requirement
+    from backtesting.research_runner import _RESULT_DETERMINING_PACKAGES
+
+    roots = ("numpy", "pandas", "ta", "pyarrow")
+    closure: set[str] = set()
+
+    def walk(name: str) -> None:
+        key = name.lower().replace("_", "-")
+        if key in closure:
+            return
+        try:
+            dist = md.distribution(key)
+        except md.PackageNotFoundError:
+            return
+        closure.add(key)
+        for raw in dist.requires or []:
+            requirement = Requirement(raw)
+            # An unsatisfied marker means the package is NOT in this platform's
+            # closure; extras are optional and never installed by the pin file.
+            if requirement.marker and not requirement.marker.evaluate():
+                continue
+            walk(requirement.name)
+
+    for root in roots:
+        walk(root)
+
+    declared = set(_load(MANIFEST)["dependencies"]["packages"])
+    conditional = set(_load(MANIFEST)["dependencies"]["platform_conditional"])
+
+    unpinned = closure - declared
+    assert not unpinned, (
+        f"result-determining packages reached by {roots} but not pinned in "
+        f"requirements.txt: {sorted(unpinned)}"
+    )
+    # Anything declared but missing here must be explained by a marker that is
+    # false on this platform — otherwise the declaration has gone stale.
+    assert (declared - closure) <= conditional, (
+        f"declared but not in this platform's closure and not marked "
+        f"platform-conditional: {sorted(declared - closure - conditional)}"
+    )
+    # The environment side records only what every supported platform has.
+    assert set(_RESULT_DETERMINING_PACKAGES) == declared - conditional
 
 
 @pytest.mark.allow_subprocess("git", "git.exe", "python", "python.exe")

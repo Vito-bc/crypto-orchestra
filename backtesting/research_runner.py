@@ -253,7 +253,18 @@ _CODE_PATHS = [
 # patch release is therefore a deliberate re-registration, which is the same
 # rule every other result-determining dependency follows.
 _CANONICAL_PYTHON = "3.13.5"
-_RESULT_DETERMINING_PACKAGES = ("numpy", "pandas", "ta", "pyarrow")
+# The COMPUTATIONAL CLOSURE, not just the packages this code imports. numpy,
+# pandas, ta and pyarrow are the roots; python-dateutil and six are reached
+# underneath them and decide how timestamps parse, so a fresh install that
+# resolved them differently could move the numbers with nothing to notice.
+_RESULT_DETERMINING_PACKAGES = (
+    "numpy", "pandas", "ta", "pyarrow", "python-dateutil", "six",
+)
+# In the closure on one platform only, so its DECLARED pin is recorded while
+# its INSTALLED version is not: `environment` must compare equal between the
+# Windows workstation that writes the artifacts and the Linux runner that
+# verifies them, and tzdata exists in the closure of exactly one of them.
+_PLATFORM_CONDITIONAL_PACKAGES = ("tzdata",)
 _REQUIREMENTS_PATH = "requirements.txt"
 _PROVENANCE_SCHEMA = "research-content-provenance-v1"
 
@@ -368,19 +379,29 @@ def dependency_fingerprint() -> dict:
     environment_fingerprint().
     """
     path = _declared_file(_REQUIREMENTS_PATH)
-    wanted = {name.lower().replace("_", "-") for name in
-              _RESULT_DETERMINING_PACKAGES}
+
+    def _canon(name: str) -> str:
+        return name.lower().replace("_", "-")
+
+    wanted = {_canon(n) for n in
+              _RESULT_DETERMINING_PACKAGES + _PLATFORM_CONDITIONAL_PACKAGES}
     found: dict[str, str] = {}
+    markers: dict[str, str] = {}
     for numbered, original in enumerate(
             path.read_text(encoding="utf-8").splitlines(), start=1):
         line = original.split("#", 1)[0].strip()
         if not line or line.startswith("-r "):
             continue
-        name = re.split(r"[<>=!~;\s\[]", line, maxsplit=1)[0]
-        canonical = name.lower().replace("_", "-")
+        # A PEP 508 marker is part of the declaration, not noise: dropping
+        # `; sys_platform == "win32"` from tzdata would change what a Linux
+        # install resolves, so the marker text is hashed alongside the version.
+        requirement, _, marker = line.partition(";")
+        requirement, marker = requirement.strip(), marker.strip()
+        name = re.split(r"[<>=!~\s\[]", requirement, maxsplit=1)[0]
+        canonical = _canon(name)
         if canonical not in wanted:
             continue
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;#]+)", line)
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s#]+)", requirement)
         if match is None:
             raise ProvenanceError(
                 f"{_REQUIREMENTS_PATH}:{numbered}: result-determining "
@@ -389,17 +410,23 @@ def dependency_fingerprint() -> dict:
             raise ProvenanceError(
                 f"{_REQUIREMENTS_PATH}: duplicate pin for {canonical}")
         found[canonical] = match.group(2)
+        if marker:
+            markers[canonical] = marker
     missing = sorted(wanted - set(found))
     if missing:
         raise ProvenanceError(
             f"{_REQUIREMENTS_PATH}: missing result-determining pins: {missing}")
 
     packages = dict(sorted(found.items()))
-    canonical = json.dumps(packages, sort_keys=True, separators=(",", ":"))
+    conditional = dict(sorted(markers.items()))
+    identity = {"packages": packages, "platform_conditional": conditional}
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return {
         "file": _REQUIREMENTS_PATH,
-        "hash_scheme": "declared-research-requirements-v1",
+        "hash_scheme": "declared-research-closure-v1",
         "packages": packages,
+        # Declared here, absent from `environment`: see the constant's comment.
+        "platform_conditional": conditional,
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
 

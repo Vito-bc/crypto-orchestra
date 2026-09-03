@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -292,11 +293,97 @@ def test_the_block_names_where_it_came_from(bootstrap) -> None:
     assert "Attempted from" in msg
 
 
+@pytest.mark.parametrize("entry", ["spawnv", "spawnl", "spawnve"])
+def test_os_spawn_family_cannot_start_an_unmarked_child(bootstrap, entry) -> None:
+    """
+    os.spawn* reaches CreateProcess without ever touching subprocess.Popen.
+
+    This was a real hole: a review started a child interpreter through
+    os.spawnv with no marker, and it ran. The child has none of this file's
+    socket patches, so it could have reached the network freely.
+    """
+    exe = sys.executable
+    calls = {
+        "spawnv": lambda: os.spawnv(os.P_WAIT, exe, [exe, "-c", "pass"]),
+        "spawnl": lambda: os.spawnl(os.P_WAIT, exe, exe, "-c", "pass"),
+        "spawnve": lambda: os.spawnve(
+            os.P_WAIT, exe, [exe, "-c", "pass"], dict(os.environ)),
+    }
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked os.spawn"):
+        calls[entry]()
+
+
+def test_os_exec_family_cannot_replace_this_interpreter(bootstrap) -> None:
+    """exec* would hand the whole process to an unpatched image."""
+    exe = sys.executable
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked os.execv"):
+        os.execv(exe, [exe, "-c", "pass"])
+
+
+def test_multiprocessing_cannot_start_an_unmarked_child(bootstrap) -> None:
+    """multiprocessing's spawn method never goes through subprocess.Popen."""
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    process = ctx.Process(target=len, args=("x",))
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked multiprocessing"):
+        process.start()
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+def test_a_marked_test_may_use_os_spawn(bootstrap, tmp_path) -> None:
+    """The marker authorises the whole family, not only subprocess.Popen."""
+    marker = tmp_path / "ran.txt"
+    # A script file, not `-c`: os.spawnv applies its own Windows quoting and
+    # would mangle a code string containing spaces.
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys\npathlib.Path(sys.argv[1]).write_text('ok')\n",
+        encoding="utf-8")
+    exe = sys.executable
+    assert os.spawnv(os.P_WAIT, exe, [exe, str(script), str(marker)]) == 0
+    assert marker.read_text() == "ok", "the authorised child must really run"
+
+
+def test_no_unguarded_process_entry_point_exists(bootstrap) -> None:
+    """
+    The guard ENUMERATES entry points, so enumeration drift is the failure mode.
+
+    If CPython grows a new spawn/exec entry point, this fails and someone has
+    to decide about it deliberately. os.fork is excluded on purpose: a fork
+    keeps the patched image, so the child stays inside the socket guard.
+    """
+    known = {name for name, _ in bootstrap._OS_PROCESS_ENTRY_POINTS}
+    present = {
+        name for name in dir(os)
+        if name.startswith(("spawn", "exec", "posix_spawn")) and callable(
+            getattr(os, name, None))
+    }
+    unguarded = present - known - {"execle"} - {"fork", "forkpty"}
+    assert not unguarded, (
+        f"unguarded process-entry points in os: {sorted(unguarded)}. Add them "
+        "to _OS_PROCESS_ENTRY_POINTS with the index of the executable argument, "
+        "or document why they cannot start a fresh interpreter."
+    )
+
+
+def test_every_guarded_entry_point_was_actually_patched(bootstrap) -> None:
+    """A name in the table that never got wrapped would be silent dead weight."""
+    for name, _ in bootstrap._OS_PROCESS_ENTRY_POINTS:
+        if not hasattr(os, name):
+            continue  # POSIX-only variant, absent on this platform
+        assert getattr(os, name).__name__ == f"_guard_os_{name}", (
+            f"os.{name} is declared guarded but is not patched"
+        )
+    assert bootstrap._real_os_process_entries, "nothing was captured for restoration"
+
+
 def test_real_socket_functions_are_kept_for_restoration(bootstrap) -> None:
     """pytest_unconfigure must be able to put the interpreter back."""
     for name in ("_real_connect", "_real_connect_ex", "_real_getaddrinfo",
                  "_real_gethostbyname", "_real_gethostbyname_ex",
                  "_real_gethostbyaddr", "_real_getnameinfo",
                  "_real_create_connection", "_real_sendto", "_real_popen",
+                 "_real_mp_start",
                  "_real_os_system", "_real_os_popen"):
         assert getattr(bootstrap, name) is not None
