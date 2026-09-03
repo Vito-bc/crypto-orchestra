@@ -131,11 +131,17 @@ What is pinned:
 - **Interpreter:** Python 3.13.5 exactly. `write_artifacts` and both verify
   paths refuse any other version, because the manifest records the interpreter
   the numbers were actually computed on.
-- **Libraries:** `numpy`, `pandas`, `ta`, `pyarrow` are result-determining and
-  recorded in [`artifacts/manifest.json`](artifacts/manifest.json); changing one
-  invalidates verification loudly instead of quietly re-deriving the numbers.
+- **Libraries:** both the declared exact pins and the installed versions of
+  `numpy`, `pandas`, `ta`, `pyarrow` are result-determining and recorded in
+  [`artifacts/manifest.json`](artifacts/manifest.json); changing either side
+  invalidates verification before a replay can silently move the numbers.
 - **Code identity:** content-addressed by SHA-256 over the result-determining
-  files. `code_commit` is an informational label only.
+  files. The verifier compares the exact declared file list and every per-file
+  hash; missing, escaping and symlinked paths fail closed. `code_commit` is an
+  informational label only.
+- **Combined identity:** `provenance_sha256` binds the source aggregate,
+  dependency-pin hash and installed environment. It needs neither candles nor
+  Git history and is exercised in a rewritten shallow checkout by the tests.
 - **Input identity:** the window-scoped logical OHLCV hash (`ohlcv-logical-v1`,
   scope 2020-01-01 → 2026-07-12, both inclusive), so the recent tail the
   exchange keeps revising cannot break verification.

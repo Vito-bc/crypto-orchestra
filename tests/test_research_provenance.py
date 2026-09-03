@@ -11,7 +11,11 @@ read the committed artifact and assert the documented claims against it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +31,24 @@ def _load(path: Path) -> dict:
     if not path.exists():
         pytest.skip(f"{path.name} not generated in this checkout")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _audit_identity(path: Path) -> str:
+    """
+    Content identity of a frozen artifact consumed as an input by another one.
+
+    Computed here from the file rather than imported, so the test states the
+    contract instead of restating the implementation: if the producer changes
+    how it identifies its input, this must be updated deliberately.
+
+    read_text, not read_bytes: the repository is checked out with
+    core.autocrlf=true, so the same artifact is CRLF on Windows and LF on the
+    CI runner. Hashing raw bytes would make identity depend on the checkout
+    rather than on the content — the same reason sha256_source normalises line
+    endings for source files.
+    """
+    return hashlib.sha256(
+        path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
 
 
 def _utc(stamp: str):
@@ -89,6 +111,86 @@ def test_code_hashes_match_the_working_tree() -> None:
     assert _load(MANIFEST)["code"] == code_fingerprint()
 
 
+def test_all_registered_artifacts_share_the_strict_provenance_contract() -> None:
+    """Every result artifact records exact code, dependency and environment identity."""
+    from backtesting import stf_feasibility, stf_power, walk_forward
+    from backtesting.research_runner import provenance_fingerprint
+
+    registered = [
+        (MANIFEST, None),
+        (ARTIFACTS / "walk_forward" / "results.json", walk_forward._CODE_PATHS),
+        (ARTIFACTS / "stf_feasibility" / "audit.json", stf_feasibility._CODE_PATHS),
+        (ARTIFACTS / "stf_feasibility" / "power.json", stf_power._CODE_PATHS),
+    ]
+    for path, code_paths in registered:
+        recorded = _load(path)
+        current = provenance_fingerprint(code_paths)
+        for field in ("code", "dependencies", "environment", "provenance_schema",
+                      "provenance_sha256"):
+            assert recorded[field] == current[field], f"{path}: stale {field}"
+
+
+def test_the_power_study_pins_the_identity_of_the_audit_it_calibrates_from() -> None:
+    """
+    The power study's calibration pointer must name the audit that is on disk.
+
+    stf_power derives its entire sample structure from stf_feasibility's audit,
+    so the audit is an INPUT to it. `calibrated_from.audit_sha256` is what stops
+    a regenerated audit from silently moving the study while the study still
+    looks verified.
+
+    This is not hypothetical. The pointer went stale once: power.json was
+    written before the final audit.json, so `stf_power.py --verify` failed and
+    CI's research-verify job would have failed with it, while the whole pytest
+    suite stayed green. The provenance-contract test above cannot catch that —
+    it compares code, dependencies and environment, none of which involve the
+    audit. This one closes that gap.
+    """
+    import backtesting.stf_feasibility as fz
+    import backtesting.stf_power as pw
+
+    # The two modules must be talking about the same registered artifact, or
+    # the pointer would pin a file nothing else in the project regenerates.
+    assert pw.FEASIBILITY == fz.ARTIFACT
+
+    recorded = _load(pw.ARTIFACT)["calibrated_from"]["audit_sha256"]
+    assert recorded == _audit_identity(pw.FEASIBILITY), (
+        "power.json was calibrated from a different audit.json than the one "
+        "committed. Regenerate it: python backtesting/stf_power.py"
+    )
+
+
+def test_a_changed_audit_breaks_the_power_study_pointer(monkeypatch, tmp_path) -> None:
+    """
+    The pointer must fail on a change the calibration VALUES cannot see.
+
+    The stale-pointer incident changed only provenance metadata: every value
+    the study reads across — window, years, clusters per year, assets and
+    trades per cluster — was identical. So a test that compared those values
+    would have passed. Only a content hash of the whole artifact catches it.
+    """
+    import backtesting.stf_power as pw
+
+    tampered_path = tmp_path / "audit.json"
+    original = json.loads(pw.FEASIBILITY.read_text(encoding="utf-8"))
+
+    tampered = json.loads(json.dumps(original))
+    tampered["provenance_sha256"] = "0" * 64  # metadata only; no value moves
+    tampered_path.write_text(json.dumps(tampered, indent=2, sort_keys=True) + "\n",
+                             encoding="utf-8")
+    monkeypatch.setattr(pw, "FEASIBILITY", tampered_path)
+
+    structure = pw._structure()
+    recorded = _load(pw.ARTIFACT)["calibrated_from"]
+    assert structure["audit_sha256"] != recorded["audit_sha256"], (
+        "a rewritten audit must invalidate the calibration pointer"
+    )
+    # ...and prove the values alone would NOT have noticed.
+    for field in ("window", "years", "clusters_per_year",
+                  "unique_assets_per_cluster", "trades_per_asset_per_cluster"):
+        assert structure[field] == recorded[field], f"{field} moved; wrong premise"
+
+
 def test_code_hash_is_line_ending_independent(tmp_path) -> None:
     """
     The same source with CRLF and with LF must hash identically.
@@ -128,13 +230,56 @@ def test_changing_declared_research_code_invalidates_verification(monkeypatch) -
     """A source edit must be detected by content, with no git involved."""
     import backtesting.research_runner as rr
 
-    real = rr.code_fingerprint()
-    tampered = {
-        "code_sha256": "0" * 64,
-        "files": [{**real["files"][0], "sha256": "1" * 64}, *real["files"][1:]],
-    }
-    monkeypatch.setattr(rr, "code_fingerprint", lambda: tampered)
+    real = rr.provenance_fingerprint()
+    tampered = json.loads(json.dumps(real))
+    tampered["code"]["files"][0]["sha256"] = "1" * 64
+    monkeypatch.setattr(rr, "provenance_fingerprint", lambda: tampered)
     assert rr.verify_code_and_environment() is False
+
+
+def test_code_path_declarations_fail_closed(monkeypatch, tmp_path) -> None:
+    """Missing, escaping, aliased, duplicate and symlink inputs are never hashed."""
+    import backtesting.research_runner as rr
+
+    monkeypatch.setattr(rr, "ROOT", tmp_path)
+    (tmp_path / "ok.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    for unsafe in ("../outside.py", "/absolute.py", "./ok.py", "a//b.py", "."):
+        with pytest.raises(rr.ProvenanceError):
+            rr.code_fingerprint([unsafe])
+    with pytest.raises(rr.ProvenanceError, match="missing"):
+        rr.code_fingerprint(["missing.py"])
+    with pytest.raises(rr.ProvenanceError, match="duplicate"):
+        rr.code_fingerprint(["ok.py", "ok.py"])
+
+    link = tmp_path / "linked.py"
+    try:
+        link.symlink_to(tmp_path / "ok.py")
+    except OSError:
+        return  # Windows without Developer Mode; the CI/Linux assertion still runs.
+    with pytest.raises(rr.ProvenanceError, match="symlink"):
+        rr.code_fingerprint(["linked.py"])
+
+
+def test_malformed_recorded_provenance_fails_closed(monkeypatch, tmp_path) -> None:
+    """The verifier checks the exact structure, not only a copied aggregate hash."""
+    import backtesting.research_runner as rr
+
+    committed = _load(MANIFEST)
+    monkeypatch.setattr(rr, "ARTIFACT_DIR", tmp_path)
+    path = tmp_path / "manifest.json"
+
+    malformed = json.loads(json.dumps(committed))
+    malformed["code"]["files"] = []  # aggregate deliberately left untouched
+    path.write_text(json.dumps(malformed), encoding="utf-8")
+    assert rr.verify_code_and_environment() is False
+
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(rr.ProvenanceError, match="JSON object"):
+        rr.verify_code_and_environment()
+    path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(rr.ProvenanceError, match="malformed"):
+        rr.verify_code_and_environment()
 
 
 # ── The computational environment travels with the results ───────────────────
@@ -218,6 +363,94 @@ def test_pinned_requirements_match_the_recorded_environment() -> None:
             f"{name}: manifest says {version}, requirements.txt pins "
             f"{pinned.get(name)}"
         )
+
+
+def test_dependency_declaration_is_content_addressed() -> None:
+    """Changing a numerical lock pin invalidates identity even before installation."""
+    from backtesting.research_runner import dependency_fingerprint
+
+    recorded = _load(MANIFEST)["dependencies"]
+    assert dependency_fingerprint() == recorded
+    assert recorded["hash_scheme"] == "declared-research-requirements-v1"
+    assert set(recorded["packages"]) == {"numpy", "pandas", "ta", "pyarrow"}
+
+
+@pytest.mark.allow_subprocess("git", "git.exe", "python", "python.exe")
+def test_verify_code_survives_rewritten_shallow_and_history_free_checkout(
+        tmp_path) -> None:
+    """
+    Exercise the real CLI boundary in rewritten, shallow and history-free trees.
+
+    The positive cases need no candles. The same boundary must reject a source
+    edit, dependency-pin edit, missing source, and malformed recorded file list.
+    """
+    source = tmp_path / "source"
+    shallow = tmp_path / "shallow"
+    no_history = tmp_path / "no-history"
+    source.mkdir()
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, check=True,
+        capture_output=True,
+    ).stdout.decode().split("\x00")
+    for rel in (item for item in tracked if item):
+        src = ROOT / rel
+        if not src.is_file():
+            continue
+        dst = source / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+    def run(*args, cwd=source):
+        return subprocess.run(
+            list(args), cwd=cwd, check=True, capture_output=True, text=True,
+        )
+
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "integrity-test@example.invalid")
+    run("git", "config", "user.name", "Integrity Test")
+    run("git", "add", "-A")
+    run("git", "commit", "-q", "-m", "rewritten snapshot")
+    run("git", "clone", "-q", "--depth", "1", source.as_uri(), str(shallow))
+
+    cli = [sys.executable, "backtesting/research_runner.py", "--verify-code"]
+
+    def verify(cwd=shallow):
+        return subprocess.run(cli, cwd=cwd, capture_output=True, text=True)
+
+    assert (shallow / ".git" / "shallow").exists()
+    rewritten_head = run("git", "rev-parse", "HEAD", cwd=shallow).stdout.strip()
+    assert rewritten_head != _load(MANIFEST)["code_commit"]
+    assert verify().returncode == 0
+
+    shutil.copytree(shallow, no_history, ignore=shutil.ignore_patterns(".git"))
+    assert verify(no_history).returncode == 0
+
+    requirements = shallow / "requirements.txt"
+    original_requirements = requirements.read_text(encoding="utf-8")
+    requirements.write_text(
+        original_requirements.replace("numpy==2.4.4", "numpy==0.0.0"),
+        encoding="utf-8",
+    )
+    assert verify().returncode != 0
+    requirements.write_text(original_requirements, encoding="utf-8")
+
+    declared = shallow / "backtesting" / "signal_scanner.py"
+    original_source = declared.read_text(encoding="utf-8")
+    declared.write_text(original_source + "\n# integrity mutation\n", encoding="utf-8")
+    assert verify().returncode != 0
+    declared.write_text(original_source, encoding="utf-8")
+
+    missing = declared.with_suffix(".missing")
+    declared.rename(missing)
+    assert verify().returncode != 0
+    missing.rename(declared)
+
+    manifest_path = shallow / "docs" / "research" / "artifacts" / "manifest.json"
+    recorded = json.loads(manifest_path.read_text(encoding="utf-8"))
+    recorded["code"]["files"] = []
+    manifest_path.write_text(json.dumps(recorded), encoding="utf-8")
+    assert verify().returncode != 0
 
 
 def test_every_direct_requirement_is_pinned_exactly() -> None:
@@ -561,6 +794,40 @@ def test_frozen_mechanism_includes_max_hold() -> None:
     assert m["config"]["frozen_mechanism"]["max_hold_hours"] == 36
 
 
+def test_authoritative_btc_transfer_result_and_docs_agree() -> None:
+    """The old 170/PF 0.346 row used BTC's own 48h hold and is superseded."""
+    btc = _row(_load(RESULTS), "transfer-frozen-zec:BTC-USD")
+    assert btc["n_closed"] == 174
+    assert btc["pf"] == pytest.approx(0.359404)
+    assert btc["mechanism_params"]["max_hold_hours"] == 36
+
+    current_docs = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "CLAUDE.md", ARTIFACTS.parent / "README.md",
+                     ROOT / "docs" / "trial_registry.md")
+    )
+    assert "BTC PF 0.359 n=174" in current_docs
+    assert "Frozen mechanism transferred to BTC | PF 0.359, n=174" in current_docs
+
+
+def test_historical_review_cannot_reopen_resolved_decisions() -> None:
+    review = (ROOT / "docs" / "research" / "2026-08-strategy-review.md").read_text(
+        encoding="utf-8")
+    for stale in (
+        "journal currently conflates",
+        "only lead with support",
+        "n = 2 of the ≥20 required",
+        "The pre-registered OOS trial can run to completion",
+    ):
+        assert stale not in review
+    assert "historical snapshot" in review.lower()
+    assert "RETIRED / REJECTED FOR ACTIVATION" in review
+
+    claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Default: 5% of $100 = $5" not in claude
+    assert "Default: 2% of $100 = $2" in claude
+
+
 def test_period_selection_artifact_is_visible() -> None:
     """
     The documented story: individual calendar windows can look fine while the
@@ -622,8 +889,10 @@ def test_verification_survives_a_rewritten_code_commit(monkeypatch) -> None:
     assert rewritten["code_commit"] != committed["code_commit"]
     # Identity is unaffected, and is computed from the working tree — no candles
     # and no git needed for either of these.
-    assert rr.code_fingerprint() == committed["code"]
-    assert rr.environment_fingerprint() == committed["environment"]
+    current = rr.provenance_fingerprint()
+    for field in ("code", "dependencies", "environment", "provenance_schema",
+                  "provenance_sha256"):
+        assert current[field] == committed[field]
     # Carrying informational fields over restores full equality.
     assert rr.carry_over_informational(rewritten, committed) == committed
     # And the cheap check, which never consults git at all, still passes.

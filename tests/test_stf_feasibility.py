@@ -418,7 +418,8 @@ def test_the_artifact_carries_provenance() -> None:
     research artifacts. A new artifact must not reintroduce the old guarantees.
     """
     src = inspect.getsource(fz)
-    for needed in ("code_sha256", "environment_fingerprint", "logical_sha256",
+    for needed in ("provenance_fingerprint", "dependencies",
+                   "provenance_schema", "provenance_sha256", "logical_sha256",
                    "assert_canonical_python", "assert_code_is_committed"):
         assert needed in src, f"{needed} missing from the audit"
 

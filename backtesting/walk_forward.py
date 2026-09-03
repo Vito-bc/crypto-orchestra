@@ -431,16 +431,9 @@ def build_artifact(assets: list[str]) -> dict:
     thing as the main one: content-addressed code, the pinned environment, and
     a logical input hash — here over this tool's own spans.
     """
-    import hashlib
+    from backtesting.research_runner import provenance_fingerprint
 
-    from backtesting.research_runner import environment_fingerprint, sha256_source
-
-    files = sorted(
-        ({"file": rel, "sha256": sha256_source(ROOT / rel)} for rel in _CODE_PATHS),
-        key=lambda d: d["file"])
-    agg = hashlib.sha256()
-    for entry in files:
-        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
+    provenance = provenance_fingerprint(_CODE_PATHS)
 
     # Hash the inputs BEFORE and AFTER the scan. The shared loader appends to the
     # parquet cache when asked for a range it does not hold, so an artifact built
@@ -457,8 +450,11 @@ def build_artifact(assets: list[str]) -> dict:
     return {
         "trial_id": TRIAL_ID,
         "status": "HISTORICAL DIAGNOSTIC — not clean OOS, not evidence of edge",
-        "code": {"files": files, "code_sha256": agg.hexdigest()},
-        "environment": environment_fingerprint(),
+        "code": provenance["code"],
+        "dependencies": provenance["dependencies"],
+        "environment": provenance["environment"],
+        "provenance_schema": provenance["provenance_schema"],
+        "provenance_sha256": provenance["provenance_sha256"],
         "protocol": {
             "assets": sorted(assets),
             "windows": WINDOWS,

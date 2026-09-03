@@ -441,7 +441,7 @@
     }
   },
   "calibrated_from": {
-    "audit_sha256": "073231f916cd613c5d8a8d26ccd50bf7ed19d2164b5ead9f4f7517f5aeb0f82e",
+    "audit_sha256": "fa545d54d91e640983ca5f38e921d0e159895094072942cb9752b2bd16ac00eb",
     "basis": "common-universe window (fixed four-asset portfolio)",
     "clusters_per_year": 1.42,
     "implied_pooled_trades_per_year": 13.8,
@@ -453,15 +453,15 @@
     "years": 4.92
   },
   "code": {
-    "code_sha256": "92ef546ddd513e5da1baa38c2606947651cf306a1a377c8f63cd8cf5d39d0b1e",
+    "code_sha256": "5e8d404f82a8e68a0739be167f4c9711822add8635fcd8c5f9ca419d8950b51a",
     "files": [
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
+        "sha256": "bd8eafb1ca35e3f2c73f189cc45a84c7a587b5863c161ee29f12b94e488c3508"
       },
       {
         "file": "backtesting/stf_power.py",
-        "sha256": "b5ec01798ae8b9e8298f250231dcb39c861a85278ca091c918a9dc4e6d412d97"
+        "sha256": "e1bb394df8bb3cc9356d47ef20947c5fc55bd7c2c77989418c48c7407e4d7976"
       },
       {
         "file": "backtesting/stf_protocol.py",
@@ -476,6 +476,17 @@
       "leave_one_cluster_out",
       "asset_concentration"
     ]
+  },
+  "dependencies": {
+    "file": "requirements.txt",
+    "hash_scheme": "declared-research-requirements-v1",
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "ta": "0.11.0"
+    },
+    "sha256": "206d855465b2a05eea4d36386f390cb01214bee55d7765c7e2f51482b0bc456b"
   },
   "environment": {
     "packages": {
@@ -956,6 +967,8 @@
       "min": 0.1258
     }
   },
+  "provenance_schema": "research-content-provenance-v1",
+  "provenance_sha256": "12d4355a9bcba73041d536e1639aec0c554934569854d998b46a258e67d3fa2d",
   "purpose": "power of the FINAL STF continuation gates under a declared payoff model \u2014 no historical strategy returns are used",
   "sizing": {
     "position_fraction_of_capital": 0.02,

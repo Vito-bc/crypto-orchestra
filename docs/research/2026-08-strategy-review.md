@@ -2,10 +2,10 @@
 
 Professional follow-up: `docs/research/2026-08-professional-review-addendum.md`.
 The follow-up accepts the central V2/V3 falsification and the continued live
-NO-GO posture, but identifies evidence-pipeline issues that must be fixed before
-the OOS replay, V3 journal, or equity-duration metrics are treated as formal
-validation records. This research branch also predates the latest main/safety
-hardening and must not be used as a deployment base.
+NO-GO posture. It also identified evidence-pipeline defects that were later
+fixed on `main` (journal cohorts, integrated replay, calendar drawdown,
+warm-up semantics and reproducible provenance). This document is therefore a
+**historical snapshot**, not the current operating brief.
 
 > ## ⚠️ Reproducibility status (added 2026-08-09)
 >
@@ -13,9 +13,9 @@ hardening and must not be used as a deployment base.
 > deterministic runner `backtesting/research_runner.py` reproduces, and pins in
 > `docs/research/artifacts/results.json`:
 >
-> - the continuous-window ZEC result (PF 0.86) and the integrated V3 comparison
->   (PF 0.69);
-> - the four registry windows (25 / 12 / 27 / 37 closed trades);
+> - the corrected continuous-window ZEC result (PF 0.761, n=114) and integrated
+>   V3 comparison (PF 0.706, n=71);
+> - the corrected four registry windows (6 / 12 / 27 / 37 closed trades);
 > - the zero-tuning transfer test under the frozen ZEC mechanism;
 > - ER-30 and VM-30 regime cells;
 > - the equity/drawdown metrics.
@@ -70,9 +70,9 @@ Conclusions:
    silently absent from the "cross-cycle" estimate.
 2. **V3's in-sample case is falsified.** The +0.31%/trade improvement was an
    artifact of the window layout; integrated enforcement on the continuous
-   window *reduces* PF from 0.86 to 0.69. The pre-registered OOS trial can run
-   to completion (enforcement stays off either way), but the research
-   expectation is now failure.
+   window *reduces* PF from 0.86 to 0.69 under this historical mechanism. The
+   candidate was subsequently retired; its activation criteria were withdrawn
+   and enforcement remains off.
 3. The seemingly positive complement cell (er<0.20: +0.43%, PF 1.22) collapses
    to PF 1.02 when its single best month (2022-03) is removed. ER-30 carries no
    robust information for this entry in either direction.
@@ -107,8 +107,9 @@ breakout" is rejected for this entry mechanism.
 - **Mean reversion** (1h RSI<30 + below lower BB, 2×ATR stop/target, 36h):
   PF 0.30–0.62 on all four assets; *worse* in ER<0.20 "range" regimes.
   Rejected — including the idea of routing MR into range regimes.
-- **Slow trend following** (daily close > 55d high entry, close < 20d low
-  exit, next-open execution, taker fees): positive on all four assets
+- **Slow trend following — LEGACY / UNVERIFIED** (daily close > 55d high entry,
+  close < 20d low exit, next-open execution, taker fees): historically reported
+  as positive on all four assets
   (pooled n = 57; BTC PF 4.4, ETH 7.4, SOL 1.8, ZEC 3.2), the only family
   probe that isn't structurally negative after fees. Caveats that keep it
   hypothesis-only: profit is dominated by 1–2 secular episodes per asset
@@ -152,17 +153,13 @@ mean was *below* the unconditional mean. Rejected; no dynamic allocation.
 
 ## 6. Forward OOS (2026-07-12 freeze → 2026-08-09)
 
-The scheduler outage (2026-07-23 → 2026-08-09) meant the live shadow journal
-missed the window. `backtesting/oos_replay.py` provides a provisional
-counterfactual reconstruction: 4 reported shadow signals,
-2 V3-accepted (er ≥ 0.20), both stopped out (−3.70%, −3.61%); the 2 V3-blocked
-signals netted −1.09%. n = 2 of the ≥20 required — no criteria verdict, but
-nothing so far contradicts the continuous-window expectation of failure.
-
-Professional-review qualification: the tool post-filters a non-enforced scan
-rather than running a separate integrated V3 path. The two accepted losses are
-unchanged in an integrated audit of this slice, but the path/block count differs.
-Treat this output as diagnostic, not as the formal OOS journal.
+The scheduler outage (2026-07-23 → 2026-08-09) meant the original live shadow
+journal missed the window. The historical reconstruction found two integrated
+V3-accepted losses and three blocked signals. The replay was later repaired to
+run the actual integrated path with right-censoring, and the journal cohorts
+were separated end-to-end. These observations remain diagnostic only: V3 is
+**RETIRED / REJECTED FOR ACTIVATION**, its former ≥20-trade criteria are
+withdrawn, and no criteria decision is pending.
 
 ## 7. Changes implemented
 
@@ -184,15 +181,13 @@ risk-engine changes.
 
 1. **No live strategy has positive expected value.** Nothing here changes
    that; the honest posture is shadow mode and research.
-2. Do not rely on restarting the scheduler alone to complete the V3 trial. The
-   journal currently conflates enforcement acceptance with candidate acceptance
-   in shadow mode and has no working accepted-outcome chain. Fix those semantics
-   first. Given the falsified IS case, the professional recommendation is to
-   retire V3 as an activation candidate and retain only cheap diagnostic shadow
-   data if useful.
-3. If new edge is pursued, the trend-following family is the only lead with
-   support in this data. Before ANY further scanning: pre-register one config,
-   acceptance criteria, and cost model in the trial registry; prefer breadth
-   (many assets, small size) since the P&L profile is 1–2 winners per years.
+2. **Resolved after this snapshot:** integrated replay, journal cohort/outcome
+   semantics and right-censoring were repaired; V3 was formally retired. Its
+   shadow data cannot authorize activation under the withdrawn trial.
+3. The slow-trend numbers in this document are legacy and non-reproducible, so
+   they do **not** establish a supported lead. Phase 7R later assessed only
+   feasibility/power and found seven common four-asset clusters in 4.92 years;
+   it did not test returns. Any edge trial still requires a new pre-registration
+   and genuinely unseen forward data.
 4. Consider cutting or down-scoping the hourly LLM agent spend until a
    strategy exists that their vetoes measurably improve.

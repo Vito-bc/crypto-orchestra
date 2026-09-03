@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "550fbaa88d731ef8b23e167b36f047b5b2b272357d60d6e773b2d2849eae7594",
+    "code_sha256": "173249bae6e34173e7d232d082b569a6187818243154872a17db5d767c1faa1f",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -8,7 +8,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
+        "sha256": "bd8eafb1ca35e3f2c73f189cc45a84c7a587b5863c161ee29f12b94e488c3508"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -16,13 +16,24 @@
       },
       {
         "file": "backtesting/walk_forward.py",
-        "sha256": "af01acfb4bc2ffc398eff77d9ad744e02b84e40303f4b537416c8b2275c0c9d1"
+        "sha256": "a35a40d29a9d9ada4441073486ec60e1eb117681237300bd8a2c9cf1bcbfcf92"
       },
       {
         "file": "exchange/coinbase_candles.py",
         "sha256": "cc31fde12e8547aa4bd0452c4d98365dd509f17f0b73844ed9ca0b9bd0e6953f"
       }
     ]
+  },
+  "dependencies": {
+    "file": "requirements.txt",
+    "hash_scheme": "declared-research-requirements-v1",
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "ta": "0.11.0"
+    },
+    "sha256": "206d855465b2a05eea4d36386f390cb01214bee55d7765c7e2f51482b0bc456b"
   },
   "environment": {
     "packages": {
@@ -157,6 +168,8 @@
       }
     ]
   },
+  "provenance_schema": "research-content-provenance-v1",
+  "provenance_sha256": "97c062e1bff78ae955a6e62ac2b63d7b8543d9ecfda979110b2fe5def0ee7807",
   "rows": [
     {
       "asset": "BTC-USD",

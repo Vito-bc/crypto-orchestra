@@ -44,9 +44,10 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 import numpy as np
@@ -253,6 +254,8 @@ _CODE_PATHS = [
 # rule every other result-determining dependency follows.
 _CANONICAL_PYTHON = "3.13.5"
 _RESULT_DETERMINING_PACKAGES = ("numpy", "pandas", "ta", "pyarrow")
+_REQUIREMENTS_PATH = "requirements.txt"
+_PROVENANCE_SCHEMA = "research-content-provenance-v1"
 
 
 class EnvironmentError_(ProvenanceError):
@@ -299,7 +302,38 @@ def assert_canonical_python() -> None:
 
 # ── Content-addressed code identity ──────────────────────────────────────────
 
-def code_fingerprint() -> dict:
+def _declared_file(rel: str) -> Path:
+    """Resolve one declared repository input without following an escape."""
+    if not isinstance(rel, str) or not rel or "\\" in rel or any(
+            c in rel for c in ("\x00", "\n", "\r")):
+        raise ProvenanceError(f"invalid result-determining path: {rel!r}")
+    pure = PurePosixPath(rel)
+    if (pure.is_absolute() or not pure.parts or pure.as_posix() != rel
+            or ".." in pure.parts or ":" in pure.parts[0]):
+        raise ProvenanceError(f"unsafe result-determining path: {rel!r}")
+
+    path = ROOT.joinpath(*pure.parts)
+    cursor = ROOT
+    for part in pure.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ProvenanceError(
+                f"result-determining path may not traverse a symlink: {rel}")
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError:
+        raise ProvenanceError(f"result-determining file missing: {rel}") from None
+    try:
+        resolved.relative_to(ROOT.resolve(strict=True))
+    except ValueError:
+        raise ProvenanceError(
+            f"result-determining path escapes the repository: {rel}") from None
+    if not resolved.is_file():
+        raise ProvenanceError(f"result-determining input is not a file: {rel}")
+    return resolved
+
+
+def code_fingerprint(paths: Optional[list[str]] = None) -> dict:
     """
     SHA-256 of every result-determining source file, plus an aggregate.
 
@@ -309,17 +343,86 @@ def code_fingerprint() -> dict:
     each time needing a follow-up commit), whereas these hashes survive any
     history rewrite that does not change file contents.
     """
+    declared = list(_CODE_PATHS if paths is None else paths)
+    if len(declared) != len(set(declared)):
+        raise ProvenanceError("duplicate result-determining source path")
     files = []
-    for rel in _CODE_PATHS:
-        path = ROOT / rel
-        if not path.exists():
-            raise ProvenanceError(f"result-determining file missing: {rel}")
+    for rel in declared:
+        path = _declared_file(rel)
         files.append({"file": rel, "sha256": sha256_source(path)})
     files.sort(key=lambda d: d["file"])
     agg = hashlib.sha256()
     for entry in files:
         agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
     return {"files": files, "code_sha256": agg.hexdigest()}
+
+
+def dependency_fingerprint() -> dict:
+    """
+    Canonical identity of the declared result-determining dependency pins.
+
+    Hashing all of requirements.txt would make an Anthropic or dashboard update
+    invalidate an offline numerical result. Hashing only the four packages that
+    actually compute/read that result captures the real dependency boundary.
+    Their installed versions are independently checked by
+    environment_fingerprint().
+    """
+    path = _declared_file(_REQUIREMENTS_PATH)
+    wanted = {name.lower().replace("_", "-") for name in
+              _RESULT_DETERMINING_PACKAGES}
+    found: dict[str, str] = {}
+    for numbered, original in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = original.split("#", 1)[0].strip()
+        if not line or line.startswith("-r "):
+            continue
+        name = re.split(r"[<>=!~;\s\[]", line, maxsplit=1)[0]
+        canonical = name.lower().replace("_", "-")
+        if canonical not in wanted:
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;#]+)", line)
+        if match is None:
+            raise ProvenanceError(
+                f"{_REQUIREMENTS_PATH}:{numbered}: result-determining "
+                f"dependency must be pinned exactly: {original!r}")
+        if canonical in found:
+            raise ProvenanceError(
+                f"{_REQUIREMENTS_PATH}: duplicate pin for {canonical}")
+        found[canonical] = match.group(2)
+    missing = sorted(wanted - set(found))
+    if missing:
+        raise ProvenanceError(
+            f"{_REQUIREMENTS_PATH}: missing result-determining pins: {missing}")
+
+    packages = dict(sorted(found.items()))
+    canonical = json.dumps(packages, sort_keys=True, separators=(",", ":"))
+    return {
+        "file": _REQUIREMENTS_PATH,
+        "hash_scheme": "declared-research-requirements-v1",
+        "packages": packages,
+        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def provenance_fingerprint(paths: Optional[list[str]] = None) -> dict:
+    """Authoritative content identity shared by every research artifact."""
+    code = code_fingerprint(paths)
+    dependencies = dependency_fingerprint()
+    environment = environment_fingerprint()
+    identity = {
+        "schema": _PROVENANCE_SCHEMA,
+        "code_sha256": code["code_sha256"],
+        "dependencies_sha256": dependencies["sha256"],
+        "environment": environment,
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return {
+        "code": code,
+        "dependencies": dependencies,
+        "environment": environment,
+        "provenance_schema": _PROVENANCE_SCHEMA,
+        "provenance_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
 
 
 def assert_code_is_committed(paths: Optional[list[str]] = None) -> None:
@@ -592,6 +695,7 @@ def assert_covers(inputs: list[dict], asset: str, interval: str,
 def build_manifest(assets: Optional[list[str]] = None) -> dict:
     """Manifest of every input the registered run depends on."""
     assets = assets or RESEARCH_CONFIG["assets"]
+    provenance = provenance_fingerprint()
     inputs = []
     for asset in assets:
         stem = asset.replace("-", "_")
@@ -600,12 +704,15 @@ def build_manifest(assets: Optional[list[str]] = None) -> dict:
     return {
         "config_id": RESEARCH_CONFIG["config_id"],
         # PRIMARY code identity: content-addressed, git-independent.
-        "code": code_fingerprint(),
+        "code": provenance["code"],
+        "dependencies": provenance["dependencies"],
         # Informational provenance label only. Kept because it is useful for
         # "where did this come from", not relied on for identity: it goes stale
         # on squash/rebase while the hashes above do not.
         "code_commit": _git_commit(),
-        "environment": environment_fingerprint(),
+        "environment": provenance["environment"],
+        "provenance_schema": provenance["provenance_schema"],
+        "provenance_sha256": provenance["provenance_sha256"],
         "config": RESEARCH_CONFIG,
         "inputs": sorted(inputs, key=lambda d: d["file"]),
     }
@@ -658,30 +765,22 @@ def verify_code_and_environment() -> bool:
     m_path = ARTIFACT_DIR / "manifest.json"
     if not m_path.exists():
         raise ProvenanceError("manifest is not committed — nothing to verify")
-    committed = json.loads(m_path.read_text(encoding="utf-8"))
+    try:
+        committed = json.loads(m_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProvenanceError(f"manifest is unreadable or malformed: {exc}") from None
+    if not isinstance(committed, dict):
+        raise ProvenanceError("manifest root must be a JSON object")
 
+    fresh = provenance_fingerprint()
     ok = True
-    fresh_code = code_fingerprint()
-    old_code = committed.get("code") or {}
-    if old_code.get("code_sha256") != fresh_code["code_sha256"]:
-        ok = False
-        print("MISMATCH: result-determining code differs from the artifact",
-              file=sys.stderr)
-        old_by_file = {e["file"]: e["sha256"] for e in old_code.get("files", [])}
-        for entry in fresh_code["files"]:
-            was = old_by_file.get(entry["file"])
-            if was != entry["sha256"]:
-                print(f"  {entry['file']}: manifest {was} != working tree "
-                      f"{entry['sha256']}", file=sys.stderr)
-
-    # A different interpreter must fail both checks, not just the write path:
-    # verifying under 3.12 an artifact produced on 3.13 proves nothing.
-    fresh_env = environment_fingerprint()
-    if committed.get("environment") != fresh_env:
-        ok = False
-        print(f"MISMATCH: environment differs\n  manifest: "
-              f"{committed.get('environment')}\n  running : {fresh_env}",
-              file=sys.stderr)
+    for field in ("code", "dependencies", "environment", "provenance_schema",
+                  "provenance_sha256"):
+        if committed.get(field) != fresh[field]:
+            ok = False
+            print(f"MISMATCH: authoritative {field} provenance differs\n"
+                  f"  manifest: {committed.get(field)!r}\n"
+                  f"  current : {fresh[field]!r}", file=sys.stderr)
     return ok
 
 

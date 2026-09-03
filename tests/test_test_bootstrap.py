@@ -84,6 +84,7 @@ def test_sizing_is_pinned_identically_here_and_in_ci() -> None:
     import pipeline.position_tracker as pt
 
     assert os.environ["LIVE_BALANCE_USD"] == "100"
+    assert os.environ["TRADE_SIZE_PCT"] == "0.05"
     assert pt.PAPER_BALANCE == 100
 
 
@@ -152,6 +153,17 @@ def test_dns_resolution_is_blocked(bootstrap) -> None:
         socket.getaddrinfo("api.anthropic.com", 443)
 
 
+@pytest.mark.parametrize("resolver,args", [
+    (socket.gethostbyname, ("api.anthropic.com",)),
+    (socket.gethostbyname_ex, ("api.anthropic.com",)),
+    (socket.gethostbyaddr, ("8.8.8.8",)),
+    (socket.getnameinfo, (("8.8.8.8", 53), 0)),
+])
+def test_alternate_dns_resolution_paths_are_blocked(bootstrap, resolver, args) -> None:
+    with pytest.raises(bootstrap.NetworkAccessBlocked):
+        resolver(*args)
+
+
 def test_udp_sendto_is_blocked(bootstrap) -> None:
     """
     Connectionless sends bypass connect() entirely, so this was the one way out
@@ -162,8 +174,102 @@ def test_udp_sendto_is_blocked(bootstrap) -> None:
         s.sendto(b"ping", ("8.8.8.8", 53))
 
 
-def test_loopback_is_still_allowed() -> None:
-    """The guard must not break legitimate local sockets."""
+def _exception_chain_contains(exc: BaseException, needle: str) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if needle in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+@pytest.mark.parametrize("client", ["urllib", "requests", "httpx"])
+def test_common_sync_http_clients_cannot_escape(bootstrap, client) -> None:
+    """The socket boundary protects clients added later, not a hardcoded mock list."""
+    with pytest.raises(Exception) as exc:
+        if client == "urllib":
+            import urllib.request
+
+            # tests/conftest patches the module-level urlopen for Telegram.
+            # A fresh opener exercises urllib's real transport without
+            # shadowing or clearing that independent notification guard.
+            urllib.request.build_opener().open(
+                "https://example.invalid", timeout=1)
+        elif client == "requests":
+            import requests
+
+            requests.get("https://example.invalid", timeout=1)
+        else:
+            import httpx
+
+            httpx.get("https://example.invalid", timeout=1)
+    assert _exception_chain_contains(exc.value, "Blocked outbound")
+
+
+@pytest.mark.allow_loopback
+def test_async_http_client_cannot_escape(bootstrap) -> None:
+    """Asyncio may build a local self-pipe; public resolution stays denied."""
+    import asyncio
+
+    import httpx
+
+    async def request():
+        async with httpx.AsyncClient() as client:
+            await client.get("https://example.invalid", timeout=1)
+
+    with pytest.raises(Exception) as exc:
+        asyncio.run(request())
+    assert _exception_chain_contains(exc.value, "Blocked outbound")
+
+
+def test_unmarked_loopback_is_blocked(bootstrap) -> None:
+    """One local-socket test must not authorize localhost suite-wide."""
+    with pytest.raises(bootstrap.NetworkAccessBlocked):
+        socket.getaddrinfo("localhost", 0)
+
+
+def test_unmarked_test_cannot_start_a_subprocess(bootstrap) -> None:
+    import subprocess
+    import sys
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked subprocess"):
+        subprocess.run([sys.executable, "-c", "pass"], check=True)
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+def test_explicit_marker_allows_only_the_named_executable(bootstrap) -> None:
+    import subprocess
+    import sys
+
+    completed = subprocess.run(
+        [sys.executable, "-c", "print('isolated-child')"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "isolated-child"
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked subprocess"):
+        subprocess.run(["definitely-not-allowed", "--version"], check=True)
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+def test_shell_subprocess_is_denied_even_when_an_executable_is_allowed(
+        bootstrap) -> None:
+    import subprocess
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell subprocess"):
+        subprocess.run("echo escape", shell=True, check=True)
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell process"):
+        os.system("echo escape")
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell process"):
+        os.popen("echo escape")
+
+
+@pytest.mark.allow_loopback
+def test_explicitly_marked_loopback_is_allowed() -> None:
+    """A narrowly authorized local socket remains available."""
     assert socket.getaddrinfo("localhost", 0)
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
@@ -189,5 +295,8 @@ def test_the_block_names_where_it_came_from(bootstrap) -> None:
 def test_real_socket_functions_are_kept_for_restoration(bootstrap) -> None:
     """pytest_unconfigure must be able to put the interpreter back."""
     for name in ("_real_connect", "_real_connect_ex", "_real_getaddrinfo",
-                 "_real_create_connection", "_real_sendto"):
+                 "_real_gethostbyname", "_real_gethostbyname_ex",
+                 "_real_gethostbyaddr", "_real_getnameinfo",
+                 "_real_create_connection", "_real_sendto", "_real_popen",
+                 "_real_os_system", "_real_os_popen"):
         assert getattr(bootstrap, name) is not None

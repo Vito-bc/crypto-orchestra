@@ -512,6 +512,7 @@ def test_lock_timeout_skips_write_and_preserves_old_lkg(tmp_path: Path, monkeypa
     assert _rules_from_lkg("ZEC-USD") is not None, "the prior entry must survive"
 
 
+@pytest.mark.allow_subprocess("python", "python.exe")
 def test_cross_process_lkg_writers_keep_all_entries(tmp_path: Path) -> None:
     """
     Two real OS processes each persisting distinct assets must not drop each

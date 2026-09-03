@@ -271,7 +271,7 @@ def _cell(rng, years, win_rate, rho, loss_pct, edge, structure) -> dict:
 
 
 def build_study() -> dict:
-    from backtesting.research_runner import environment_fingerprint, sha256_source
+    from backtesting.research_runner import provenance_fingerprint
 
     structure = _structure()
     rng = np.random.default_rng(SEED)
@@ -294,18 +294,17 @@ def build_study() -> dict:
                 "median": round(float(np.median(rates)), 4),
                 "max": round(max(rates), 4)}
 
-    files = sorted(({"file": rel, "sha256": sha256_source(ROOT / rel)}
-                    for rel in _CODE_PATHS), key=lambda d: d["file"])
-    agg = hashlib.sha256()
-    for entry in files:
-        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
+    provenance = provenance_fingerprint(_CODE_PATHS)
 
     return {
         "trial_id": TRIAL_ID,
         "purpose": ("power of the FINAL STF continuation gates under a declared "
                     "payoff model — no historical strategy returns are used"),
-        "code": {"files": files, "code_sha256": agg.hexdigest()},
-        "environment": environment_fingerprint(),
+        "code": provenance["code"],
+        "dependencies": provenance["dependencies"],
+        "environment": provenance["environment"],
+        "provenance_schema": provenance["provenance_schema"],
+        "provenance_sha256": provenance["provenance_sha256"],
         "calibrated_from": {
             "source": "docs/research/artifacts/stf_feasibility/audit.json",
             "basis": "common-universe window (fixed four-asset portfolio)",

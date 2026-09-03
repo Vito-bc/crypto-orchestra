@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "c313e9dcb61e510956bcabb290a12c0255684d31ea2ae0797c7047f420de4ac5",
+    "code_sha256": "5db3db42c5428eed8c11afab07903b718c3297df9f399873cba1e4814564defa",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -16,7 +16,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
+        "sha256": "bd8eafb1ca35e3f2c73f189cc45a84c7a587b5863c161ee29f12b94e488c3508"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -132,6 +132,17 @@
     }
   },
   "config_id": "2026-08-warmup-semantics.v1",
+  "dependencies": {
+    "file": "requirements.txt",
+    "hash_scheme": "declared-research-requirements-v1",
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "ta": "0.11.0"
+    },
+    "sha256": "206d855465b2a05eea4d36386f390cb01214bee55d7765c7e2f51482b0bc456b"
+  },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
@@ -350,5 +361,7 @@
       "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
       "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     }
-  ]
+  ],
+  "provenance_schema": "research-content-provenance-v1",
+  "provenance_sha256": "804cb2b5c89a1336788ca0be42fc001d7d8facb6bd79b8aa9ab7e0afab56c1b0"
 }
