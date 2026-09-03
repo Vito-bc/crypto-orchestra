@@ -5,11 +5,11 @@
   },
   "blinding": "prices are consumed exclusively by entry_exit_events(), which returns timestamps and labels; no P&L, profit factor, expectancy, win rate, asset ranking or parameter comparison is computed anywhere in this module",
   "code": {
-    "code_sha256": "8fc47f854fd492b9c3392c67cb66ae22038dff992e2ef1985dfdb727232905cb",
+    "code_sha256": "d64a62903cbb22769bdc8e3de9aee8b53f62cdb03a62a24fe5fe61e4d6b51305",
     "files": [
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "f41a12d87e55809d697e12dba09cb33dd72c4d2ac973a17159f0d2da479ae1b0"
+        "sha256": "3e7269d6ca517daa59d163a60363452a6b3f94b0ccedb44df68359edf7228f91"
       },
       {
         "file": "backtesting/stf_feasibility.py",
@@ -330,7 +330,7 @@
     }
   },
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "b5423b0c679221daa06d22d33b2426bb49af754cc782513d35d4df812af6eb2c",
+  "provenance_sha256": "81df2bcd9ee60d2249c4cd1ebdfe0f077dbc8d480450c2577b78f035c3a5012c",
   "purpose": "BLINDED feasibility audit \u2014 event rates, exposure structure and data quality only",
   "rule": {
     "direction": "long only",

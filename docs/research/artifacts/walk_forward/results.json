@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "135aff6a572d3184c2e8d8d752c231fcce13c7c063b9e9a5d25b202975a1121a",
+    "code_sha256": "ba065658a4676f0bf5c8484a71786529deeb7e10251e6ae0a5396fbebd34ff77",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -8,7 +8,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "f41a12d87e55809d697e12dba09cb33dd72c4d2ac973a17159f0d2da479ae1b0"
+        "sha256": "3e7269d6ca517daa59d163a60363452a6b3f94b0ccedb44df68359edf7228f91"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -177,7 +177,7 @@
     ]
   },
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "30728823f9fef73b196702fcfc20b550ff647310df78f6c2305eda78ddf72418",
+  "provenance_sha256": "d149214b67b7a7a7bb20f8b1ff919898c598b40d35397b8e321347da8ed0e354",
   "rows": [
     {
       "asset": "BTC-USD",
