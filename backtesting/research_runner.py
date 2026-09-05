@@ -488,7 +488,19 @@ def assert_declared_dependencies_installed() -> None:
 
 
 def provenance_fingerprint(paths: Optional[list[str]] = None) -> dict:
-    """Authoritative content identity shared by every research artifact."""
+    """
+    Authoritative content identity shared by every research artifact.
+
+    The installed-pin check lives here as well as on each tool's entry points,
+    and the duplication is deliberate. Wiring it only into the entry points is
+    what failed review: the check reached the main runner and the other three
+    tools went round it, so a wrong tzdata left stf_feasibility.verify()
+    returning True. Every artifact's provenance block is built HERE, so a check
+    in this function cannot be forgotten by a tool that does not exist yet.
+    The entry-point calls remain because this one fires only after the
+    computation; they stop the run before it.
+    """
+    assert_declared_dependencies_installed()
     code = code_fingerprint(paths)
     dependencies = dependency_fingerprint()
     environment = environment_fingerprint()

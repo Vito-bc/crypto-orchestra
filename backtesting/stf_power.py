@@ -389,9 +389,11 @@ def _assert_writable() -> None:
     from backtesting.research_runner import (
         assert_canonical_python,
         assert_code_is_committed,
+        assert_declared_dependencies_installed,
     )
 
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     # The audit is an INPUT, so an uncommitted one would make this study
     # describe a structure that exists on one machine only.
     assert_code_is_committed(_CODE_PATHS + [
@@ -407,8 +409,13 @@ def write_artifact() -> tuple[Path, dict]:
 
 
 def verify() -> bool:
+    from backtesting.research_runner import assert_declared_dependencies_installed
+
     if not ARTIFACT.exists():
         raise PowerError(f"no committed study at {ARTIFACT}")
+    # Fail before the computation, not after: provenance_fingerprint() checks
+    # this too, but only once the run has already been paid for.
+    assert_declared_dependencies_installed()
     if _serialise(build_study()) == ARTIFACT.read_text(encoding="utf-8"):
         return True
     print("MISMATCH: power study differs from a fresh run", file=sys.stderr)

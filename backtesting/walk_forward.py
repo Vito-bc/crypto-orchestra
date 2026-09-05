@@ -492,6 +492,7 @@ def _assert_writable(assets: list[str]) -> None:
     from backtesting.research_runner import (
         assert_canonical_python,
         assert_code_is_committed,
+        assert_declared_dependencies_installed,
     )
 
     if sorted(assets) != sorted(ASSETS):
@@ -499,6 +500,7 @@ def _assert_writable(assets: list[str]) -> None:
             f"the canonical artifact covers {sorted(ASSETS)}; refusing to write "
             f"a run of {sorted(assets)}. Use --asset for a report only.")
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     # THIS tool's paths. The shared default covers only the main runner's
     # _CODE_PATHS, which omits walk_forward.py itself.
     assert_code_is_committed(_CODE_PATHS)
@@ -526,8 +528,13 @@ def write_artifact(assets: list[str]) -> tuple[Path, dict]:
 
 
 def verify_artifact(assets: list[str]) -> bool:
+    from backtesting.research_runner import assert_declared_dependencies_installed
+
     if not ARTIFACT.exists():
         raise WalkForwardError(f"no committed artifact at {ARTIFACT}")
+    # Fail before the computation, not after: provenance_fingerprint() checks
+    # this too, but only once the run has already been paid for.
+    assert_declared_dependencies_installed()
     fresh = _serialise(build_artifact(assets))
     if fresh == ARTIFACT.read_text(encoding="utf-8"):
         return True

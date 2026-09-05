@@ -502,21 +502,105 @@ def test_an_unrecognised_marker_is_refused_rather_than_guessed() -> None:
             rr._marker_applies(unsupported)
 
 
-def test_the_installed_check_runs_on_both_the_verify_and_write_paths() -> None:
+def _break_installed_tzdata(monkeypatch) -> str:
     """
-    A check nobody calls is decoration. Both entry points must invoke it —
-    verify so CI catches a bad environment, write so bad numbers are never
-    published in the first place.
+    Make the platform-conditional pin look wrong, and say which one it is.
+
+    Skips where the pin does not apply, so the Linux runner does not assert a
+    Windows-only fact.
     """
-    import inspect
+    import importlib.metadata as md
 
     import backtesting.research_runner as rr
 
-    for fn in (rr.verify_code_and_environment, rr.write_artifacts):
-        assert "assert_declared_dependencies_installed" in inspect.getsource(fn), (
-            f"{fn.__name__} does not check the declared pins against this "
-            "environment"
-        )
+    conditional = rr.dependency_fingerprint()["platform_conditional"]
+    applicable = [n for n, m in conditional.items() if rr._marker_applies(m)]
+    if not applicable:
+        pytest.skip("no platform-conditional pin applies on this platform")
+    name = sorted(applicable)[0]
+
+    real_version = md.version
+    monkeypatch.setattr(
+        md, "version",
+        lambda package: "0.0.0" if package == name else real_version(package))
+    return name
+
+
+# (module, verify callable name, write guard name, the build it must not reach)
+_REGISTERED_TOOLS = [
+    ("backtesting.research_runner", "verify_code_and_environment",
+     "write_artifacts", "build_manifest"),
+    ("backtesting.walk_forward", "verify_artifact", "write_artifact",
+     "build_artifact"),
+    ("backtesting.stf_feasibility", "verify", "write_artifact", "build_audit"),
+    ("backtesting.stf_power", "verify", "write_artifact", "build_study"),
+]
+
+
+@pytest.mark.parametrize("module_name,verify_name,_write,build_name",
+                         _REGISTERED_TOOLS)
+def test_every_tool_refuses_to_verify_on_a_wrong_installed_pin(
+        monkeypatch, module_name, verify_name, _write, build_name) -> None:
+    """
+    Behavioural, per tool, and it must stop BEFORE the computation.
+
+    Wiring the check into the main runner alone is exactly what failed review:
+    walk_forward, stf_feasibility and stf_power went round it, so a wrong
+    tzdata left stf_feasibility.verify() returning True. Asserting that the
+    call appears in the source proved nothing about whether it ran.
+
+    The build function is replaced with one that fails the test outright, so a
+    tool that computes first and checks afterwards is caught here rather than
+    quietly costing minutes before refusing.
+    """
+    import importlib
+
+    import backtesting.research_runner as rr
+
+    module = importlib.import_module(module_name)
+    broken = _break_installed_tzdata(monkeypatch)
+    monkeypatch.setattr(module, build_name, lambda *a, **k: pytest.fail(
+        f"{module_name}.{build_name} ran before the environment was checked"))
+
+    verify = getattr(module, verify_name)
+    args = (sorted(module.ASSETS),) if module_name.endswith("walk_forward") else ()
+    with pytest.raises(rr.ProvenanceError, match=f"{broken}: pinned"):
+        verify(*args)
+
+
+@pytest.mark.parametrize("module_name,_verify,write_name,build_name",
+                         _REGISTERED_TOOLS)
+def test_every_tool_refuses_to_write_on_a_wrong_installed_pin(
+        monkeypatch, module_name, _verify, write_name, build_name) -> None:
+    """Same contract on the write path: bad numbers are never published."""
+    import importlib
+
+    import backtesting.research_runner as rr
+
+    module = importlib.import_module(module_name)
+    broken = _break_installed_tzdata(monkeypatch)
+    monkeypatch.setattr(module, build_name, lambda *a, **k: pytest.fail(
+        f"{module_name}.{build_name} ran before the environment was checked"))
+
+    write = getattr(module, write_name)
+    args = (sorted(module.ASSETS),) if module_name.endswith("walk_forward") else ()
+    with pytest.raises(rr.ProvenanceError, match=f"{broken}: pinned"):
+        write(*args)
+
+
+def test_the_shared_provenance_builder_is_itself_guarded(monkeypatch) -> None:
+    """
+    The backstop that a tool which does not exist yet cannot forget.
+
+    Entry-point calls are the fail-fast half; every artifact's provenance block
+    is built here, so this is the half that cannot be routed around. Before the
+    fix this function accepted a wrong installed pin without a word.
+    """
+    import backtesting.research_runner as rr
+
+    broken = _break_installed_tzdata(monkeypatch)
+    with pytest.raises(rr.ProvenanceError, match=f"{broken}: pinned"):
+        rr.provenance_fingerprint()
 
 
 @pytest.mark.allow_subprocess("git", "git.exe", "python", "python.exe")

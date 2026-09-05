@@ -408,9 +408,11 @@ def _assert_writable() -> None:
     from backtesting.research_runner import (
         assert_canonical_python,
         assert_code_is_committed,
+        assert_declared_dependencies_installed,
     )
 
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     assert_code_is_committed(_CODE_PATHS)
 
 
@@ -424,8 +426,13 @@ def write_artifact() -> tuple[Path, dict]:
 
 
 def verify() -> bool:
+    from backtesting.research_runner import assert_declared_dependencies_installed
+
     if not ARTIFACT.exists():
         raise FeasibilityError(f"no committed audit at {ARTIFACT}")
+    # Fail before the computation, not after: provenance_fingerprint() checks
+    # this too, but only once the run has already been paid for.
+    assert_declared_dependencies_installed()
     if _serialise(build_audit()) == ARTIFACT.read_text(encoding="utf-8"):
         return True
     print("MISMATCH: feasibility audit differs from a fresh run", file=sys.stderr)
