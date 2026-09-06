@@ -441,7 +441,7 @@
     }
   },
   "calibrated_from": {
-    "audit_sha256": "77e51fcdfd6124acc642fa401c2f92e1c32044dfee46f5d64bc4712c6fad50ad",
+    "audit_sha256": "cb8d106bbdd0dcd60b09f9965d36ed0353db586ab97c851a82b78b691d002313",
     "basis": "common-universe window (fixed four-asset portfolio)",
     "clusters_per_year": 1.42,
     "implied_pooled_trades_per_year": 13.8,
@@ -453,15 +453,15 @@
     "years": 4.92
   },
   "code": {
-    "code_sha256": "fadbff75099144210b4185b373d51a2f05b77e335f007f196b7c0f2e2c35e363",
+    "code_sha256": "5ae5b79d2297c5732d22bf747df7e844537cfb3a932927ef7c3d63c8be7f1efa",
     "files": [
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "3e7269d6ca517daa59d163a60363452a6b3f94b0ccedb44df68359edf7228f91"
+        "sha256": "899bcaca1131410a33b05a7d143d9c8f8344aed708cc871de7cfc52a3895f28c"
       },
       {
         "file": "backtesting/stf_power.py",
-        "sha256": "e1bb394df8bb3cc9356d47ef20947c5fc55bd7c2c77989418c48c7407e4d7976"
+        "sha256": "235e1c3d6cdc2a08525bdd27dfb4e25279b1573ed2fff2b595f2ea49ac8ffdd7"
       },
       {
         "file": "backtesting/stf_protocol.py",
@@ -976,7 +976,7 @@
     }
   },
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "82b6b4a41cb13ec36c463e20aef0e74c4ce31799e490f081baa1ded591af79f6",
+  "provenance_sha256": "acbb037789e1c3d6e55508dc8120c4f27f4e9f45372de292aeea164a48ce5ae8",
   "purpose": "power of the FINAL STF continuation gates under a declared payoff model \u2014 no historical strategy returns are used",
   "sizing": {
     "position_fraction_of_capital": 0.02,
