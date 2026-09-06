@@ -44,9 +44,10 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 import numpy as np
@@ -252,7 +253,20 @@ _CODE_PATHS = [
 # patch release is therefore a deliberate re-registration, which is the same
 # rule every other result-determining dependency follows.
 _CANONICAL_PYTHON = "3.13.5"
-_RESULT_DETERMINING_PACKAGES = ("numpy", "pandas", "ta", "pyarrow")
+# The COMPUTATIONAL CLOSURE, not just the packages this code imports. numpy,
+# pandas, ta and pyarrow are the roots; python-dateutil and six are reached
+# underneath them and decide how timestamps parse, so a fresh install that
+# resolved them differently could move the numbers with nothing to notice.
+_RESULT_DETERMINING_PACKAGES = (
+    "numpy", "pandas", "ta", "pyarrow", "python-dateutil", "six",
+)
+# In the closure on one platform only, so its DECLARED pin is recorded while
+# its INSTALLED version is not: `environment` must compare equal between the
+# Windows workstation that writes the artifacts and the Linux runner that
+# verifies them, and tzdata exists in the closure of exactly one of them.
+_PLATFORM_CONDITIONAL_PACKAGES = ("tzdata",)
+_REQUIREMENTS_PATH = "requirements.txt"
+_PROVENANCE_SCHEMA = "research-content-provenance-v1"
 
 
 class EnvironmentError_(ProvenanceError):
@@ -299,7 +313,38 @@ def assert_canonical_python() -> None:
 
 # ── Content-addressed code identity ──────────────────────────────────────────
 
-def code_fingerprint() -> dict:
+def _declared_file(rel: str) -> Path:
+    """Resolve one declared repository input without following an escape."""
+    if not isinstance(rel, str) or not rel or "\\" in rel or any(
+            c in rel for c in ("\x00", "\n", "\r")):
+        raise ProvenanceError(f"invalid result-determining path: {rel!r}")
+    pure = PurePosixPath(rel)
+    if (pure.is_absolute() or not pure.parts or pure.as_posix() != rel
+            or ".." in pure.parts or ":" in pure.parts[0]):
+        raise ProvenanceError(f"unsafe result-determining path: {rel!r}")
+
+    path = ROOT.joinpath(*pure.parts)
+    cursor = ROOT
+    for part in pure.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ProvenanceError(
+                f"result-determining path may not traverse a symlink: {rel}")
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError:
+        raise ProvenanceError(f"result-determining file missing: {rel}") from None
+    try:
+        resolved.relative_to(ROOT.resolve(strict=True))
+    except ValueError:
+        raise ProvenanceError(
+            f"result-determining path escapes the repository: {rel}") from None
+    if not resolved.is_file():
+        raise ProvenanceError(f"result-determining input is not a file: {rel}")
+    return resolved
+
+
+def code_fingerprint(paths: Optional[list[str]] = None) -> dict:
     """
     SHA-256 of every result-determining source file, plus an aggregate.
 
@@ -309,17 +354,170 @@ def code_fingerprint() -> dict:
     each time needing a follow-up commit), whereas these hashes survive any
     history rewrite that does not change file contents.
     """
+    declared = list(_CODE_PATHS if paths is None else paths)
+    if len(declared) != len(set(declared)):
+        raise ProvenanceError("duplicate result-determining source path")
     files = []
-    for rel in _CODE_PATHS:
-        path = ROOT / rel
-        if not path.exists():
-            raise ProvenanceError(f"result-determining file missing: {rel}")
+    for rel in declared:
+        path = _declared_file(rel)
         files.append({"file": rel, "sha256": sha256_source(path)})
     files.sort(key=lambda d: d["file"])
     agg = hashlib.sha256()
     for entry in files:
         agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
     return {"files": files, "code_sha256": agg.hexdigest()}
+
+
+def dependency_fingerprint() -> dict:
+    """
+    Canonical identity of the declared result-determining dependency pins.
+
+    Hashing all of requirements.txt would make an Anthropic or dashboard update
+    invalidate an offline numerical result. Hashing only the four packages that
+    actually compute/read that result captures the real dependency boundary.
+    Their installed versions are independently checked by
+    environment_fingerprint().
+    """
+    path = _declared_file(_REQUIREMENTS_PATH)
+
+    def _canon(name: str) -> str:
+        return name.lower().replace("_", "-")
+
+    wanted = {_canon(n) for n in
+              _RESULT_DETERMINING_PACKAGES + _PLATFORM_CONDITIONAL_PACKAGES}
+    found: dict[str, str] = {}
+    markers: dict[str, str] = {}
+    for numbered, original in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = original.split("#", 1)[0].strip()
+        if not line or line.startswith("-r "):
+            continue
+        # A PEP 508 marker is part of the declaration, not noise: dropping
+        # `; sys_platform == "win32"` from tzdata would change what a Linux
+        # install resolves, so the marker text is hashed alongside the version.
+        requirement, _, marker = line.partition(";")
+        requirement, marker = requirement.strip(), marker.strip()
+        name = re.split(r"[<>=!~\s\[]", requirement, maxsplit=1)[0]
+        canonical = _canon(name)
+        if canonical not in wanted:
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s#]+)", requirement)
+        if match is None:
+            raise ProvenanceError(
+                f"{_REQUIREMENTS_PATH}:{numbered}: result-determining "
+                f"dependency must be pinned exactly: {original!r}")
+        if canonical in found:
+            raise ProvenanceError(
+                f"{_REQUIREMENTS_PATH}: duplicate pin for {canonical}")
+        found[canonical] = match.group(2)
+        if marker:
+            markers[canonical] = marker
+    missing = sorted(wanted - set(found))
+    if missing:
+        raise ProvenanceError(
+            f"{_REQUIREMENTS_PATH}: missing result-determining pins: {missing}")
+
+    packages = dict(sorted(found.items()))
+    conditional = dict(sorted(markers.items()))
+    identity = {"packages": packages, "platform_conditional": conditional}
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return {
+        "file": _REQUIREMENTS_PATH,
+        "hash_scheme": "declared-research-closure-v1",
+        "packages": packages,
+        # Declared here, absent from `environment`: see the constant's comment.
+        "platform_conditional": conditional,
+        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def _marker_applies(marker: str) -> bool:
+    """
+    Evaluate the narrow subset of PEP 508 markers this runner accepts.
+
+    Deliberately not `packaging`: pulling a marker evaluator into the runtime
+    would add a dependency to the very closure this module exists to pin. Only
+    sys_platform equality is understood, which is the single form in use, and
+    anything else is REFUSED rather than guessed — a marker silently evaluated
+    wrong would skip a version check without saying so.
+    """
+    match = re.fullmatch(
+        r"""sys_platform\s*(==|!=)\s*['"]([A-Za-z0-9_]+)['"]""", marker.strip())
+    if match is None:
+        raise ProvenanceError(
+            f"unsupported dependency marker {marker!r}: this runner evaluates "
+            "only sys_platform equality and refuses rather than guessing")
+    return (sys.platform == match.group(2)) if match.group(1) == "==" \
+        else (sys.platform != match.group(2))
+
+
+def assert_declared_dependencies_installed() -> None:
+    """
+    Every declared pin that APPLIES on this platform must be installed exactly.
+
+    `environment` cannot carry the platform-conditional packages: it has to
+    compare equal between the Windows workstation that writes the artifacts and
+    the Linux runner that verifies them, and tzdata is in the closure of only
+    one of them. That exclusion left a hole — tzdata==0.0.0 installed on
+    Windows did not invalidate --verify-code, even though the declared pin says
+    2026.1. Cross-platform IDENTITY and this-machine CORRECTNESS are two
+    different questions; the manifest answers the first, this answers the
+    second, and it runs on both the verify and the write path.
+    """
+    import importlib.metadata as md
+
+    declared = dependency_fingerprint()
+    conditional = declared["platform_conditional"]
+    problems = []
+    for name, pinned in declared["packages"].items():
+        marker = conditional.get(name)
+        if marker is not None and not _marker_applies(marker):
+            continue  # not in this platform's closure; nothing to install
+        try:
+            installed = md.version(name)
+        except md.PackageNotFoundError:
+            problems.append(f"{name}: pinned {pinned}, NOT INSTALLED")
+            continue
+        if installed != pinned:
+            problems.append(f"{name}: pinned {pinned}, installed {installed}")
+    if problems:
+        raise ProvenanceError(
+            "declared result-determining pins do not match this environment:\n  "
+            + "\n  ".join(problems)
+            + "\nInstall the pinned requirements before trusting these numbers.")
+
+
+def provenance_fingerprint(paths: Optional[list[str]] = None) -> dict:
+    """
+    Authoritative content identity shared by every research artifact.
+
+    The installed-pin check lives here as well as on each tool's entry points,
+    and the duplication is deliberate. Wiring it only into the entry points is
+    what failed review: the check reached the main runner and the other three
+    tools went round it, so a wrong tzdata left stf_feasibility.verify()
+    returning True. Every artifact's provenance block is built HERE, so a check
+    in this function cannot be forgotten by a tool that does not exist yet.
+    The entry-point calls remain because this one fires only after the
+    computation; they stop the run before it.
+    """
+    assert_declared_dependencies_installed()
+    code = code_fingerprint(paths)
+    dependencies = dependency_fingerprint()
+    environment = environment_fingerprint()
+    identity = {
+        "schema": _PROVENANCE_SCHEMA,
+        "code_sha256": code["code_sha256"],
+        "dependencies_sha256": dependencies["sha256"],
+        "environment": environment,
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return {
+        "code": code,
+        "dependencies": dependencies,
+        "environment": environment,
+        "provenance_schema": _PROVENANCE_SCHEMA,
+        "provenance_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
 
 
 def assert_code_is_committed(paths: Optional[list[str]] = None) -> None:
@@ -592,6 +790,7 @@ def assert_covers(inputs: list[dict], asset: str, interval: str,
 def build_manifest(assets: Optional[list[str]] = None) -> dict:
     """Manifest of every input the registered run depends on."""
     assets = assets or RESEARCH_CONFIG["assets"]
+    provenance = provenance_fingerprint()
     inputs = []
     for asset in assets:
         stem = asset.replace("-", "_")
@@ -600,12 +799,15 @@ def build_manifest(assets: Optional[list[str]] = None) -> dict:
     return {
         "config_id": RESEARCH_CONFIG["config_id"],
         # PRIMARY code identity: content-addressed, git-independent.
-        "code": code_fingerprint(),
+        "code": provenance["code"],
+        "dependencies": provenance["dependencies"],
         # Informational provenance label only. Kept because it is useful for
         # "where did this come from", not relied on for identity: it goes stale
         # on squash/rebase while the hashes above do not.
         "code_commit": _git_commit(),
-        "environment": environment_fingerprint(),
+        "environment": provenance["environment"],
+        "provenance_schema": provenance["provenance_schema"],
+        "provenance_sha256": provenance["provenance_sha256"],
         "config": RESEARCH_CONFIG,
         "inputs": sorted(inputs, key=lambda d: d["file"]),
     }
@@ -658,30 +860,27 @@ def verify_code_and_environment() -> bool:
     m_path = ARTIFACT_DIR / "manifest.json"
     if not m_path.exists():
         raise ProvenanceError("manifest is not committed — nothing to verify")
-    committed = json.loads(m_path.read_text(encoding="utf-8"))
+    try:
+        committed = json.loads(m_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProvenanceError(f"manifest is unreadable or malformed: {exc}") from None
+    if not isinstance(committed, dict):
+        raise ProvenanceError("manifest root must be a JSON object")
 
+    # Platform-conditional pins are absent from `environment` by design, so the
+    # field comparison below cannot see them. Check them against what is
+    # actually installed here before anything else is believed.
+    assert_declared_dependencies_installed()
+
+    fresh = provenance_fingerprint()
     ok = True
-    fresh_code = code_fingerprint()
-    old_code = committed.get("code") or {}
-    if old_code.get("code_sha256") != fresh_code["code_sha256"]:
-        ok = False
-        print("MISMATCH: result-determining code differs from the artifact",
-              file=sys.stderr)
-        old_by_file = {e["file"]: e["sha256"] for e in old_code.get("files", [])}
-        for entry in fresh_code["files"]:
-            was = old_by_file.get(entry["file"])
-            if was != entry["sha256"]:
-                print(f"  {entry['file']}: manifest {was} != working tree "
-                      f"{entry['sha256']}", file=sys.stderr)
-
-    # A different interpreter must fail both checks, not just the write path:
-    # verifying under 3.12 an artifact produced on 3.13 proves nothing.
-    fresh_env = environment_fingerprint()
-    if committed.get("environment") != fresh_env:
-        ok = False
-        print(f"MISMATCH: environment differs\n  manifest: "
-              f"{committed.get('environment')}\n  running : {fresh_env}",
-              file=sys.stderr)
+    for field in ("code", "dependencies", "environment", "provenance_schema",
+                  "provenance_sha256"):
+        if committed.get(field) != fresh[field]:
+            ok = False
+            print(f"MISMATCH: authoritative {field} provenance differs\n"
+                  f"  manifest: {committed.get(field)!r}\n"
+                  f"  current : {fresh[field]!r}", file=sys.stderr)
     return ok
 
 
@@ -1018,6 +1217,7 @@ def write_artifacts(out_dir: Optional[Path] = None) -> tuple[Path, Path]:
     # publishing numbers from uncommitted code on an unregistered interpreter is
     # not.
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     assert_code_is_committed()
     out_dir = out_dir or ARTIFACT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)

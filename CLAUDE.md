@@ -86,7 +86,7 @@ trial — log it in `docs/trial_registry.md` first.
 
 ### Position Sizing
 `LIVE_BALANCE_USD × position_size_pct` = order size.
-Default: 5% of $100 = $5 per trade. The rest of the Coinbase account is untouched.
+Default: 2% of $100 = $2 per trade. The rest of the Coinbase account is untouched.
 
 ### Entry Filters (runner.py `_check_entry_filters`)
 1. BTC 4h BEAR + correlation veto (corr ≥ 0.65 → full block; ≥ 0.35 → 50% size)
@@ -163,10 +163,10 @@ Summary as of 2026-08-09:
 
 **Do NOT switch `DRY_RUN=false` on current evidence.**
 
-## Pending Work (as of Aug 2026)
+## Project State and Remaining Work (as of Aug 2026)
 
-Immediate implementation brief:
-`docs/tasks/2026-08-research-evidence-hardening.md`.
+The evidence-hardening brief under `docs/tasks/` is completed history, not an
+instruction to repeat the work. Phases 6.7-6.10 are on `main`.
 
 1. V3 is retired as an activation candidate (recorded in `docs/trial_registry.md`);
    enforcement stays off. Integrated-path replay and journal cohort/outcome
@@ -179,9 +179,11 @@ Immediate implementation brief:
    project import, outbound network denied at the socket layer.
 3. ~~Phase 6.9~~ **DONE.** Dependencies pinned exactly (canonical Python
    **3.13.5**, exact — `write_artifacts` and both verify paths refuse any other
-   interpreter; `numpy`/`pandas`/`ta`/`pyarrow` recorded in the manifest). Code
-   identity is content-addressed with `code_commit` demoted to an informational
-   label. Input identity is the window-scoped logical OHLCV hash
+   interpreter; the declared `numpy`/`pandas`/`ta`/`pyarrow` lock pins and the
+   installed versions are both recorded). Exact per-file source hashes,
+   dependency-pin identity and the environment form `provenance_sha256`;
+   `code_commit` is informational only. Input identity is the window-scoped
+   logical OHLCV hash
    (`ohlcv-logical-v1`, scope `2020-01-01` → `2026-07-12`, both inclusive), so
    the tail the exchange keeps revising no longer breaks verification. Both
    `--verify-code` and the full `--verify` run in CI, the latter fed by
@@ -192,12 +194,14 @@ Immediate implementation brief:
    skipped gates removed 475 `daily_trend` and 118 `btc_regime` signals the old
    tool traded. Output is a deterministic artifact under
    `docs/research/artifacts/walk_forward/`, verifiable with `--verify`.
-5. If pursuing a new edge: a slow trend-following trial would have to be
-   pre-registered from scratch. The earlier "positive on all four assets"
-   result is **LEGACY / UNVERIFIED** — its implementation is not in this
-   repository, so it cannot be regenerated and is recorded under
-   `non_reproducible` in `docs/research/artifacts/results.json`. It is not
-   evidence that this family is promising; it is an unverified note.
-6. Run LLM agents on scanner events rather than hourly until an ablation shows
+5. **Phase 7R is feasibility work, not an edge result.** It found only seven
+   common four-asset clusters in 4.92 years and a weak power ratio; no return
+   hypothesis was evaluated. The only active evidence collection is the STF
+   execution-cost probe. Do not fix a Phase 7B cutoff or start that trial until
+   its separately declared coverage contract is met and reviewed.
+6. The earlier "positive on all four assets" slow-trend result remains
+   **LEGACY / UNVERIFIED** and must not be used to select a family. A future
+   edge test requires a new pre-registration and genuinely unseen data.
+7. Run LLM agents on scanner events rather than hourly until an ablation shows
    measurable incremental value.
-7. n8n pipeline for visual automation (good for portfolio/resume)
+8. n8n pipeline for visual automation (good for portfolio/resume)

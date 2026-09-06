@@ -38,7 +38,6 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -287,9 +286,8 @@ def portfolio_structure(frames: dict, window_start: pd.Timestamp) -> dict:
 def build_audit() -> dict:
     from backtesting.research_runner import (
         _HASH_SCHEME,
-        environment_fingerprint,
         logical_sha256,
-        sha256_source,
+        provenance_fingerprint,
     )
 
     per_asset: dict = {}
@@ -349,11 +347,7 @@ def build_audit() -> dict:
         spans, _open = _spans(entry_exit_events(closes, evaluation_start=common_start))
         frames[asset] = (spans, closes.index)
 
-    files = sorted(({"file": rel, "sha256": sha256_source(ROOT / rel)}
-                    for rel in _CODE_PATHS), key=lambda d: d["file"])
-    agg = hashlib.sha256()
-    for entry in files:
-        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
+    provenance = provenance_fingerprint(_CODE_PATHS)
 
     return {
         "trial_id": TRIAL_ID,
@@ -366,8 +360,11 @@ def build_audit() -> dict:
         "not_evidence": ("this is PRE-CUTOFF data used to size a future trial. "
                          "It is not an evaluation and cannot support or oppose "
                          "activation."),
-        "code": {"files": files, "code_sha256": agg.hexdigest()},
-        "environment": environment_fingerprint(),
+        "code": provenance["code"],
+        "dependencies": provenance["dependencies"],
+        "environment": provenance["environment"],
+        "provenance_schema": provenance["provenance_schema"],
+        "provenance_sha256": provenance["provenance_sha256"],
         "inputs": sorted(inputs, key=lambda d: d["file"]),
         "audit_window": {"start_inclusive": AUDIT_START, "end_inclusive": AUDIT_END},
         "rule": {
@@ -411,9 +408,11 @@ def _assert_writable() -> None:
     from backtesting.research_runner import (
         assert_canonical_python,
         assert_code_is_committed,
+        assert_declared_dependencies_installed,
     )
 
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     assert_code_is_committed(_CODE_PATHS)
 
 
@@ -427,8 +426,13 @@ def write_artifact() -> tuple[Path, dict]:
 
 
 def verify() -> bool:
+    from backtesting.research_runner import assert_declared_dependencies_installed
+
     if not ARTIFACT.exists():
         raise FeasibilityError(f"no committed audit at {ARTIFACT}")
+    # Fail before the computation, not after: provenance_fingerprint() checks
+    # this too, but only once the run has already been paid for.
+    assert_declared_dependencies_installed()
     if _serialise(build_audit()) == ARTIFACT.read_text(encoding="utf-8"):
         return True
     print("MISMATCH: feasibility audit differs from a fresh run", file=sys.stderr)

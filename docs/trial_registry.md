@@ -487,22 +487,35 @@ provenance artifact asserts.
    every indicator, and `pyarrow` — the parquet engine pandas selects implicitly
    — was not even listed, so it was a silent unpinned dependency of every
    number. All direct dependencies are now pinned exactly; the four
-   result-determining ones plus the canonical interpreter (Python 3.13) are
-   recorded in `manifest.environment`, so an upgrade invalidates verification
-   loudly. `write_artifacts` refuses to run on a non-canonical Python.
+   result-determining ones plus the canonical interpreter (Python 3.13.5 exact)
+   are recorded in `manifest.environment`, while the exact declared pins for
+   the whole COMPUTATIONAL CLOSURE are separately content-addressed in
+   `manifest.dependencies`. Pinning only the four roots was not enough:
+   `python-dateutil`, `six` and `tzdata` sit underneath pandas, decide how
+   timestamps parse, and were resolved by whatever pip happened to pick, so a
+   fresh install could move the numbers while `--verify-code` stayed green.
+   A change to either declaration or installed environment now invalidates
+   verification loudly, and a test recomputes the closure so a newly introduced
+   transitive dependency cannot slip in unpinned. `write_artifacts` refuses to
+   run on a non-canonical Python.
 
    Note: CI ran Python 3.11 while the artifacts were produced on 3.13. Any
    research check added to CI before this would have compared numbers computed
    under a different interpreter. CI is now on 3.13.
 
-2. **Code identity is content-addressed.** SHA-256 per `_CODE_PATHS` file plus
-   an aggregate `code_sha256`. `code_commit` is demoted to an informational
-   label — it went stale twice already, each time needing a follow-up commit
+2. **Provenance identity is content-addressed.** SHA-256 per `_CODE_PATHS` file
+   plus aggregate `code_sha256`, exact numerical dependency pins and the actual
+   environment are bound by `provenance_sha256`. Verification compares the
+   exact file list as well as the aggregates and fails closed on missing,
+   escaping or symlinked declarations. `code_commit` is informational only —
+   it went stale twice already, each time needing a follow-up commit
    purely to repoint it, and a squash merge no longer requires one. Artifact
    generation now refuses a dirty working tree.
 
-3. **`--verify-code`**: code hashes plus environment, in milliseconds, with no
-   candle cache and no git history. It is a required CI check.
+3. **`--verify-code`**: exact source/dependency/environment provenance, in
+   milliseconds, with no candle cache and no git history. It is a required CI
+   check and its real CLI boundary is tested in rewritten shallow and
+   history-free checkouts.
 
 ### Input identity — RESOLVED 2026-08-15, option (a)
 

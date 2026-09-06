@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "c313e9dcb61e510956bcabb290a12c0255684d31ea2ae0797c7047f420de4ac5",
+    "code_sha256": "40d49202ee6eb01905a1754eb5ff3e530a89ab0a71fe97ee1ab2ccccfb3d0cdf",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -16,7 +16,7 @@
       },
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
+        "sha256": "899bcaca1131410a33b05a7d143d9c8f8344aed708cc871de7cfc52a3895f28c"
       },
       {
         "file": "backtesting/signal_scanner.py",
@@ -28,7 +28,7 @@
       }
     ]
   },
-  "code_commit": "5494af4dff430b326bd9bf6316c00f636e7d96d1",
+  "code_commit": "4c2d2442fa198795e73695c9de3f03d3037f961e",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
@@ -132,11 +132,30 @@
     }
   },
   "config_id": "2026-08-warmup-semantics.v1",
+  "dependencies": {
+    "file": "requirements.txt",
+    "hash_scheme": "declared-research-closure-v1",
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
+      "ta": "0.11.0",
+      "tzdata": "2026.1"
+    },
+    "platform_conditional": {
+      "tzdata": "sys_platform == \"win32\""
+    },
+    "sha256": "448257628af731772233ec10abf7653071d6139ed3704c53b159b4d9aa937858"
+  },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
       "ta": "0.11.0"
     },
     "python": "3.13.5"
@@ -350,5 +369,7 @@
       "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
       "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     }
-  ]
+  ],
+  "provenance_schema": "research-content-provenance-v1",
+  "provenance_sha256": "32ab8a8ac45ea70a03bfad1d0325e2c76200b2c94e90733217d60d6fe9a4b468"
 }

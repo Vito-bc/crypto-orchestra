@@ -34,10 +34,12 @@ libraries, from a local candle cache.
 </p>
 
 Both this and the cheaper `--verify-code` run in CI, fed by credential-free
-public hydration. Code identity is content-addressed, input
-identity is a window-scoped logical OHLCV hash, and the interpreter is pinned to
-**3.13.5 exactly** — regenerating under anything else is refused rather than
-silently producing different numbers. See
+public hydration. Exact source-file hashes, the declared pins for the whole
+numerical dependency closure, and the installed environment form one
+content-addressed provenance identity; input identity is a window-scoped
+logical OHLCV hash. The interpreter
+is pinned to **3.13.5 exactly** — regenerating under anything else is refused
+rather than silently producing different numbers. See
 [docs/research/](docs/research/#reproducibility).
 
 ## What it does

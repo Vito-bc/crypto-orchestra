@@ -5,15 +5,15 @@
   },
   "blinding": "prices are consumed exclusively by entry_exit_events(), which returns timestamps and labels; no P&L, profit factor, expectancy, win rate, asset ranking or parameter comparison is computed anywhere in this module",
   "code": {
-    "code_sha256": "5d7be2f81941ca600c912e94b89b51570e101b844c92702819bc9f617c0939c5",
+    "code_sha256": "727e25477fa370e7507a207b36f309c5938151e637064c86658099cc37cda07a",
     "files": [
       {
         "file": "backtesting/research_runner.py",
-        "sha256": "7a1bfccf93c798ced282079efcc522a6a3d587fab3ea63241264fa6d622205d0"
+        "sha256": "899bcaca1131410a33b05a7d143d9c8f8344aed708cc871de7cfc52a3895f28c"
       },
       {
         "file": "backtesting/stf_feasibility.py",
-        "sha256": "1ad31063c3bf8a62396654a60a810a5cb68959e182928ba05295b49f7f431926"
+        "sha256": "09fc89d9543630140a8af7c7f2213f76029bffcaeb18493c4c7f12cbd7732597"
       },
       {
         "file": "backtesting/stf_protocol.py",
@@ -132,11 +132,30 @@
     "window_start": "2021-08-11T00:00:00+00:00",
     "years": 4.92
   },
+  "dependencies": {
+    "file": "requirements.txt",
+    "hash_scheme": "declared-research-closure-v1",
+    "packages": {
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
+      "ta": "0.11.0",
+      "tzdata": "2026.1"
+    },
+    "platform_conditional": {
+      "tzdata": "sys_platform == \"win32\""
+    },
+    "sha256": "448257628af731772233ec10abf7653071d6139ed3704c53b159b4d9aa937858"
+  },
   "environment": {
     "packages": {
       "numpy": "2.4.4",
       "pandas": "3.0.2",
       "pyarrow": "24.0.0",
+      "python-dateutil": "2.9.0.post0",
+      "six": "1.17.0",
       "ta": "0.11.0"
     },
     "python": "3.13.5"
@@ -310,6 +329,8 @@
       "open_at_end": 0
     }
   },
+  "provenance_schema": "research-content-provenance-v1",
+  "provenance_sha256": "7cc9e60084cdc3c3700b86a3c0a456872ec5bd39cd280465c06c10e2d870c6d7",
   "purpose": "BLINDED feasibility audit \u2014 event rates, exposure structure and data quality only",
   "rule": {
     "direction": "long only",

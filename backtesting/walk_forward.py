@@ -431,16 +431,9 @@ def build_artifact(assets: list[str]) -> dict:
     thing as the main one: content-addressed code, the pinned environment, and
     a logical input hash — here over this tool's own spans.
     """
-    import hashlib
+    from backtesting.research_runner import provenance_fingerprint
 
-    from backtesting.research_runner import environment_fingerprint, sha256_source
-
-    files = sorted(
-        ({"file": rel, "sha256": sha256_source(ROOT / rel)} for rel in _CODE_PATHS),
-        key=lambda d: d["file"])
-    agg = hashlib.sha256()
-    for entry in files:
-        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
+    provenance = provenance_fingerprint(_CODE_PATHS)
 
     # Hash the inputs BEFORE and AFTER the scan. The shared loader appends to the
     # parquet cache when asked for a range it does not hold, so an artifact built
@@ -457,8 +450,11 @@ def build_artifact(assets: list[str]) -> dict:
     return {
         "trial_id": TRIAL_ID,
         "status": "HISTORICAL DIAGNOSTIC — not clean OOS, not evidence of edge",
-        "code": {"files": files, "code_sha256": agg.hexdigest()},
-        "environment": environment_fingerprint(),
+        "code": provenance["code"],
+        "dependencies": provenance["dependencies"],
+        "environment": provenance["environment"],
+        "provenance_schema": provenance["provenance_schema"],
+        "provenance_sha256": provenance["provenance_sha256"],
         "protocol": {
             "assets": sorted(assets),
             "windows": WINDOWS,
@@ -496,6 +492,7 @@ def _assert_writable(assets: list[str]) -> None:
     from backtesting.research_runner import (
         assert_canonical_python,
         assert_code_is_committed,
+        assert_declared_dependencies_installed,
     )
 
     if sorted(assets) != sorted(ASSETS):
@@ -503,6 +500,7 @@ def _assert_writable(assets: list[str]) -> None:
             f"the canonical artifact covers {sorted(ASSETS)}; refusing to write "
             f"a run of {sorted(assets)}. Use --asset for a report only.")
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     # THIS tool's paths. The shared default covers only the main runner's
     # _CODE_PATHS, which omits walk_forward.py itself.
     assert_code_is_committed(_CODE_PATHS)
@@ -530,8 +528,13 @@ def write_artifact(assets: list[str]) -> tuple[Path, dict]:
 
 
 def verify_artifact(assets: list[str]) -> bool:
+    from backtesting.research_runner import assert_declared_dependencies_installed
+
     if not ARTIFACT.exists():
         raise WalkForwardError(f"no committed artifact at {ARTIFACT}")
+    # Fail before the computation, not after: provenance_fingerprint() checks
+    # this too, but only once the run has already been paid for.
+    assert_declared_dependencies_installed()
     fresh = _serialise(build_artifact(assets))
     if fresh == ARTIFACT.read_text(encoding="utf-8"):
         return True

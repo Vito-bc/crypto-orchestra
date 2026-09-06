@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,7 @@ def test_sizing_is_pinned_identically_here_and_in_ci() -> None:
     import pipeline.position_tracker as pt
 
     assert os.environ["LIVE_BALANCE_USD"] == "100"
+    assert os.environ["TRADE_SIZE_PCT"] == "0.05"
     assert pt.PAPER_BALANCE == 100
 
 
@@ -152,6 +154,17 @@ def test_dns_resolution_is_blocked(bootstrap) -> None:
         socket.getaddrinfo("api.anthropic.com", 443)
 
 
+@pytest.mark.parametrize("resolver,args", [
+    (socket.gethostbyname, ("api.anthropic.com",)),
+    (socket.gethostbyname_ex, ("api.anthropic.com",)),
+    (socket.gethostbyaddr, ("8.8.8.8",)),
+    (socket.getnameinfo, (("8.8.8.8", 53), 0)),
+])
+def test_alternate_dns_resolution_paths_are_blocked(bootstrap, resolver, args) -> None:
+    with pytest.raises(bootstrap.NetworkAccessBlocked):
+        resolver(*args)
+
+
 def test_udp_sendto_is_blocked(bootstrap) -> None:
     """
     Connectionless sends bypass connect() entirely, so this was the one way out
@@ -162,8 +175,102 @@ def test_udp_sendto_is_blocked(bootstrap) -> None:
         s.sendto(b"ping", ("8.8.8.8", 53))
 
 
-def test_loopback_is_still_allowed() -> None:
-    """The guard must not break legitimate local sockets."""
+def _exception_chain_contains(exc: BaseException, needle: str) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if needle in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+@pytest.mark.parametrize("client", ["urllib", "requests", "httpx"])
+def test_common_sync_http_clients_cannot_escape(bootstrap, client) -> None:
+    """The socket boundary protects clients added later, not a hardcoded mock list."""
+    with pytest.raises(Exception) as exc:
+        if client == "urllib":
+            import urllib.request
+
+            # tests/conftest patches the module-level urlopen for Telegram.
+            # A fresh opener exercises urllib's real transport without
+            # shadowing or clearing that independent notification guard.
+            urllib.request.build_opener().open(
+                "https://example.invalid", timeout=1)
+        elif client == "requests":
+            import requests
+
+            requests.get("https://example.invalid", timeout=1)
+        else:
+            import httpx
+
+            httpx.get("https://example.invalid", timeout=1)
+    assert _exception_chain_contains(exc.value, "Blocked outbound")
+
+
+@pytest.mark.allow_loopback
+def test_async_http_client_cannot_escape(bootstrap) -> None:
+    """Asyncio may build a local self-pipe; public resolution stays denied."""
+    import asyncio
+
+    import httpx
+
+    async def request():
+        async with httpx.AsyncClient() as client:
+            await client.get("https://example.invalid", timeout=1)
+
+    with pytest.raises(Exception) as exc:
+        asyncio.run(request())
+    assert _exception_chain_contains(exc.value, "Blocked outbound")
+
+
+def test_unmarked_loopback_is_blocked(bootstrap) -> None:
+    """One local-socket test must not authorize localhost suite-wide."""
+    with pytest.raises(bootstrap.NetworkAccessBlocked):
+        socket.getaddrinfo("localhost", 0)
+
+
+def test_unmarked_test_cannot_start_a_subprocess(bootstrap) -> None:
+    import subprocess
+    import sys
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked subprocess"):
+        subprocess.run([sys.executable, "-c", "pass"], check=True)
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+def test_explicit_marker_allows_only_the_named_executable(bootstrap) -> None:
+    import subprocess
+    import sys
+
+    completed = subprocess.run(
+        [sys.executable, "-c", "print('isolated-child')"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "isolated-child"
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked subprocess"):
+        subprocess.run(["definitely-not-allowed", "--version"], check=True)
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+def test_shell_subprocess_is_denied_even_when_an_executable_is_allowed(
+        bootstrap) -> None:
+    import subprocess
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell subprocess"):
+        subprocess.run("echo escape", shell=True, check=True)
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell process"):
+        os.system("echo escape")
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell process"):
+        os.popen("echo escape")
+
+
+@pytest.mark.allow_loopback
+def test_explicitly_marked_loopback_is_allowed() -> None:
+    """A narrowly authorized local socket remains available."""
     assert socket.getaddrinfo("localhost", 0)
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
@@ -186,8 +293,201 @@ def test_the_block_names_where_it_came_from(bootstrap) -> None:
     assert "Attempted from" in msg
 
 
+@pytest.mark.parametrize("entry", ["spawnv", "spawnl", "spawnve"])
+def test_os_spawn_family_cannot_start_an_unmarked_child(bootstrap, entry) -> None:
+    """
+    os.spawn* reaches CreateProcess without ever touching subprocess.Popen.
+
+    This was a real hole: a review started a child interpreter through
+    os.spawnv with no marker, and it ran. The child has none of this file's
+    socket patches, so it could have reached the network freely.
+    """
+    exe = sys.executable
+    calls = {
+        "spawnv": lambda: os.spawnv(os.P_WAIT, exe, [exe, "-c", "pass"]),
+        "spawnl": lambda: os.spawnl(os.P_WAIT, exe, exe, "-c", "pass"),
+        "spawnve": lambda: os.spawnve(
+            os.P_WAIT, exe, [exe, "-c", "pass"], dict(os.environ)),
+    }
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked os.spawn"):
+        calls[entry]()
+
+
+def test_os_exec_family_cannot_replace_this_interpreter(bootstrap) -> None:
+    """exec* would hand the whole process to an unpatched image."""
+    exe = sys.executable
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked os.execv"):
+        os.execv(exe, [exe, "-c", "pass"])
+
+
+def test_multiprocessing_cannot_start_an_unmarked_child(bootstrap) -> None:
+    """multiprocessing's spawn method never goes through subprocess.Popen."""
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    process = ctx.Process(target=len, args=("x",))
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked multiprocessing"):
+        process.start()
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+def test_a_marked_test_may_use_os_spawn(bootstrap, tmp_path) -> None:
+    """The marker authorises the whole family, not only subprocess.Popen."""
+    marker = tmp_path / "ran.txt"
+    # A script file, not `-c`: os.spawnv applies its own Windows quoting and
+    # would mangle a code string containing spaces.
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys\npathlib.Path(sys.argv[1]).write_text('ok')\n",
+        encoding="utf-8")
+    exe = sys.executable
+    assert os.spawnv(os.P_WAIT, exe, [exe, str(script), str(marker)]) == 0
+    assert marker.read_text() == "ok", "the authorised child must really run"
+
+
+def test_no_unguarded_process_entry_point_exists(bootstrap) -> None:
+    """
+    The guard ENUMERATES entry points, so enumeration drift is the failure mode.
+
+    If CPython grows a new spawn/exec entry point, this fails and someone has
+    to decide about it deliberately. os.fork is excluded on purpose: a fork
+    keeps the patched image, so the child stays inside the socket guard.
+    """
+    known = {name for name, _ in bootstrap._OS_PROCESS_ENTRY_POINTS}
+    present = {
+        name for name in dir(os)
+        if name.startswith(("spawn", "exec", "posix_spawn", "startfile"))
+        and callable(getattr(os, name, None))
+    }
+    unguarded = present - known - {"execle"} - {"fork", "forkpty"}
+    assert not unguarded, (
+        f"unguarded process-entry points in os: {sorted(unguarded)}. Add them "
+        "to _OS_PROCESS_ENTRY_POINTS with the index of the executable argument, "
+        "or document why they cannot start a fresh interpreter."
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "startfile"), reason="Windows-only API")
+def test_os_startfile_cannot_hand_a_path_to_the_shell(bootstrap, tmp_path) -> None:
+    """
+    startfile starts no interpreter itself, but it asks the shell to open an
+    arbitrary path however it likes — the same escape by a longer route. It was
+    missed by the first pass because it does not share the spawn/exec prefix.
+    """
+    target = tmp_path / "harmless.txt"
+    target.write_text("x", encoding="utf-8")
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked os.startfile"):
+        os.startfile(str(target))
+
+
+@pytest.mark.allow_loopback
+def test_asyncio_subprocess_cannot_escape_through_a_popen_subclass(
+        bootstrap, tmp_path) -> None:
+    """
+    The subclass hole, pinned.
+
+    asyncio.windows_utils.Popen subclasses subprocess.Popen and captured the
+    ORIGINAL class at import time, so rebinding the subprocess.Popen NAME left
+    asyncio.create_subprocess_exec free to start a child. Verified before the
+    fix: it ran, and the child wrote its marker file.
+
+    allow_loopback is required only so the proactor event loop can build its
+    own self-pipe; without it the loop dies for an unrelated reason and this
+    test would pass without ever exercising the guard.
+    """
+    import asyncio
+
+    marker = tmp_path / "child_ran.txt"
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys\npathlib.Path(sys.argv[1]).write_text('escaped')\n",
+        encoding="utf-8")
+
+    async def spawn():
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, str(script), str(marker))
+        await process.wait()
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="Blocked subprocess"):
+        asyncio.run(spawn())
+    assert not marker.exists(), "the child ran despite the guard"
+
+
+@pytest.mark.allow_loopback
+def test_asyncio_shell_subprocess_is_denied(bootstrap) -> None:
+    """create_subprocess_shell is subprocess(shell=True) underneath."""
+    import asyncio
+
+    async def spawn():
+        process = await asyncio.create_subprocess_shell("echo escape")
+        await process.wait()
+
+    with pytest.raises(bootstrap.NetworkAccessBlocked, match="shell subprocess"):
+        asyncio.run(spawn())
+
+
+@pytest.mark.allow_subprocess("python", "python.exe")
+@pytest.mark.allow_loopback
+def test_a_marked_test_may_use_asyncio_subprocess(bootstrap, tmp_path) -> None:
+    """The class-level guard must not break a legitimately authorised child."""
+    import asyncio
+
+    marker = tmp_path / "ran.txt"
+    script = tmp_path / "child.py"
+    script.write_text(
+        "import pathlib, sys\npathlib.Path(sys.argv[1]).write_text('ok')\n",
+        encoding="utf-8")
+
+    async def spawn():
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, str(script), str(marker))
+        await process.wait()
+        return process.returncode
+
+    assert asyncio.run(spawn()) == 0
+    assert marker.read_text() == "ok"
+
+
+def test_the_guard_is_installed_on_the_class_not_the_module_attribute() -> None:
+    """
+    Rebinding the name is what let the subclass through, so the shape of the
+    fix is itself worth pinning: a future refactor back to `subprocess.Popen =`
+    would silently reopen asyncio.
+    """
+    import subprocess
+
+    assert subprocess.Popen.__init__.__name__ == "_guard_popen_init"
+    if sys.platform == "win32":
+        from asyncio import windows_utils
+
+        # asyncio's Popen defines its OWN __init__ and delegates upward, so the
+        # guard is reached through the MRO rather than by inheriting the slot
+        # directly. What matters is that the base is the class we patched.
+        assert issubclass(windows_utils.Popen, subprocess.Popen)
+        assert subprocess.Popen.__init__ in (
+            base.__dict__.get("__init__")
+            for base in windows_utils.Popen.__mro__
+            if "__init__" in base.__dict__
+        )
+
+
+def test_every_guarded_entry_point_was_actually_patched(bootstrap) -> None:
+    """A name in the table that never got wrapped would be silent dead weight."""
+    for name, _ in bootstrap._OS_PROCESS_ENTRY_POINTS:
+        if not hasattr(os, name):
+            continue  # POSIX-only variant, absent on this platform
+        assert getattr(os, name).__name__ == f"_guard_os_{name}", (
+            f"os.{name} is declared guarded but is not patched"
+        )
+    assert bootstrap._real_os_process_entries, "nothing was captured for restoration"
+
+
 def test_real_socket_functions_are_kept_for_restoration(bootstrap) -> None:
     """pytest_unconfigure must be able to put the interpreter back."""
     for name in ("_real_connect", "_real_connect_ex", "_real_getaddrinfo",
-                 "_real_create_connection", "_real_sendto"):
+                 "_real_gethostbyname", "_real_gethostbyname_ex",
+                 "_real_gethostbyaddr", "_real_getnameinfo",
+                 "_real_create_connection", "_real_sendto", "_real_popen_init",
+                 "_real_mp_start",
+                 "_real_os_system", "_real_os_popen"):
         assert getattr(bootstrap, name) is not None

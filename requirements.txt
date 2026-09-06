@@ -14,11 +14,21 @@
 # docs/research/artifacts/manifest.json under `environment`, so changing one
 # invalidates verification loudly instead of quietly re-deriving the numbers.
 #
-# These are the versions that produced the committed artifacts. They are NOT a
-# `pip freeze` of a working environment: only direct dependencies are pinned
-# here, leaving transitive resolution to pip.
+# These are the versions that produced the committed artifacts. Outside the
+# result-determining block below, only direct dependencies are pinned and
+# transitive resolution is left to pip: an Anthropic or Streamlit upgrade must
+# not invalidate an offline numerical result.
 
 # ── RESULT-DETERMINING (recorded in the research manifest) ───────────────────
+#
+# This block is the COMPUTATIONAL CLOSURE, not just the four packages the code
+# imports. Pinning only the roots left the numbers resting on whatever pip
+# happened to resolve underneath them: pandas reaches python-dateutil for every
+# timestamp it parses and tzdata for every zone it resolves, and
+# python-dateutil reaches six. None of the three was pinned or recorded, so a
+# fresh install could compute different numbers while --verify-code stayed
+# green. `test_the_recorded_closure_is_the_real_one` recomputes this set from
+# the installed metadata and fails when it drifts.
 numpy==2.4.4
 pandas==3.0.2
 ta==0.11.0
@@ -26,6 +36,17 @@ ta==0.11.0
 # read_parquet/to_parquet, so it was a silent, unpinned dependency of every
 # research number despite never appearing in this file.
 pyarrow==24.0.0
+# Transitive, and every bit as result-determining as the four above.
+python-dateutil==2.9.0.post0
+six==1.17.0
+# PLATFORM-CONDITIONAL. pandas declares `tzdata; sys_platform == "win32"`, so
+# it exists in the closure on the workstation that writes the artifacts and not
+# on the Linux runner that verifies them. Its DECLARED pin is recorded in the
+# manifest (that text is identical everywhere); its installed version is
+# deliberately kept out of `environment`, which has to compare equal across
+# both platforms. Keep the marker: dropping it would install tzdata on Linux
+# and change the closure there.
+tzdata==2026.1 ; sys_platform == "win32"
 
 # ── Exchange / market data ───────────────────────────────────────────────────
 coinbase-advanced-py==1.8.2

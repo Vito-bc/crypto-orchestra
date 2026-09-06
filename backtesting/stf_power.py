@@ -271,7 +271,7 @@ def _cell(rng, years, win_rate, rho, loss_pct, edge, structure) -> dict:
 
 
 def build_study() -> dict:
-    from backtesting.research_runner import environment_fingerprint, sha256_source
+    from backtesting.research_runner import provenance_fingerprint
 
     structure = _structure()
     rng = np.random.default_rng(SEED)
@@ -294,18 +294,17 @@ def build_study() -> dict:
                 "median": round(float(np.median(rates)), 4),
                 "max": round(max(rates), 4)}
 
-    files = sorted(({"file": rel, "sha256": sha256_source(ROOT / rel)}
-                    for rel in _CODE_PATHS), key=lambda d: d["file"])
-    agg = hashlib.sha256()
-    for entry in files:
-        agg.update(f"{entry['file']}:{entry['sha256']}\n".encode())
+    provenance = provenance_fingerprint(_CODE_PATHS)
 
     return {
         "trial_id": TRIAL_ID,
         "purpose": ("power of the FINAL STF continuation gates under a declared "
                     "payoff model — no historical strategy returns are used"),
-        "code": {"files": files, "code_sha256": agg.hexdigest()},
-        "environment": environment_fingerprint(),
+        "code": provenance["code"],
+        "dependencies": provenance["dependencies"],
+        "environment": provenance["environment"],
+        "provenance_schema": provenance["provenance_schema"],
+        "provenance_sha256": provenance["provenance_sha256"],
         "calibrated_from": {
             "source": "docs/research/artifacts/stf_feasibility/audit.json",
             "basis": "common-universe window (fixed four-asset portfolio)",
@@ -390,9 +389,11 @@ def _assert_writable() -> None:
     from backtesting.research_runner import (
         assert_canonical_python,
         assert_code_is_committed,
+        assert_declared_dependencies_installed,
     )
 
     assert_canonical_python()
+    assert_declared_dependencies_installed()
     # The audit is an INPUT, so an uncommitted one would make this study
     # describe a structure that exists on one machine only.
     assert_code_is_committed(_CODE_PATHS + [
@@ -408,8 +409,13 @@ def write_artifact() -> tuple[Path, dict]:
 
 
 def verify() -> bool:
+    from backtesting.research_runner import assert_declared_dependencies_installed
+
     if not ARTIFACT.exists():
         raise PowerError(f"no committed study at {ARTIFACT}")
+    # Fail before the computation, not after: provenance_fingerprint() checks
+    # this too, but only once the run has already been paid for.
+    assert_declared_dependencies_installed()
     if _serialise(build_study()) == ARTIFACT.read_text(encoding="utf-8"):
         return True
     print("MISMATCH: power study differs from a fresh run", file=sys.stderr)
