@@ -158,6 +158,161 @@ def test_a_view_only_credential_can_supply_the_tier() -> None:
                     "key_permissions": perms}
 
 
+# ── The shape the live SDK actually returns ──────────────────────────────────
+#
+# Rates and tier name below are a REAL reading, used as test data only. They are
+# not a default, not a frozen parameter, and not evidence about historical fees.
+
+_LIVE_TIER_DICT = {
+    "pricing_tier": "Intro 1",
+    "usd_from": "",
+    "usd_to": "",
+    "taker_fee_rate": "0.012",
+    "maker_fee_rate": "0.006",
+    "aop_from": "0",
+    "aop_to": "1000000",
+    "volume_types_and_range": [
+        {"volume_types": ["VOLUME_TYPE_SPOT"], "vol_from": "0", "vol_to": "10000"}],
+}
+
+
+def _sdk_summary(fee_tier=None):
+    """The installed SDK's own response type, not a stand-in for it."""
+    from coinbase.rest.types.fees_types import GetTransactionSummaryResponse
+
+    body = {"total_volume": 0.0, "total_fees": 0.0}
+    if fee_tier is not None:
+        body["fee_tier"] = fee_tier
+    return GetTransactionSummaryResponse(body)
+
+
+def test_the_sdk_really_hands_back_a_dict_for_fee_tier() -> None:
+    """
+    Pins the reason the accessor exists. The SDK annotates this attribute as a
+    FeeTier object and then stores whatever the API sent — `self.fee_tier:
+    FeeTier = response.pop("fee_tier")` — so it is a plain dict at runtime. If a
+    future SDK ever returns a real object here, this test says so out loud
+    rather than letting the fix quietly become dead weight.
+    """
+    assert isinstance(_sdk_summary(dict(_LIVE_TIER_DICT)).fee_tier, dict)
+
+
+def test_a_dict_shaped_fee_tier_is_measured_not_discarded() -> None:
+    """
+    The defect. getattr found nothing in a dict, every rate read as missing, and
+    a live correctly-permissioned key reported "fee_tier present but a rate is
+    missing" — an unmeasured fee that looked like a credential problem.
+    """
+    client = SimpleNamespace(
+        get_api_key_permissions=lambda: _VIEW_ONLY,
+        get_transaction_summary=lambda: _sdk_summary(dict(_LIVE_TIER_DICT)))
+    perms = {"can_view": True, "can_trade": False, "can_transfer": False}
+
+    assert cp._fee_tier(client, perms) == {
+        "available": True, "measured": True,
+        "taker_fee_rate": 0.012, "maker_fee_rate": 0.006,
+        "pricing_tier": "Intro 1", "key_permissions": perms}
+
+
+def test_a_dict_shaped_outer_response_is_read_too() -> None:
+    """Not only the nested tier: the envelope may arrive as a dict as well."""
+    client = SimpleNamespace(
+        get_transaction_summary=lambda: {"fee_tier": dict(_LIVE_TIER_DICT)})
+    tier = cp._fee_tier(client, {"can_view": True})
+    assert tier["measured"] is True
+    assert tier["taker_fee_rate"] == 0.012
+
+
+@pytest.mark.parametrize("shape", ["dict", "object"])
+def test_both_shapes_agree_on_the_same_reading(shape) -> None:
+    """One reading, two encodings, one answer."""
+    tier = (dict(_LIVE_TIER_DICT) if shape == "dict"
+            else SimpleNamespace(**{k: v for k, v in _LIVE_TIER_DICT.items()}))
+    client = SimpleNamespace(get_transaction_summary=lambda: _sdk_summary(tier))
+
+    out = cp._fee_tier(client, None)
+    assert (out["taker_fee_rate"], out["maker_fee_rate"], out["pricing_tier"]) \
+        == (0.012, 0.006, "Intro 1")
+
+
+@pytest.mark.parametrize("broken", [
+    {**_LIVE_TIER_DICT, "taker_fee_rate": "nan"},
+    {**_LIVE_TIER_DICT, "maker_fee_rate": "inf"},
+    {**_LIVE_TIER_DICT, "taker_fee_rate": "-0.01"},
+    {**_LIVE_TIER_DICT, "maker_fee_rate": "abc"},
+    {**_LIVE_TIER_DICT, "taker_fee_rate": None},
+    {**_LIVE_TIER_DICT, "taker_fee_rate": "0.5"},
+    {k: v for k, v in _LIVE_TIER_DICT.items() if k != "taker_fee_rate"},
+    {},
+])
+def test_a_dict_shaped_tier_still_fails_closed_on_a_bad_rate(broken) -> None:
+    """
+    Reading the right place must not soften the contract. A dict is now read;
+    an unusable rate inside it is still not a measurement, and no zero or
+    assumed fee is substituted.
+    """
+    client = SimpleNamespace(get_transaction_summary=lambda: _sdk_summary(broken))
+    out = cp._fee_tier(client, None)
+    assert out["available"] is False
+    assert out["measured"] is False
+    assert "taker_fee_rate" not in out and "maker_fee_rate" not in out
+
+
+def test_a_missing_fee_tier_is_still_reported_as_missing() -> None:
+    client = SimpleNamespace(get_transaction_summary=lambda: _sdk_summary(None))
+    out = cp._fee_tier(client, None)
+    assert out["available"] is False
+    assert "no fee_tier" in out["reason"]
+
+
+def test_the_field_accessor_prefers_nothing_it_was_not_given() -> None:
+    assert cp._field({"a": 1}, "a") == 1
+    assert cp._field({"a": 1}, "b") is None
+    assert cp._field(SimpleNamespace(a=1), "a") == 1
+    assert cp._field(SimpleNamespace(a=1), "b") is None
+    assert cp._field(None, "a") is None
+
+
+def test_a_dict_shaped_tier_reaches_the_report_through_observe(
+        tmp_path, monkeypatch) -> None:
+    """
+    End to end on the real response type: observe() records the tier and
+    report() counts it as measured. This is the path the scheduled run takes.
+    """
+    import datetime as dt
+
+    class InWindow(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 9, 11, 0, 5, tzinfo=dt.timezone.utc)
+
+    key = tmp_path / "view_only_fee_key.json"
+    key.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv(cp.FEE_KEY_FILE_ENV, str(key))
+    monkeypatch.setattr(cp, "datetime", InWindow)
+    monkeypatch.setattr(cp, "OBSERVATIONS", tmp_path / "probe.jsonl")
+
+    fee = SimpleNamespace(
+        get_api_key_permissions=lambda: _VIEW_ONLY,
+        get_transaction_summary=lambda: _sdk_summary(dict(_LIVE_TIER_DICT)))
+
+    with patch("coinbase.rest.RESTClient",
+               side_effect=lambda **kw: fee if kw else _public_client_stub()):
+        obs = cp.observe()
+
+    assert obs["fee_tier"]["measured"] is True
+    assert obs["fee_tier"]["taker_fee_rate"] == 0.012
+
+    r = cp.report()
+    assert r["fee_tier"]["observations_measured"] == 1
+    assert r["fee_tier"]["observations_unavailable"] == 0
+    assert r["fee_tier"]["observed_tiers"][0]["pricing_tier"] == "Intro 1"
+    assert r["fee_tier"]["tier_changed_during_the_probe"] is False
+    # taker on both legs, reported because exactly one tier was seen
+    assert r["fee_tier"]["round_trip_taker_fee_pct"] == 2.4
+    assert r["readiness"]["fee_component_measured"] is True
+
+
 @pytest.mark.parametrize("rate", ["nan", "inf", "-inf", "-0.006", "abc", None,
                                   "0.5", ""])
 def test_an_unusable_fee_rate_degrades_to_unavailable(rate) -> None:

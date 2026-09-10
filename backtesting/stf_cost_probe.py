@@ -264,6 +264,23 @@ def _sweep(levels: list[tuple[float, float]], notional: float) -> dict:
     }
 
 
+def _field(container, name):
+    """
+    One field of an SDK response, whichever shape it arrived in.
+
+    The Coinbase SDK is not uniform about this. get_transaction_summary()
+    returns an object, but its `fee_tier` comes back as a plain dict, so
+    reading the nested rates with getattr found nothing and every real tier was
+    discarded as "a rate is missing" — the fee stayed unmeasured against a live,
+    correctly permissioned key. `_validated_levels` already had to handle both
+    shapes for the order book; this is the same lesson, applied to every level
+    of the fee response rather than only the one that happened to break.
+    """
+    if isinstance(container, dict):
+        return container.get(name)
+    return getattr(container, name, None)
+
+
 def _validated_rate(value) -> float | None:
     """
     A fee rate, or None if it is not one.
@@ -299,13 +316,13 @@ def _fee_tier(client, permissions: dict | None = None) -> dict:
     except Exception as exc:
         return {"available": False, "measured": False,
                 "reason": f"{type(exc).__name__}: fee tier unreadable"}
-    tier = getattr(summary, "fee_tier", None)
+    tier = _field(summary, "fee_tier")
     if tier is None:
         return {"available": False, "measured": False,
                 "reason": "no fee_tier in response"}
 
-    taker = _validated_rate(getattr(tier, "taker_fee_rate", None))
-    maker = _validated_rate(getattr(tier, "maker_fee_rate", None))
+    taker = _validated_rate(_field(tier, "taker_fee_rate"))
+    maker = _validated_rate(_field(tier, "maker_fee_rate"))
     if taker is None or maker is None:
         return {"available": False, "measured": False,
                 "reason": ("fee_tier present but a rate is missing, non-numeric, "
@@ -316,7 +333,7 @@ def _fee_tier(client, permissions: dict | None = None) -> dict:
         "measured": True,
         "taker_fee_rate": taker,
         "maker_fee_rate": maker,
-        "pricing_tier": getattr(tier, "pricing_tier", None),
+        "pricing_tier": _field(tier, "pricing_tier"),
         # Provenance: which key produced this rate, and what it was allowed to
         # do at the moment of reading.
         "key_permissions": permissions,
