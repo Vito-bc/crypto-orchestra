@@ -233,7 +233,7 @@ study. Quoting a fill rate here would manufacture exactly the kind of number
 this document is structured to avoid: an unmeasured input dressed as a
 result.
 
-## 7. What the sample bounds
+## 6. What the sample bounds
 
 > **This is an equivalence-style bound, not a hypothesis test.** It computes
 > no p-value and makes no claim of statistical "significance". It asks a
@@ -262,10 +262,43 @@ correspondingly wider than the prior's +0.105%/trade.
 - ADOPTED, measured (1.8% round trip): the bound is below zero.
 - CANDIDATE, not adopted (1.4% round trip): the bound is below zero.
 
-Reproduce with: `venv\Scripts\python.exe backtesting/cost_sensitivity.py`
-(Item 7 in the script's output).
+**Does the normal approximation hold?** `mean + 1.645*SE` assumes the *sample
+mean* is approximately normal (via the CLT over n=114 trades) — it does not
+require individual trades to be normal, but the per-trade distribution here is
+visibly bimodal (STOP_LOSS clusters around -4.8% to -5.2%, TAKE_PROFIT around
++4.5% to +4.9%, MAX_HOLD near 0%), so that assumption is checked rather than
+left implicit. Skewness and excess kurtosis of each scenario's per-trade
+`pnls`, and a percentile bootstrap one-sided 95% upper bound on the *mean*
+(100,000 resamples, fixed seed `20260917` — chosen before any resample was
+run, dated to the trial, not searched for a favorable result — so this is
+byte-reproducible):
 
-## 6. Conclusion
+| Scenario | Skewness | Excess kurtosis | Bootstrap 95% upper bound on the mean | Agrees with normal-theory bound? | Bootstrap bound vs. zero |
+|---|---:|---:|---:|---|---|
+| Frozen 1.0% model | +0.6170 | -0.3542 | **+0.1675%** | Yes | Above zero |
+| ADOPTED 0.6%/1.2% (measured) | +0.6154 | -0.3142 | **-0.7194%** | Yes | Below zero |
+| CANDIDATE 0.5%/0.9% (not adopted) | +0.6154 | -0.3142 | **-0.3161%** | Yes | Below zero |
+
+All three per-trade distributions are moderately right-skewed and mildly
+platykurtic (negative excess kurtosis — flatter, more two-humped than a normal
+distribution, consistent with the STOP_LOSS/TAKE_PROFIT clustering described
+above) — visibly non-normal at the level of individual trades. Despite that,
+the bootstrap bound on the *mean* lands within 0.003-0.004 percentage points
+of the normal-theory bound in every scenario and agrees with it on which side
+of zero it falls in every scenario: the non-normality of individual trades
+does not materially change the conclusion drawn from the mean's sampling
+distribution at n=114.
+
+**Margin.** At the ADOPTED cost the upper bound sits **1.54 SE below zero**;
+at the CANDIDATE cost it sits **0.68 SE below zero**. The adopted-cost
+conclusion is the robust one; the candidate-cost conclusion is nearer the
+boundary, though it too remains below zero under both the normal-theory and
+bootstrap bounds at this sample size.
+
+Reproduce with: `venv\Scripts\python.exe backtesting/cost_sensitivity.py`
+(Item 6 in the script's output).
+
+## 7. Conclusion
 
 At the ADOPTED prospective operational cost (1.8% round trip, uniformly
 taker-priced on exit regardless of reason), a trade must clear +1.82% gross
@@ -284,9 +317,13 @@ negative under every fee assumption examined here, confirmed or not.
 **This strategy family is not viable at either the measured (adopted) or the
 candidate (unconfirmed) operational cost structure**: the re-priced point
 estimate is negative under every fee assumption examined, and the one-sided
-95% upper bound on the true per-trade edge (Section 7) is below zero at both
+95% upper bound on the true per-trade edge (Section 6) is below zero at both
 the adopted and candidate costs, so the sample rules out a profitable version
-of this mechanism at either operational cost; this finding does not by itself
+of this mechanism at either operational cost — a percentile bootstrap check
+(Section 6), which assumes no particular shape for the per-trade return
+distribution, agrees with the normal-theory bound at both costs, so this
+conclusion is robust to the normal-approximation assumption the bound
+otherwise relies on; this finding does not by itself
 change `DRY_RUN`, `LIVE_BALANCE_USD`,
 `ASSET_CONFIG`, V3 status, or Phase 7B status, none of which this study
 touches or authorizes. It also does not resolve, and is not evidence toward,

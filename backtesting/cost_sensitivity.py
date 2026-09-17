@@ -61,6 +61,7 @@ import statistics
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -186,6 +187,53 @@ def _pf_and_expectancy(pnl_pcts: list[float]) -> tuple[float, float]:
     return pf, expectancy
 
 
+# ADDENDUM 3: closing the normal-approximation question the one-sided bound
+# in Item 6 otherwise leaves implicit. Fixed, dated seed — chosen before any
+# resample was run, not searched for a favorable result — so the bootstrap is
+# byte-reproducible like everything else in this script.
+_BOOTSTRAP_SEED = 20260917
+_BOOTSTRAP_N = 100_000
+
+
+def _skew_kurtosis(pnl_pcts: list[float]) -> tuple[float, float]:
+    """
+    Adjusted Fisher-Pearson sample skewness (G1) and excess kurtosis (G2) —
+    the convention behind Excel's SKEW/KURT and most statistics packages'
+    bias-corrected "sample" estimators. Implemented directly rather than via
+    scipy.stats: this project has no other scipy dependency, and Phase 6.9
+    (research_runner.py) pins numpy/pandas/ta/pyarrow exactly for research
+    provenance — adding a new pinned dependency for one script is out of
+    proportion to what it is used for here.
+    """
+    arr = np.asarray(pnl_pcts, dtype=float)
+    n = len(arr)
+    mean = arr.mean()
+    s = arr.std(ddof=1)   # sample SD, matches statistics.stdev used elsewhere
+    z = (arr - mean) / s
+    skew = (n / ((n - 1) * (n - 2))) * float(np.sum(z ** 3))
+    exkurt = (
+        (n * (n + 1) / ((n - 1) * (n - 2) * (n - 3))) * float(np.sum(z ** 4))
+        - (3 * (n - 1) ** 2) / ((n - 2) * (n - 3))
+    )
+    return skew, exkurt
+
+
+def _bootstrap_ucb(pnl_pcts: list[float]) -> float:
+    """
+    Percentile bootstrap one-sided 95% upper bound on the mean: resample the
+    n=114 trades WITH REPLACEMENT _BOOTSTRAP_N times, take the mean of each
+    resample, and report the 95th percentile of that distribution of means.
+    Makes no normality assumption about the per-trade return distribution —
+    the whole point of running it alongside the normal-theory bound in Item 6.
+    """
+    arr = np.asarray(pnl_pcts, dtype=float)
+    n = len(arr)
+    rng = np.random.default_rng(_BOOTSTRAP_SEED)
+    resample_idx = rng.integers(0, n, size=(_BOOTSTRAP_N, n))
+    resample_means = arr[resample_idx].mean(axis=1)
+    return float(np.percentile(resample_means, 95))
+
+
 def _report_scenario(label: str, status: str, entry_rate: float, exit_rate: float,
                       closed: list[dict], entries: list[float], exits: list[float],
                       reasons: list[str], breakeven_ref_stop: float,
@@ -197,7 +245,7 @@ def _report_scenario(label: str, status: str, entry_rate: float, exit_rate: floa
     property of the trade sequence, not of the fee schedule.
 
     Returns `pnls` (this scenario's 114 per-trade net returns, % of position)
-    so the caller can compute Item 7's sample bounds without re-deriving them.
+    so the caller can compute Item 6's sample bounds without re-deriving them.
     """
     n = len(closed)
     print(f"\n{'=' * 70}\nSCENARIO: {label} [{status}]\n"
@@ -344,7 +392,7 @@ def main() -> None:
         _CANDIDATE_MAKER_RATE, _CANDIDATE_TAKER_RATE,
         closed, entries, exits, reasons, stop_dist_median, target_dist_median)
 
-    # ── Item 7: what the sample bounds ────────────────────────────────────────
+    # ── Item 6: what the sample bounds ────────────────────────────────────────
     # ADDENDUM 2. EQUIVALENCE-STYLE BOUND — not a hypothesis test, not a
     # p-value, no claim of "significance". It asks: given the spread actually
     # observed over these n=114 trades, how good could the true per-trade mean
@@ -356,7 +404,7 @@ def main() -> None:
     _PRIOR_SD_PCT = 4.70          # prior estimate, binary +1.75R/-1R model — external to this script
     _PRIOR_UCB_AT_1PCT_PCT = 0.105
 
-    print("\nItem 7 - what the sample bounds (equivalence-style bound; NOT a "
+    print("\nItem 6 - what the sample bounds (equivalence-style bound; NOT a "
           "hypothesis test, NOT a p-value, no claim of 'significance'):")
     frozen_sd = statistics.stdev(frozen_pnls)
     print(f"  prior estimate (binary +1.75R/-1R model): SD ~= {_PRIOR_SD_PCT:.2f}% of "
@@ -383,6 +431,42 @@ def main() -> None:
         print(f"  {label}: mean={mean_pct:+.4f}%  SD={sd:.4f}%  SE={se:.4f}%  "
               f"one-sided 95% upper bound on true per-trade edge = {ucb:+.4f}%/trade "
               f"-- {sign}")
+
+    # ── ADDENDUM 3: does the normal approximation hold? ──────────────────────
+    # mean + 1.645*SE assumes the SAMPLE MEAN is approximately normal (by the
+    # CLT, not that individual trades are). The per-trade distribution itself
+    # is visibly bimodal (STOP_LOSS clusters ~-4.8%, TAKE_PROFIT ~+4.9%,
+    # MAX_HOLD ~+0.5%), so this is checked rather than assumed: skewness and
+    # excess kurtosis of the per-trade distribution, and a percentile
+    # bootstrap bound on the MEAN (n=114, which is what the CLT needs to have
+    # kicked in for, not the per-trade shape) run alongside the normal-theory
+    # one to see whether they agree.
+    print(f"\n  Distributional check (skew/kurtosis of the per-trade returns; "
+          f"bootstrap bound on the MEAN, {_BOOTSTRAP_N:,} resamples, "
+          f"seed={_BOOTSTRAP_SEED}):")
+    boot_bounds: dict[str, float] = {}
+    for label, pnls in [
+        ("frozen 1.0% model", frozen_pnls),
+        ("ADOPTED 0.6%/1.2%", adopted_pnls),
+        ("CANDIDATE 0.5%/0.9% (not adopted)", candidate_pnls),
+    ]:
+        skew, exkurt = _skew_kurtosis(pnls)
+        ucb_boot = _bootstrap_ucb(pnls)
+        boot_bounds[label] = ucb_boot
+        ucb_normal = bounds[label]
+        side_normal = "ABOVE zero" if ucb_normal > 0 else "BELOW zero"
+        side_boot = "ABOVE zero" if ucb_boot > 0 else "BELOW zero"
+        agreement = "AGREES with" if side_normal == side_boot else "DISAGREES with"
+        print(f"    {label}: skewness={skew:+.4f}  excess kurtosis={exkurt:+.4f}  "
+              f"bootstrap 95% upper bound={ucb_boot:+.4f}%/trade "
+              f"-- {side_boot}  ({agreement} the normal-theory bound)")
+
+    for label in ("ADOPTED 0.6%/1.2%", "CANDIDATE 0.5%/0.9% (not adopted)"):
+        se_label = statistics.stdev(
+            adopted_pnls if label.startswith("ADOPTED") else candidate_pnls
+        ) / (n ** 0.5)
+        margin_se = -bounds[label] / se_label
+        print(f"  {label}: normal-theory upper bound sits {margin_se:.2f} SE below zero")
 
 
 if __name__ == "__main__":
