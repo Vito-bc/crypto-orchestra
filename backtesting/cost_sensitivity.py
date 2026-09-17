@@ -189,12 +189,15 @@ def _pf_and_expectancy(pnl_pcts: list[float]) -> tuple[float, float]:
 def _report_scenario(label: str, status: str, entry_rate: float, exit_rate: float,
                       closed: list[dict], entries: list[float], exits: list[float],
                       reasons: list[str], breakeven_ref_stop: float,
-                      breakeven_ref_target: float) -> None:
+                      breakeven_ref_target: float) -> list[float]:
     """
     Print items 1/2/3/5 for one fee schedule scenario. `breakeven_ref_stop`
     and `breakeven_ref_target` are this scenario's own median-ATR stop/target
     distances (% of entry price) — shared across scenarios since ATR is a
     property of the trade sequence, not of the fee schedule.
+
+    Returns `pnls` (this scenario's 114 per-trade net returns, % of position)
+    so the caller can compute Item 7's sample bounds without re-deriving them.
     """
     n = len(closed)
     print(f"\n{'=' * 70}\nSCENARIO: {label} [{status}]\n"
@@ -262,6 +265,7 @@ def _report_scenario(label: str, status: str, entry_rate: float, exit_rate: floa
     print(f"  whole-sample (n={n}) PF if TAKE_PROFIT exits were maker: "
           f"{hyp_pf:.5f}  expectancy={hyp_expectancy:.6f} "
           f"({hyp_expectancy*100:.4f}%/trade)")
+    return pnls
 
 
 def main() -> None:
@@ -330,15 +334,55 @@ def main() -> None:
           f"{target_dist_median:.4f}% of entry price")
 
     # ── Items 1/2/3/5, once per fee schedule scenario ────────────────────────
-    _report_scenario(
+    adopted_pnls = _report_scenario(
         "ADOPTED (Intro 1, 2026-09)", "pipeline.fees.CURRENT_SCHEDULE",
         adopted_entry_rate, adopted_exit_rate,
         closed, entries, exits, reasons, stop_dist_median, target_dist_median)
-    _report_scenario(
+    candidate_pnls = _report_scenario(
         "CANDIDATE (Intro, single reading 2026-09-17)",
         "NOT adopted - pending 4-reading cohort 2026-09-17..2026-09-20",
         _CANDIDATE_MAKER_RATE, _CANDIDATE_TAKER_RATE,
         closed, entries, exits, reasons, stop_dist_median, target_dist_median)
+
+    # ── Item 7: what the sample bounds ────────────────────────────────────────
+    # ADDENDUM 2. EQUIVALENCE-STYLE BOUND — not a hypothesis test, not a
+    # p-value, no claim of "significance". It asks: given the spread actually
+    # observed over these n=114 trades, how good could the true per-trade mean
+    # plausibly be, at one-sided 95% confidence? Each scenario uses its OWN
+    # sample SD (not a shared one) — the three fee schedules price the same
+    # entries/exits slightly differently, so their return distributions are
+    # not identical, only close.
+    Z_ONE_SIDED_95 = 1.645
+    _PRIOR_SD_PCT = 4.70          # prior estimate, binary +1.75R/-1R model — external to this script
+    _PRIOR_UCB_AT_1PCT_PCT = 0.105
+
+    print("\nItem 7 - what the sample bounds (equivalence-style bound; NOT a "
+          "hypothesis test, NOT a p-value, no claim of 'significance'):")
+    frozen_sd = statistics.stdev(frozen_pnls)
+    print(f"  prior estimate (binary +1.75R/-1R model): SD ~= {_PRIOR_SD_PCT:.2f}% of "
+          f"position, one-sided 95% upper bound = +{_PRIOR_UCB_AT_1PCT_PCT:.3f}%/trade "
+          f"at the frozen 1.0% level")
+    print(f"  measured SD at the frozen 1.0% level ({frozen_sd:.4f}%) is "
+          f"{'LARGER' if frozen_sd > _PRIOR_SD_PCT else 'not larger'} than the prior's "
+          f"{_PRIOR_SD_PCT:.2f}%, so the measured bound is correspondingly "
+          f"{'WIDER' if frozen_sd > _PRIOR_SD_PCT else 'not wider'} than the prior's "
+          f"+{_PRIOR_UCB_AT_1PCT_PCT:.3f}%/trade")
+
+    bounds: dict[str, float] = {}
+    for label, pnls in [
+        ("frozen 1.0% model", frozen_pnls),
+        ("ADOPTED 0.6%/1.2%", adopted_pnls),
+        ("CANDIDATE 0.5%/0.9% (not adopted)", candidate_pnls),
+    ]:
+        mean_pct = statistics.mean(pnls)
+        sd = statistics.stdev(pnls)
+        se = sd / (n ** 0.5)
+        ucb = mean_pct + Z_ONE_SIDED_95 * se
+        bounds[label] = ucb
+        sign = "ABOVE zero" if ucb > 0 else "BELOW zero"
+        print(f"  {label}: mean={mean_pct:+.4f}%  SD={sd:.4f}%  SE={se:.4f}%  "
+              f"one-sided 95% upper bound on true per-trade edge = {ucb:+.4f}%/trade "
+              f"-- {sign}")
 
 
 if __name__ == "__main__":

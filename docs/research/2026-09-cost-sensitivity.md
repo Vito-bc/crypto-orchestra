@@ -233,6 +233,38 @@ study. Quoting a fill rate here would manufacture exactly the kind of number
 this document is structured to avoid: an unmeasured input dressed as a
 result.
 
+## 7. What the sample bounds
+
+> **This is an equivalence-style bound, not a hypothesis test.** It computes
+> no p-value and makes no claim of statistical "significance". It asks a
+> narrower question than either of those: given the spread actually observed
+> across these n=114 trades, how good could the true per-trade mean plausibly
+> be, at one-sided 95% confidence?
+
+Each scenario's own sample standard deviation (n-1) of its 114 per-trade net
+returns (`pnls`, % of position — the same series `_report_scenario()` already
+builds for Sections 1/2/3/5), its standard error `SE = SD / √114`, and the
+resulting bound `mean + 1.645 * SE`:
+
+| Scenario | Mean | SD | SE | one-sided 95% upper bound on true per-trade edge |
+|---|---:|---:|---:|---:|
+| Frozen 1.0% model | -0.6227% | 5.1095% | 0.4786% | **+0.1645%** |
+| ADOPTED 0.6%/1.2% (measured) | -1.4918% | 4.9969% | 0.4680% | **-0.7220%** |
+| CANDIDATE 0.5%/0.9% (not adopted) | -1.0909% | 5.0121% | 0.4694% | **-0.3187%** |
+
+**Comparison to the prior estimate** (a binary +1.75R/-1R approximation, held
+independently of this script): SD ≈ 4.70% of position, one-sided 95% upper
+bound +0.105%/trade at the frozen 1.0% level. The measured SD at the frozen
+level (5.1095%) is larger than the prior's 4.70%, so the measured bound is
+correspondingly wider than the prior's +0.105%/trade.
+
+- Frozen 1.0% model: the bound is above zero.
+- ADOPTED, measured (1.8% round trip): the bound is below zero.
+- CANDIDATE, not adopted (1.4% round trip): the bound is below zero.
+
+Reproduce with: `venv\Scripts\python.exe backtesting/cost_sensitivity.py`
+(Item 7 in the script's output).
+
 ## 6. Conclusion
 
 At the ADOPTED prospective operational cost (1.8% round trip, uniformly
@@ -250,9 +282,12 @@ assumed non-fill cost — only claws back part of the gap under either schedule
 (to -1.29%/trade adopted, -0.96%/trade candidate), leaving the family
 negative under every fee assumption examined here, confirmed or not.
 **This strategy family is not viable at either the measured (adopted) or the
-candidate (unconfirmed) operational cost structure**, and cost alone is
-sufficient to reject it independent of any further mechanism research; this
-finding does not by itself change `DRY_RUN`, `LIVE_BALANCE_USD`,
+candidate (unconfirmed) operational cost structure**: the re-priced point
+estimate is negative under every fee assumption examined, and the one-sided
+95% upper bound on the true per-trade edge (Section 7) is below zero at both
+the adopted and candidate costs, so the sample rules out a profitable version
+of this mechanism at either operational cost; this finding does not by itself
+change `DRY_RUN`, `LIVE_BALANCE_USD`,
 `ASSET_CONFIG`, V3 status, or Phase 7B status, none of which this study
 touches or authorizes. It also does not resolve, and is not evidence toward,
 whether the candidate tier reading should be formally adopted — that decision
