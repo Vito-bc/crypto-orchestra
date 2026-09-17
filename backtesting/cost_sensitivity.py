@@ -11,10 +11,27 @@ Question this answers: docs/research/artifacts/results.json (trial
 was priced at the FROZEN historical research fee assumption
 (backtesting/signal_scanner.py: entry 0.4% maker, take-profit 0.4% maker,
 stop/max-hold 0.6% taker). What would the SAME trade sequence look like priced
-at the MEASURED prospective operational schedule instead
-(pipeline/fees.py CURRENT_SCHEDULE: entry 0.6% maker, exit 1.2% taker on
-EVERY exit path, because pipeline/position_tracker.close_position() always
-sends a market sell)?
+at a MEASURED prospective operational schedule instead (entry maker, exit
+taker on EVERY exit path, because pipeline/position_tracker.close_position()
+always sends a market sell)?
+
+Two scenarios are reported, per project decision 2026-09-17 recorded in
+memory `fee-tier-change-2026-09-16` ("Any cost-sensitivity analysis must
+report both 1.8% and 1.4% scenarios"):
+
+  ADOPTED   pipeline/fees.py CURRENT_SCHEDULE (coinbase-intro-1-2026-09):
+            maker 0.6% / taker 1.2%. This is what the code actually charges
+            today — the only schedule `active_schedule()` returns.
+  CANDIDATE a single probe reading, NOT yet adopted in pipeline/fees.py:
+            logs/stf_cost_probe.jsonl, observed_at 2026-09-17T00:05:04Z,
+            fee_tier.pricing_tier "Intro", maker 0.5% / taker 0.9%. Coinbase
+            changed the account's tier on 2026-09-16, one reading does not
+            meet the same 4-consecutive-reading bar the adopted schedule was
+            confirmed under (2026-09-11..09-15) — see the memory for the
+            decision not to adopt on one reading. This script hardcodes that
+            single reading's rates as local constants for sensitivity
+            purposes ONLY; it does not read pipeline/fees.py for them and
+            does not change pipeline/fees.py.
 
 What this script does NOT do:
   - it does not modify backtesting/signal_scanner.py's _ENTRY_FEE / _TP_FEE /
@@ -58,6 +75,21 @@ if str(ROOT) not in sys.path:
 _ARTIFACT_N_CLOSED = 114
 _ARTIFACT_PF = 0.76141
 _ARTIFACT_EXPECTANCY_PCT = -0.006227
+
+# CANDIDATE / UNCONFIRMED schedule. Sourced directly from
+# logs/stf_cost_probe.jsonl (gitignored; not a committed artifact), the
+# single reading at observed_at="2026-09-17T00:05:04.823090+00:00":
+#   {"fee_tier": {"pricing_tier": "Intro", "maker_fee_rate": 0.005,
+#                 "taker_fee_rate": 0.009, "measured": true, ...}}
+# Every reading before it (2026-09-11..09-16) still shows "Intro 1" at
+# 0.006/0.012 (pipeline.fees.CURRENT_SCHEDULE). One reading is not the
+# 4-consecutive-reading bar the adopted schedule was confirmed under, so this
+# is NOT written into pipeline/fees.py and CURRENT_SCHEDULE is not read for
+# it — see memory `fee-tier-change-2026-09-16` for the decision. These
+# constants exist ONLY so this sensitivity study can report the scenario the
+# project decision requires; do not import them as if they were adopted.
+_CANDIDATE_MAKER_RATE = 0.005
+_CANDIDATE_TAKER_RATE = 0.009
 
 
 def _reproduce_v2_continuous_zec() -> tuple[list[dict], list[float]]:
@@ -154,18 +186,98 @@ def _pf_and_expectancy(pnl_pcts: list[float]) -> tuple[float, float]:
     return pf, expectancy
 
 
+def _report_scenario(label: str, status: str, entry_rate: float, exit_rate: float,
+                      closed: list[dict], entries: list[float], exits: list[float],
+                      reasons: list[str], breakeven_ref_stop: float,
+                      breakeven_ref_target: float) -> None:
+    """
+    Print items 1/2/3/5 for one fee schedule scenario. `breakeven_ref_stop`
+    and `breakeven_ref_target` are this scenario's own median-ATR stop/target
+    distances (% of entry price) — shared across scenarios since ATR is a
+    property of the trade sequence, not of the fee schedule.
+    """
+    n = len(closed)
+    print(f"\n{'=' * 70}\nSCENARIO: {label} [{status}]\n"
+          f"  entry(maker)={entry_rate:.3%}  exit(taker)={exit_rate:.3%}\n"
+          f"{'=' * 70}")
+
+    # Item 1 — cost per trade by exit path
+    print("Item 1 - round-trip cost per trade, by exit path (entry fee "
+          "always on entry USD notional; exit fee always on gross proceeds, "
+          "at the TAKER rate, matching close_position() exactly - no exit "
+          "path gets a maker rate in the live/operational code):")
+    print(f"  entry fee: {entry_rate:.3%} of entry notional (ALL paths)")
+    by_reason_cost: dict[str, list[float]] = {}
+    for e, x, r in zip(entries, exits, reasons):
+        exit_fee_pct_of_entry = exit_rate * (x / e) * 100
+        total_cost_pct = entry_rate * 100 + exit_fee_pct_of_entry
+        by_reason_cost.setdefault(r, []).append(total_cost_pct)
+    for reason, costs in sorted(by_reason_cost.items()):
+        print(f"  {reason:12s} n={len(costs):3d}  "
+              f"mean round-trip cost = {statistics.mean(costs):.4f}% of entry notional")
+
+    # Item 2 — break-even gross move
+    breakeven = ((1 + entry_rate) / (1 - exit_rate) - 1) * 100
+    print(f"Break-even gross move (all exit paths): {breakeven:.4f}%")
+    print(f"  break-even / stop distance   (median ATR) = "
+          f"{breakeven / breakeven_ref_stop:.4f}")
+    print(f"  break-even / target distance (median ATR) = "
+          f"{breakeven / breakeven_ref_target:.4f}")
+
+    # Item 3 — re-price the n=114 trade sequence
+    pnls = [_measured_pnl_pct(e, x, entry_rate, exit_rate)
+            for e, x in zip(entries, exits)]
+    pf, expectancy = _pf_and_expectancy(pnls)
+    print(f"PROSPECTIVE SENSITIVITY (not a restatement of the artifact): "
+          f"n={n} PF={pf:.5f} expectancy={expectancy:.6f} "
+          f"({expectancy*100:.4f}%/trade)")
+    by_reason: dict[str, list[float]] = {}
+    for r, p in zip(reasons, pnls):
+        by_reason.setdefault(r, []).append(p)
+    for reason, rpnls in sorted(by_reason.items()):
+        print(f"  {reason:12s} n={len(rpnls):3d}  "
+              f"mean_pnl_pct={statistics.mean(rpnls):.4f}")
+
+    # Item 5 — maker-exit cost quantification (TAKE_PROFIT only, cost side only)
+    tp_idx = [k for k, r in enumerate(reasons) if r == "TAKE_PROFIT"]
+    tp_pnls_taker = [pnls[k] for k in tp_idx]
+    tp_pnls_hyp_maker = [
+        _measured_pnl_pct(entries[k], exits[k], entry_rate, entry_rate)  # exit at MAKER rate
+        for k in tp_idx
+    ]
+    cost_delta_pp = [h - t for h, t in zip(tp_pnls_hyp_maker, tp_pnls_taker)]
+    n_tp = len(tp_idx)
+    print(f"Maker-exit sensitivity, TAKE_PROFIT trades only (n={n_tp}), "
+          f"cost side ONLY (no fill-rate assumption):")
+    if n_tp:
+        print(f"  mean cost reduction per TAKE_PROFIT trade if exit were maker: "
+              f"{statistics.mean(cost_delta_pp):.4f} pp")
+        print(f"  mean pnl_pct (actual, taker exit): "
+              f"{statistics.mean(tp_pnls_taker):.4f}%")
+        print(f"  mean pnl_pct (hypothetical, maker exit): "
+              f"{statistics.mean(tp_pnls_hyp_maker):.4f}%")
+    hyp_by_index = dict(zip(tp_idx, tp_pnls_hyp_maker))
+    whole_sample_hyp = [hyp_by_index.get(k, pnls[k]) for k in range(n)]
+    hyp_pf, hyp_expectancy = _pf_and_expectancy(whole_sample_hyp)
+    print(f"  whole-sample (n={n}) PF if TAKE_PROFIT exits were maker: "
+          f"{hyp_pf:.5f}  expectancy={hyp_expectancy:.6f} "
+          f"({hyp_expectancy*100:.4f}%/trade)")
+
+
 def main() -> None:
     from pipeline.fees import CURRENT_SCHEDULE, LEGACY_SCHEDULE, MAKER, TAKER
 
-    measured_entry_rate = CURRENT_SCHEDULE.rate_for(MAKER)
-    measured_exit_rate = CURRENT_SCHEDULE.rate_for(TAKER)
+    adopted_entry_rate = CURRENT_SCHEDULE.rate_for(MAKER)
+    adopted_exit_rate = CURRENT_SCHEDULE.rate_for(TAKER)
     legacy_entry_rate = LEGACY_SCHEDULE.rate_for(MAKER)   # == _ENTRY_FEE == _TP_FEE
     legacy_exit_rate = LEGACY_SCHEDULE.rate_for(TAKER)    # == _SL_FEE
 
-    print(f"Measured schedule : entry(maker)={measured_entry_rate:.3%}  "
-          f"exit(taker)={measured_exit_rate:.3%}")
-    print(f"Legacy schedule   : entry(maker)={legacy_entry_rate:.3%}  "
-          f"exit(taker)={legacy_exit_rate:.3%}")
+    print(f"Adopted schedule   (pipeline.fees.CURRENT_SCHEDULE): "
+          f"entry(maker)={adopted_entry_rate:.3%}  exit(taker)={adopted_exit_rate:.3%}")
+    print(f"Candidate schedule (single reading, NOT adopted)   : "
+          f"entry(maker)={_CANDIDATE_MAKER_RATE:.3%}  exit(taker)={_CANDIDATE_TAKER_RATE:.3%}")
+    print(f"Legacy schedule    (frozen research assumption)    : "
+          f"entry(maker)={legacy_entry_rate:.3%}  exit(taker)={legacy_exit_rate:.3%}")
 
     closed, atr_at_entry = _reproduce_v2_continuous_zec()
     n = len(closed)
@@ -188,58 +300,13 @@ def main() -> None:
     exits = [(s["trade"]["exit_price"]) for s in closed]
     reasons = [s["trade"]["reason"] for s in closed]
 
-    # ── Item 1: prospective round-trip cost per trade, by exit path ─────────
-    # entry_fee is always qty_usd * entry_rate -> exactly measured_entry_rate
-    # (0.6%) of entry notional, on EVERY exit path, because it is stamped at
-    # placement before the exit reason is known.
-    # exit_fee is always gross_proceeds * exit_rate (close_position() reads
-    # TAKER unconditionally) -> measured_exit_rate (1.2%) of gross proceeds,
-    # i.e. measured_exit_rate * (exit_price/entry_price) of entry notional.
-    # The RATE never varies by exit path; the % of ENTRY NOTIONAL it works out
-    # to does, because gross proceeds differ by exit path.
-    print("\nItem 1 - prospective round-trip cost per trade, by exit path "
-          "(entry fee always on entry USD notional; exit fee always on gross "
-          "proceeds, at the TAKER rate, matching close_position() exactly - "
-          "no exit path gets a maker rate in the live/operational code):")
-    print(f"  entry fee: {measured_entry_rate:.3%} of entry notional (ALL paths)")
-    by_reason_cost: dict[str, list[float]] = {}
-    for e, x, r in zip(entries, exits, reasons):
-        exit_fee_pct_of_entry = measured_exit_rate * (x / e) * 100
-        total_cost_pct = measured_entry_rate * 100 + exit_fee_pct_of_entry
-        by_reason_cost.setdefault(r, []).append(total_cost_pct)
-    for reason, costs in sorted(by_reason_cost.items()):
-        print(f"  {reason:12s} n={len(costs):3d}  "
-              f"mean round-trip cost = {statistics.mean(costs):.4f}% of entry notional")
-
-    # ── Item 2: break-even gross move, measured schedule ─────────────────────
-    breakeven_measured = ((1 + measured_entry_rate) / (1 - measured_exit_rate) - 1) * 100
-    breakeven_legacy_taker_exit = ((1 + legacy_entry_rate) / (1 - legacy_exit_rate) - 1) * 100
-    breakeven_legacy_maker_exit = ((1 + legacy_entry_rate) / (1 - legacy_entry_rate) - 1) * 100
-    print(f"\nBreak-even gross move, measured schedule (all exit paths): "
-          f"{breakeven_measured:.4f}%")
-    print(f"Break-even gross move, legacy schedule, taker-priced exit "
-          f"(STOP/MAX_HOLD): {breakeven_legacy_taker_exit:.4f}%")
+    print(f"\nBreak-even gross move, legacy schedule, taker-priced exit "
+          f"(STOP/MAX_HOLD): {((1 + legacy_entry_rate) / (1 - legacy_exit_rate) - 1) * 100:.4f}%")
     print(f"Break-even gross move, legacy schedule, maker-priced exit "
-          f"(TAKE_PROFIT only): {breakeven_legacy_maker_exit:.4f}%")
+          f"(TAKE_PROFIT only): {((1 + legacy_entry_rate) / (1 - legacy_entry_rate) - 1) * 100:.4f}%")
 
-    # ── Item 3: re-price the n=114 trade sequence ────────────────────────────
-    measured_pnls = [
-        _measured_pnl_pct(e, x, measured_entry_rate, measured_exit_rate)
-        for e, x in zip(entries, exits)
-    ]
-    measured_pf, measured_expectancy = _pf_and_expectancy(measured_pnls)
-    print(f"\nPROSPECTIVE SENSITIVITY (not a restatement of the artifact): "
-          f"n={n} PF={measured_pf:.5f} expectancy={measured_expectancy:.6f} "
-          f"({measured_expectancy*100:.4f}%/trade)")
-
-    by_reason: dict[str, list[float]] = {}
-    for s, mp in zip(closed, measured_pnls):
-        by_reason.setdefault(s["trade"]["reason"], []).append(mp)
-    for reason, pnls in sorted(by_reason.items()):
-        print(f"  {reason:12s} n={len(pnls):3d}  "
-              f"mean_measured_pnl_pct={statistics.mean(pnls):.4f}")
-
-    # ── Item 4: ATR-as-%-of-price distribution, fraction of stop/target consumed ─
+    # ── Item 4: ATR-as-%-of-price distribution (shared — a property of the
+    # trade sequence, not of any fee schedule) ───────────────────────────────
     atr_pct = [a / e * 100 for a, e in zip(atr_at_entry, entries)]
     atr_pct_sorted = sorted(atr_pct)
     median_atr_pct = statistics.median(atr_pct_sorted)
@@ -261,50 +328,17 @@ def main() -> None:
           f"{stop_dist_median:.4f}% of entry price")
     print(f"  target distance ({atr_target_mult}x ATR) at median ATR%: "
           f"{target_dist_median:.4f}% of entry price")
-    print(f"  break-even ({breakeven_measured:.4f}%) / stop distance   "
-          f"= {breakeven_measured / stop_dist_median:.4f}")
-    print(f"  break-even ({breakeven_measured:.4f}%) / target distance "
-          f"= {breakeven_measured / target_dist_median:.4f}")
 
-    # ── Item 5: maker-exit cost quantification (TAKE_PROFIT only, cost side only) ─
-    tp_pnls_taker = by_reason.get("TAKE_PROFIT", [])
-    tp_entries_exits = [
-        (s["price"], s["trade"]["exit_price"]) for s in closed
-        if s["trade"]["reason"] == "TAKE_PROFIT"
-    ]
-    hypothetical_maker_exit_rate = measured_entry_rate  # today's MAKER rate
-    tp_pnls_hypothetical_maker_exit = [
-        _measured_pnl_pct(e, x, measured_entry_rate, hypothetical_maker_exit_rate)
-        for e, x in tp_entries_exits
-    ]
-    # cost delta per TAKE_PROFIT trade, in percentage points of entry price:
-    # exit fee is charged on gross proceeds, not entry notional, so the delta
-    # is not exactly (1.2%-0.6%) — compute it exactly per trade instead of
-    # assuming the additive approximation.
-    cost_delta_pp = [
-        hyp - taker for hyp, taker in zip(tp_pnls_hypothetical_maker_exit, tp_pnls_taker)
-    ]
-    n_tp = len(tp_pnls_taker)
-    print(f"\nMaker-exit sensitivity, TAKE_PROFIT trades only (n={n_tp}), "
-          f"cost side ONLY (no fill-rate assumption):")
-    if n_tp:
-        print(f"  mean cost reduction per TAKE_PROFIT trade if exit were maker: "
-              f"{statistics.mean(cost_delta_pp):.4f} pp")
-        print(f"  mean measured pnl_pct (actual, taker exit): "
-              f"{statistics.mean(tp_pnls_taker):.4f}%")
-        print(f"  mean pnl_pct (hypothetical, maker exit):     "
-              f"{statistics.mean(tp_pnls_hypothetical_maker_exit):.4f}%")
-    # Whole-sample effect of hypothetically maker-pricing every TAKE_PROFIT exit:
-    hyp_by_index = dict(zip(
-        [k for k, s in enumerate(closed) if s["trade"]["reason"] == "TAKE_PROFIT"],
-        tp_pnls_hypothetical_maker_exit))
-    whole_sample_hyp = [
-        hyp_by_index.get(k, measured_pnls[k]) for k in range(n)
-    ]
-    hyp_pf, hyp_expectancy = _pf_and_expectancy(whole_sample_hyp)
-    print(f"  whole-sample (n={n}) PF if TAKE_PROFIT exits were maker: "
-          f"{hyp_pf:.5f}  expectancy={hyp_expectancy:.6f} "
-          f"({hyp_expectancy*100:.4f}%/trade)")
+    # ── Items 1/2/3/5, once per fee schedule scenario ────────────────────────
+    _report_scenario(
+        "ADOPTED (Intro 1, 2026-09)", "pipeline.fees.CURRENT_SCHEDULE",
+        adopted_entry_rate, adopted_exit_rate,
+        closed, entries, exits, reasons, stop_dist_median, target_dist_median)
+    _report_scenario(
+        "CANDIDATE (Intro, single reading 2026-09-17)",
+        "NOT adopted - pending 4-reading cohort 2026-09-17..2026-09-20",
+        _CANDIDATE_MAKER_RATE, _CANDIDATE_TAKER_RATE,
+        closed, entries, exits, reasons, stop_dist_median, target_dist_median)
 
 
 if __name__ == "__main__":
