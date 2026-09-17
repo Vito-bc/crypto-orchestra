@@ -43,6 +43,30 @@ from backtesting.backtest import (
     get_symbol_config,
     evaluate_entry_components,
 )
+import pipeline.fees as _fees
+
+# This replay runs the REAL operational pipeline (pipeline.runner /
+# pipeline.limit_orders / pipeline.position_tracker) over PAST market data —
+# unlike those modules' normal callers, it is a research-adjacent tool, not
+# live paper accounting. Left alone, it would read pipeline.fees.
+# active_schedule() the same way live paper trading does and price a 2024-
+# 2025 replay's fees at whatever tier is measured TODAY (see pipeline/fees.py
+# CURRENT_SCHEDULE) — back-projecting a September 2026 account measurement
+# into a historical replay exactly like CLAUDE.md's fee section says not to.
+#
+# Pinning active_schedule() to LEGACY_SCHEDULE for the duration of the replay
+# fixes this. LEGACY_SCHEDULE is reused rather than inventing a third fee
+# constant because its rates (0.4% maker / 0.6% taker) already equal the
+# frozen historical research assumption
+# (backtesting.signal_scanner._ENTRY_FEE/_TP_FEE/_SL_FEE) and, unlike a new
+# ad-hoc schedule, it is already registered in pipeline.fees._SCHEDULES, so
+# entry_rate_for_record() can resolve orders this replay creates without
+# contradiction. This does not make replay_runner a consumer of the
+# operational tier — it is the opposite: an explicit override that stops it
+# from ever reading that tier.
+assert (_fees.LEGACY_SCHEDULE.maker_rate, _fees.LEGACY_SCHEDULE.taker_rate) == (0.004, 0.006), (
+    "LEGACY_SCHEDULE no longer matches the frozen historical fee assumption — "
+    "replay_runner's pin to it would silently stop being period-appropriate")
 
 # ── Replay periods ────────────────────────────────────────────────────────────
 
@@ -284,6 +308,9 @@ def run_replay(
                     patch("pipeline.position_tracker.POSITIONS_FILE", replay_positions),
                     patch("pipeline.limit_orders.ORDERS_FILE",         replay_orders),
                     patch("pipeline.runner.TRADE_HISTORY",             log_dir / "replay_trade_history.jsonl"),
+                    # Never let a historical replay inherit today's measured
+                    # operational tier — see the module-level comment above.
+                    patch("pipeline.fees.CURRENT_SCHEDULE", _fees.LEGACY_SCHEDULE),
                 ):
                     from pipeline.runner import run_pipeline
                     decision = run_pipeline(asset)

@@ -61,9 +61,52 @@ venv\Scripts\python.exe backtesting/generate_journal.py
 Sub-agents use `claude-haiku-4-5-20251001` (fast + cheap).
 Orchestrator uses `claude-sonnet-4-6` (smarter final decision).
 
-### Fees (Coinbase Advanced base tier)
-Maker 0.4%, taker 0.6% (`_ENTRY_FEE`, `_TP_FEE`, `_SL_FEE` in signal_scanner.py).
-An earlier 0.2%/0.4% model understated fees and inflated backtest P&L.
+### Fees — two separate numbers, do not merge them
+
+**Historical research (frozen): maker 0.4%, taker 0.6%.** `_ENTRY_FEE`,
+`_TP_FEE`, `_SL_FEE` in `signal_scanner.py`, inherited by every research
+consumer of `_simulate_trade`. These are a modeled assumption about the
+2020-2026 backtest periods. An earlier 0.2%/0.4% model understated fees and
+inflated backtest P&L. **Do not change them to match today's account tier** —
+that would back-project a September 2026 measurement into historical windows.
+Whether they were ever accurate is an open, unstarted research question.
+
+**Prospective paper/shadow accounting (measured): maker 0.6%, taker 1.2%.**
+`pipeline/fees.py`, tier `Intro 1`, measured on the account and independently
+audited (evidence: `docs/operations/fee_tier_2026-09-15.json`). Dated
+2026-09-15 — a selected accounting-boundary timestamp on the schedule
+(`accounting_effective_from` in the evidence file), not a live cutover;
+`active_schedule()` does not consult it and always returns the current
+schedule the moment it runs. Actual operational adoption is the date this
+change merges to main, not this timestamp — see commit/PR history for that
+date. These are current measured values for one account, not Coinbase
+constants — tiers move with trailing volume.
+
+The boundary is **per order**, not per position: Coinbase prices each order at
+the tier in force when that order is placed. The entry schedule is stamped on
+the `PendingOrder` at placement and carried into the `Position`; the exit is a
+separate order priced when it is sent. A trade may settle its two legs under
+two schedules.
+
+The evidence comes from the Phase 7R-2 execution-cost probe's 14-day
+checkpoint (`backtesting/stf_cost_probe.py`, report digest recorded in
+`docs/operations/fee_tier_2026-09-15.json`): 4 measured fee-tier readings
+(2026-09-11 through 09-15, no tier change across them) plus separately
+reported quoted-book-impact percentiles per asset. Adopting this tier here is
+**operational fee accounting only** and touches neither of the following two
+separate, already-standing determinations:
+
+  - **7R3b is not run.** That decision stands on its own — its synthetic
+    construction preserves net expectancy by design, so no run of it can
+    demonstrate a real edge one way or the other, independent of what any
+    coverage contract says. This document does not claim that decision's
+    prior review is verified by a repository artifact; it is recorded here
+    without that claim.
+  - **Phase 7B remains unauthorized**, a separate and still-open gate, pending
+    its own declared coverage contract (see "Project State" item 5 below).
+
+A future 30-day checkpoint of the cost probe would be confirmatory of the fee
+measurement only, not a new authorization for either of the above.
 
 ### Active Assets
 **ZEC-USD only, paper/shadow mode.** ETH/BTC/SOL are `enabled: False` in

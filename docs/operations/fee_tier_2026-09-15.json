@@ -1,0 +1,40 @@
+{
+  "_what_this_is": "Tracked, sanitized evidence for the fee tier that pipeline/fees.py CURRENT_SCHEDULE encodes. The probe's own report lives at logs/stf_cost_report_2026-09-15.json, which .gitignore excludes, so a fresh checkout could not otherwise inspect the evidence behind an operational money constant.",
+  "_scope": "OPERATIONAL ONLY. This is a current-account measurement adopted for prospective paper/shadow accounting. It is not a research artifact, it is not in any registered code-path list, and it says nothing about what any account paid during the 2020-2026 research periods.",
+  "schedule_id": "coinbase-intro-1-2026-09",
+  "accounting_effective_from": "2026-09-15T00:00:00+00:00",
+  "accounting_effective_from_note": "A SELECTED accounting-boundary timestamp (00:00 UTC on the day the 4-reading cohort completed), not the instant this schedule went operationally live and not consulted by pipeline/fees.py:active_schedule() at rate-resolution time. It precedes the last supporting reading (2026-09-15T00:05:01Z) by five minutes because it marks the day of confirmation, not a to-the-minute cutover. Actual operational adoption is the date this change merged to main -- see the repository's commit/PR history for that date, not this field.",
+  "source_report": {
+    "path": "logs/stf_cost_report_2026-09-15.json",
+    "sha256": "7d7f203a2aae767fd2535ae4959d30df8daa2688bf343a7b1e1a905eb7020b02",
+    "tracked": false,
+    "why_untracked": "logs/ is excluded by .gitignore line 30; the digest and the facts below are what survives a checkout"
+  },
+  "measured_tier": {
+    "pricing_tier": "Intro 1",
+    "maker_fee_rate": 0.006,
+    "taker_fee_rate": 0.012,
+    "round_trip_taker_pct": 2.4,
+    "rates_are_decimal_fractions": "0.006 means 0.6%"
+  },
+  "evidence": {
+    "fee_observations_measured": 4,
+    "first_seen": "2026-09-11",
+    "last_seen": "2026-09-15",
+    "tier_changed_during_the_probe": false,
+    "credential": "view-only key, permissions re-verified against the exchange per reading (can_view true, can_trade false, can_transfer false)",
+    "execution_cohort_usable_days_per_asset": {
+      "BTC-USD": 14,
+      "ETH-USD": 14,
+      "SOL-USD": 14,
+      "ZEC-USD": 14
+    },
+    "independently_audited": "14-day execution-cost checkpoint audit, 2026-09-15; cohort integrity clean, statistics reproduced field-for-field"
+  },
+  "how_to_reverify": [
+    "venv\\Scripts\\python.exe backtesting/stf_cost_probe.py --report",
+    "compare fee_tier.observed_tiers[0] with measured_tier above",
+    "a different tier means the account moved: add a NEW schedule with a new id and effective date in pipeline/fees.py, and leave this one in place so trades placed under it keep settling under it"
+  ],
+  "not_permanent": "Coinbase tiers move with trailing volume. These are current measured values for one account in September 2026, not Coinbase constants."
+}

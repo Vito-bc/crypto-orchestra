@@ -12,9 +12,15 @@ Trailing stop logic (percentage-based, no ATR needed in live system):
   TRAIL_ACTIVATION_PCT: once price rises this % above entry, begin trailing
   TRAIL_PCT           : trail stop stays this % below the high-water mark
 
-Fees (the conservative model configured by this project):
-  Entry: 0.4% maker (limit order)
-  Exit:  0.6% taker (market order on stop/target/max-hold)
+Fees (prospective operational schedule — see pipeline/fees.py). Each LEG is a
+separate order and is priced at the tier in force when THAT order is placed:
+  Entry: maker, stamped on the PendingOrder at placement and carried in here
+         at fill. Never recomputed afterwards.
+  Exit:  taker, resolved from the active schedule when the exit order is sent
+         (every exit path calls place_market_sell, so no exit is a maker fill).
+
+A position can therefore straddle a tier change and settle its two legs under
+two schedules — which is what Coinbase actually charges.
 
 State : logs/open_positions.json
 History: logs/trade_history.jsonl
@@ -30,14 +36,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from pipeline.fees import TAKER, active_schedule, entry_rate_for_record
 from pipeline.sizing import DEFAULT_TRADE_SIZE_PCT, live_balance_usd
 
 ROOT           = Path(__file__).resolve().parents[1]
 POSITIONS_FILE = ROOT / "logs" / "open_positions.json"
 TRADE_HISTORY  = ROOT / "logs" / "trade_history.jsonl"
 
-MAKER_FEE_RATE       = 0.004   # 0.4% modeled maker entry fee
-TAKER_FEE_RATE       = 0.006   # 0.6% modeled taker exit fee
 PAPER_BALANCE        = live_balance_usd()  # set LIVE_BALANCE_USD in .env for live trading
 DEFAULT_POS_PCT      = DEFAULT_TRADE_SIZE_PCT
 
@@ -75,6 +80,13 @@ class Position:
     extensions_used:          int            = 0      # hold extensions granted so far
     extension_trailing_stop:  Optional[float] = None  # ATR-anchored stop added during extensions
     epoch_id:        Optional[str]  = None             # stamped at order placement, immutable
+    # ENTRY leg only, carried from the order that filled. There is deliberately
+    # no taker field here: the exit is a different order, placed later, and is
+    # priced at the tier in force then. A position from before stamping
+    # existed carries None here and is refused, loudly, if it ever reaches
+    # close_position() — never silently priced at a guessed legacy rate.
+    entry_fee_schedule_id: Optional[str]   = None
+    entry_fee_rate:        Optional[float] = None
     # Populated on close
     exit_price:      Optional[float] = None
     exit_time:       Optional[str]   = None
@@ -151,6 +163,11 @@ def _load_raw() -> list[dict]:
         rows = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
         for r in rows:
             r.setdefault("epoch_id", None)  # backwards compat for pre-epoch records
+            # No load-time migration invents entry_fee_schedule_id/rate for a
+            # row that lacks them — see pipeline.fees.entry_rate_for_record.
+            # A row that structurally never had these fields is left exactly
+            # as absent, so it fails loudly if it ever reaches fee resolution
+            # instead of quietly becoming "legacy".
         return rows
     except (json.JSONDecodeError, OSError) as e:
         # Fail-closed: file exists but is unreadable → raise rather than return []
@@ -239,6 +256,13 @@ def open_position_from_order(order: "PendingOrder", fill_price: float) -> Positi
     stop_price   = round(fill_price - _stop_mult * atr, 2)
     target_price = round(fill_price + _tgt_mult  * atr, 2)
 
+    # Carried from the ORDER, exactly like epoch_id — not re-read from the
+    # active schedule. The entry fee belongs to the tier that was in force when
+    # the limit order was placed, which may predate this fill by up to 24h.
+    entry_rate = entry_rate_for_record(
+        getattr(order, "fee_schedule_id", None),
+        getattr(order, "maker_fee_rate", None))
+
     pos = Position(
         id=order.id,
         asset=order.asset,
@@ -251,12 +275,14 @@ def open_position_from_order(order: "PendingOrder", fill_price: float) -> Positi
         status="OPEN",
         high_water_mark=round(fill_price, 2),
         epoch_id=getattr(order, "epoch_id", None),  # carry epoch stamped at placement
+        entry_fee_schedule_id=getattr(order, "fee_schedule_id", None),
+        entry_fee_rate=entry_rate,
     )
     raw = _load_raw()
     raw.append(asdict(pos))
     _save_raw(raw)
 
-    entry_fee = qty_usd * MAKER_FEE_RATE
+    entry_fee = qty_usd * entry_rate
     print(f"[Position] OPENED #{pos.id} — {pos.asset}  entry ${fill_price:,.2f}  "
           f"size ${qty_usd:,.0f}  fee ${entry_fee:.2f}  "
           f"stop ${pos.stop_price:,.2f}  target ${pos.target_price:,.2f}  "
@@ -279,7 +305,28 @@ def close_position(pos: Position, exit_price: float, reason: str) -> dict:
     """
     from exchange.coinbase_client import place_market_sell
 
-    # Place the exit order on Coinbase (market sell, taker fee)
+    # Resolve BOTH fee legs BEFORE sending the exit order — not after. Once
+    # place_market_sell() below returns, a real (or dry-run) exit has been
+    # sent; a corrupt fee stamp discovered only afterwards would leave a sold
+    # position with no P&L computed and no trade-history entry, and no way to
+    # re-send the sell (it already happened).
+    #
+    # ENTRY: the rate the entry order was placed under. Reading the active
+    # schedule here would retroactively restate the entry fee of every position
+    # that was already open when a new schedule was adopted.
+    entry_rate = entry_rate_for_record(pos.entry_fee_schedule_id, pos.entry_fee_rate)
+
+    # EXIT: priced at the tier in force NOW, for the order about to be sent —
+    # not at whatever the entry was placed under. Using the entry's rate here
+    # would undercharge a market order that Coinbase prices at today's tier.
+    # Every exit path places a MARKET sell, including TAKE_PROFIT, so the
+    # taker rate applies to all of them; do not "optimise" this to maker for
+    # target exits without first changing how the exit is actually placed.
+    exit_schedule = active_schedule()
+    exit_rate     = exit_schedule.rate_for(TAKER)
+
+    # Place the exit order on Coinbase (market sell, taker fee) — only once
+    # both rates above are known good.
     place_market_sell(
         product_id=pos.asset,
         base_size_coins=pos.qty_coins,
@@ -287,8 +334,8 @@ def close_position(pos: Position, exit_price: float, reason: str) -> dict:
     )
 
     gross_proceeds = pos.qty_coins * exit_price
-    entry_fee      = pos.qty_usd    * MAKER_FEE_RATE
-    exit_fee       = gross_proceeds * TAKER_FEE_RATE
+    entry_fee      = pos.qty_usd    * entry_rate
+    exit_fee       = gross_proceeds * exit_rate
     net_pnl        = gross_proceeds - pos.qty_usd - entry_fee - exit_fee
     pnl_pct        = net_pnl / pos.qty_usd * 100
     now            = datetime.now(timezone.utc).isoformat()
@@ -313,6 +360,13 @@ def close_position(pos: Position, exit_price: float, reason: str) -> dict:
         "qty_usd":       pos.qty_usd,
         "entry_fee_usd": round(entry_fee, 2),
         "exit_fee_usd":  round(exit_fee, 2),
+        # Provenance per LEG, so the history file can be audited without
+        # re-deriving it from the code of the day — and so a trade that
+        # straddled a tier change shows both schedules rather than one.
+        "entry_fee_schedule_id": pos.entry_fee_schedule_id,
+        "entry_fee_rate":        entry_rate,
+        "exit_fee_schedule_id":  exit_schedule.schedule_id,
+        "exit_fee_rate":         exit_rate,
         "pnl_usd":       round(net_pnl, 2),
         "pnl_pct":       round(pnl_pct, 4),
         "hold_hours":    round(pos.held_hours(), 1),
