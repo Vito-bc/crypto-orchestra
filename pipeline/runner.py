@@ -46,11 +46,12 @@ from notifications.telegram  import (
     format_limit_order_placed,
     send_telegram_message,
 )
+from pipeline.fees          import MAKER, active_schedule, entry_rate_for_record
 from pipeline.limit_orders   import (
-    MAKER_FEE_RATE,
     cancel_open_orders,
     check_and_fill,
     get_open_orders,
+    get_pending_orders,
     place_limit_order,
 )
 from pipeline.exit_executor import run_exit_executor
@@ -394,9 +395,21 @@ def _check_pending_fills(asset: str, current_price: float) -> None:
     placed at a higher price (bounce check passed), but price drifted below
     the bounce threshold by the time it fills at the support level.
     If any filter fails at fill time, the order is cancelled instead.
+
+    This guard applies only to orders that have NOT yet met their fill
+    condition (status OPEN) — get_pending_orders(), not get_open_orders().
+    get_open_orders() also returns FEE_ERROR orders, which already filled (or
+    already met their fill condition) and are only waiting on a fee-stamp
+    repair; an entry veto is meaningless for a fill that already happened.
+    Gating on get_open_orders() here used to re-veto a FEE_ERROR order every
+    cycle, cancel nothing (cancel_open_orders() only touches OPEN orders —
+    the log line would then claim "CANCELLED 0 order(s)" for a block it did
+    not actually resolve), and return before check_and_fill() below — the
+    only place recovery happens — was ever reached, leaving a repaired order
+    blocked forever.
     """
     # Re-validate entry filters at fill price before executing
-    if get_open_orders(asset):
+    if get_pending_orders(asset):
         _fill_ok, _fill_reason, _ = _check_entry_filters(asset)
         if not _fill_ok:
             n = cancel_open_orders(asset)
@@ -409,20 +422,35 @@ def _check_pending_fills(asset: str, current_price: float) -> None:
 
     filled = check_and_fill(asset, current_price)
     for order in filled:
+        # An order recovered from FEE_ERROR carries the price it was blocked
+        # at; it must fill there, not at whatever price is current on the
+        # cycle its stamp happens to get repaired. An ordinary fill has no
+        # fee_error_price and uses current_price as always.
+        fill_price = (order.fee_error_price
+                      if getattr(order, "fee_error_price", None) is not None
+                      else current_price)
         print(f"[LimitOrder] FILLED #{order.id} — {asset} limit ${order.limit_price:,.2f}  "
-              f"stop ${order.stop_price:,.2f}  target ${order.target_price:,.2f}")
+              f"stop ${order.stop_price:,.2f}  target ${order.target_price:,.2f}"
+              + ("  (recovered fee-error fill)" if fill_price != current_price else ""))
         _log_order_event(asset, "LIMIT_ORDER_FILLED", {
             "order_id":     order.id,
             "limit_price":  order.limit_price,
             "stop_price":   order.stop_price,
             "target_price": order.target_price,
-            "fill_price":   current_price,
-            "maker_fee":    MAKER_FEE_RATE,
+            "fill_price":   fill_price,
+            # The ORDER's stamp, resolved the same way open_position_from_order
+            # resolves it — not the raw field. A legacy order carries
+            # maker_fee_rate=None, and logging that null here made the event
+            # disagree with the position the very same fill creates (which
+            # correctly resolves the null to the legacy 0.004 rate).
+            "maker_fee":       entry_rate_for_record(
+                                   order.fee_schedule_id, order.maker_fee_rate),
+            "fee_schedule_id": order.fee_schedule_id,
         })
-        send_telegram_message(format_limit_order_filled(asset, order, current_price))
+        send_telegram_message(format_limit_order_filled(asset, order, fill_price))
         # Open a tracked position so stop/target monitoring starts immediately
         from notifications.telegram import format_position_opened
-        pos = open_position_from_order(order, current_price)
+        pos = open_position_from_order(order, fill_price)
         _log_order_event(asset, "POSITION_OPENED", {
             "position_id": pos.id,
             "entry_price": pos.entry_price,
@@ -1271,7 +1299,12 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                             "stop_price":  _order_stop,
                             "target_price": _order_target,
                             "dist_atr":    dist,
-                            "maker_fee":   MAKER_FEE_RATE,
+                            # Placement time, so this IS the order's own stamp:
+                            # PendingOrder.create() read the same schedule a
+                            # moment ago. (At the FILLED site above it is not —
+                            # there the order's stamp may predate today's tier.)
+                            "maker_fee":   active_schedule().rate_for(MAKER),
+                            "fee_schedule_id": active_schedule().schedule_id,
                             "reasoning":   _order_reasoning,
                         })
                         send_telegram_message(format_limit_order_placed(asset, _notify_order, levels))
