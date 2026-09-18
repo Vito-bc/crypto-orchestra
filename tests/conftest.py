@@ -7,9 +7,93 @@ safety guards that prevent tests from touching production resources.
 
 from __future__ import annotations
 
+import builtins
+import sqlite3
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+# The repository's real logs/ directory — never a tmp_path, never a fixture
+# double. Computed once here rather than imported from pipeline.runner so the
+# guard below does not depend on any module having patched its own copy.
+REAL_LOG_DIR = (Path(__file__).resolve().parents[1] / "logs").resolve()
+
+_WRITE_MODE_CHARS = frozenset("wax+")
+
+
+def _is_write_mode(mode) -> bool:
+    if not isinstance(mode, str):
+        return True  # non-str mode (e.g. an int flag from os.open) — assume writable
+    return any(c in _WRITE_MODE_CHARS for c in mode)
+
+
+def _is_real_log_path(candidate) -> bool:
+    try:
+        resolved = Path(candidate).resolve()
+    except (OSError, ValueError, TypeError):
+        return False
+    return resolved == REAL_LOG_DIR or REAL_LOG_DIR in resolved.parents
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_logs_dir(monkeypatch):
+    """
+    Fail loudly if any test writes to the repository's REAL logs/ directory.
+
+    2026-09-18: logs/agent_decisions.jsonl was found polluted with 36
+    synthetic records written by this suite through the real
+    pipeline.runner._log_order_event. Tests correctly patch POSITIONS_FILE /
+    ORDERS_FILE / TRADE_HISTORY, but runner.DECISIONS_LOG (and
+    runner._SIGNALS_DB) were never patched by the offending tests, so every
+    run appended straight into the production log.
+
+    Rather than trust every current and future test module to remember to
+    patch its own module-level log-path constant, this fixture is a blanket
+    backstop: it intercepts file/DB writes at the point they touch disk
+    (Path.open, builtins.open, sqlite3.connect) and raises immediately if the
+    target resolves inside the real logs/ directory. It fails LOUDLY — it does
+    not silently redirect the write, because a silent redirect would hide the
+    next unpatched constant the same way this one was hidden.
+
+    A test that legitimately needs to read a committed fixture from outside
+    tmp_path is unaffected — only write-mode opens are checked.
+    """
+    real_path_open = Path.open
+    real_builtins_open = builtins.open
+    real_sqlite_connect = sqlite3.connect
+
+    def guarded_path_open(self, mode="r", *args, **kwargs):
+        if _is_write_mode(mode) and _is_real_log_path(self):
+            raise AssertionError(
+                f"Test attempted to open a REAL logs/ path for writing: {self} "
+                f"(mode={mode!r}). Patch the module-level constant to a "
+                "tmp_path instead of letting it fall through to the real path."
+            )
+        return real_path_open(self, mode, *args, **kwargs)
+
+    def guarded_builtins_open(file, mode="r", *args, **kwargs):
+        if _is_write_mode(mode) and _is_real_log_path(file):
+            raise AssertionError(
+                f"Test attempted to open a REAL logs/ path for writing: {file} "
+                f"(mode={mode!r}). Patch the module-level constant to a "
+                "tmp_path instead of letting it fall through to the real path."
+            )
+        return real_builtins_open(file, mode, *args, **kwargs)
+
+    def guarded_sqlite_connect(database, *args, **kwargs):
+        if isinstance(database, (str, bytes, Path)) and _is_real_log_path(database):
+            raise AssertionError(
+                f"Test attempted to open a REAL logs/ sqlite database: "
+                f"{database!r}. Patch the module-level constant to a "
+                "tmp_path instead of letting it fall through to the real path."
+            )
+        return real_sqlite_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_path_open, raising=True)
+    monkeypatch.setattr(builtins, "open", guarded_builtins_open, raising=True)
+    monkeypatch.setattr(sqlite3, "connect", guarded_sqlite_connect, raising=True)
+    yield
 
 
 @pytest.fixture(autouse=True)
