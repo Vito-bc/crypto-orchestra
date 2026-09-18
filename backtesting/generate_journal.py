@@ -15,12 +15,16 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT  = Path(__file__).resolve().parents[1]
 VAULT = ROOT / "obsidian_vault"
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -389,6 +393,222 @@ A strategy can have a 48% win rate and still lose money if R:R < 1.0.
     _write(folder / "RR_Ratio_Bug.md", rr_fix)
 
 
+# ── Research (derived from committed artifacts — never hand-written) ──────────
+
+def _require(pattern: str, text: str, source: Path, what: str) -> "re.Match[str]":
+    """
+    Regex-extract a fact from a committed doc, or fail loudly.
+
+    generate_journal.py must not retype validation/fee/cost numbers as Python
+    literals — that lets the vault silently drift from the documents that
+    actually govern them. Deriving by regex means a source-format change is
+    caught here (raise) instead of shipping a page with a blank or, worse, a
+    stale number that happens to still parse.
+    """
+    m = re.search(pattern, text, re.DOTALL)
+    if not m:
+        raise RuntimeError(
+            f"generate_journal.py Research page: could not find {what} in "
+            f"{source.relative_to(ROOT)}. The source format changed — fix the "
+            "parser rather than emit a page with a blank or a stale number."
+        )
+    return m
+
+
+def generate_research_notes() -> None:
+    folder = _ensure(VAULT / "Research")
+
+    from backtesting.cost_sensitivity import (
+        _ARTIFACT_EXPECTANCY_PCT,
+        _ARTIFACT_N_CLOSED,
+        _ARTIFACT_PF,
+        _CANDIDATE_MAKER_RATE,
+        _CANDIDATE_TAKER_RATE,
+    )
+    from pipeline.fees import CURRENT_SCHEDULE
+
+    # ── 1. Current validation status: docs/trial_registry.md + CLAUDE.md ──────
+    registry_path = ROOT / "docs" / "trial_registry.md"
+    claude_md_path = ROOT / "CLAUDE.md"
+    for p in (registry_path, claude_md_path):
+        if not p.exists():
+            raise RuntimeError(f"Research page needs {p} — not found")
+    registry_text = registry_path.read_text(encoding="utf-8")
+    claude_text = claude_md_path.read_text(encoding="utf-8")
+
+    m = _require(
+        r"V2 momentum \(ZEC\): \*\*PF ([\d.]+) \((-?[\d.]+)%/trade, n=(\d+)\)",
+        claude_text, claude_md_path, "the V2 ZEC headline PF/expectancy/n")
+    v2_pf, v2_expectancy_pct, v2_n = m.group(1), m.group(2), m.group(3)
+
+    _require(r"Do NOT switch `DRY_RUN=false` on current evidence\.",
+              claude_text, claude_md_path, "the DRY_RUN refusal statement")
+    _require(r"LIVE\s+\*?\*?NO-GO", registry_text, registry_path,
+              "the LIVE NO-GO verdict")
+    _require(r"`DRY_RUN=true`", registry_text, registry_path,
+              "the DRY_RUN=true statement")
+
+    # ── 2. Operational fee schedule: pipeline/fees.py + fee-tier evidence ──────
+    evidence_path = ROOT / "docs" / "operations" / "fee_tier_2026-09-15.json"
+    if not evidence_path.exists():
+        raise RuntimeError(f"Research page needs {evidence_path} — not found")
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    measured = evidence["measured_tier"]
+    if (measured["maker_fee_rate"] != CURRENT_SCHEDULE.maker_rate
+            or measured["taker_fee_rate"] != CURRENT_SCHEDULE.taker_rate):
+        raise RuntimeError(
+            "Research page: pipeline/fees.py CURRENT_SCHEDULE "
+            f"({CURRENT_SCHEDULE.maker_rate}/{CURRENT_SCHEDULE.taker_rate}) "
+            f"disagrees with {evidence_path.name}'s measured_tier "
+            f"({measured['maker_fee_rate']}/{measured['taker_fee_rate']}) — "
+            "these must describe the same adopted schedule"
+        )
+
+    cost_sensitivity_py = ROOT / "backtesting" / "cost_sensitivity.py"
+    cs_source = cost_sensitivity_py.read_text(encoding="utf-8")
+    m = _require(r'observed_at="([\d\-:T.+]+)"', cs_source, cost_sensitivity_py,
+                  "the candidate reading's observed_at timestamp")
+    candidate_observed_at = m.group(1)
+    m = _require(r'"pricing_tier":\s*"([^"]+)"', cs_source, cost_sensitivity_py,
+                  "the candidate reading's pricing_tier")
+    candidate_pricing_tier = m.group(1)
+    m = _require(r"4-reading cohort \((\d{4}-\d{2}-\d{2}) → (\d{4}-\d{2}-\d{2})\)",
+                  registry_text, registry_path, "the candidate cohort window")
+    cohort_start, cohort_end = m.group(1), m.group(2)
+
+    # ── 3. Cost-sensitivity headline: docs/research/2026-09-cost-sensitivity.md ─
+    cs_md_path = ROOT / "docs" / "research" / "2026-09-cost-sensitivity.md"
+    if not cs_md_path.exists():
+        raise RuntimeError(f"Research page needs {cs_md_path} — not found")
+    cs_text = cs_md_path.read_text(encoding="utf-8")
+
+    m = _require(
+        r"\*\*ADOPTED \(all exit paths[^\n]*\*\*\s*\|\s*0\.6%\s*\|\s*1\.2%\s*\|\s*\*\*\+([\d.]+)%\*\*",
+        cs_text, cs_md_path, "the ADOPTED break-even gross move")
+    breakeven_adopted = m.group(1)
+    m = _require(
+        r"\*\*CANDIDATE, not adopted \(all exit paths\)\*\*\s*\|\s*0\.5%\s*\|\s*0\.9%\s*\|\s*\*\*\+([\d.]+)%\*\*",
+        cs_text, cs_md_path, "the CANDIDATE break-even gross move")
+    breakeven_candidate = m.group(1)
+
+    m = _require(
+        r"\*\*PROSPECTIVE SENSITIVITY — ADOPTED \(0\.6%/1\.2%\)\*\*\s*\|\s*114\s*\|\s*\*\*([\d.]+)\*\*\s*\|\s*\*\*(-?[\d.]+)%/trade\*\*",
+        cs_text, cs_md_path, "the ADOPTED re-priced PF/expectancy")
+    pf_adopted, expectancy_adopted = m.group(1), m.group(2)
+    m = _require(
+        r"\*\*PROSPECTIVE SENSITIVITY — CANDIDATE, not adopted \(0\.5%/0\.9%\)\*\*\s*\|\s*114\s*\|\s*\*\*([\d.]+)\*\*\s*\|\s*\*\*(-?[\d.]+)%/trade\*\*",
+        cs_text, cs_md_path, "the CANDIDATE re-priced PF/expectancy")
+    pf_candidate, expectancy_candidate = m.group(1), m.group(2)
+
+    m = _require(r"\| Frozen 1\.0% model \|[^\n]*\*\*(\+?-?[\d.]+)%\*\*\s*\|",
+                  cs_text, cs_md_path, "the frozen-model 95% upper bound")
+    bound_frozen = float(m.group(1))
+    m = _require(r"\| ADOPTED 0\.6%/1\.2% \(measured\) \|[^\n]*\*\*(\+?-?[\d.]+)%\*\*\s*\|",
+                  cs_text, cs_md_path, "the ADOPTED 95% upper bound")
+    bound_adopted = float(m.group(1))
+    m = _require(r"\| CANDIDATE 0\.5%/0\.9% \(not adopted\) \|[^\n]*\*\*(\+?-?[\d.]+)%\*\*\s*\|",
+                  cs_text, cs_md_path, "the CANDIDATE 95% upper bound")
+    bound_candidate = float(m.group(1))
+
+    if not (bound_frozen > 0 and bound_adopted < 0 and bound_candidate < 0):
+        raise RuntimeError(
+            "Research page: expected the frozen-model bound above zero and "
+            "both operational bounds below zero, but parsed "
+            f"frozen={bound_frozen}%, adopted={bound_adopted}%, "
+            f"candidate={bound_candidate}% — the write-up's conclusion may "
+            "have changed; re-check docs/research/2026-09-cost-sensitivity.md "
+            "before regenerating this page"
+        )
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    note = f"""---
+date: {today}
+type: research
+tags: [research, validation-status, fees, cost-sensitivity, derived]
+---
+
+# Research Status — derived, not hand-written
+
+> Every figure on this page is parsed from a committed source file at
+> generation time (`backtesting/generate_journal.py::generate_research_notes`).
+> None of it is a literal typed into the generator. If a source file's format
+> changes in a way that breaks parsing, vault regeneration fails loudly
+> instead of publishing a blank or stale number.
+
+## 1. Current validation status
+
+**DRY_RUN / LIVE NO-GO.** This system trades in paper/shadow mode only. No
+real-money trading is authorized.
+
+- V2 momentum (ZEC-USD, frozen mechanism): **PF {v2_pf} ({v2_expectancy_pct}%/trade, n={v2_n})**
+  — not profitable at the historical research fee assumption.
+- `docs/trial_registry.md` records the **LIVE NO-GO** verdict.
+- `CLAUDE.md` is explicit: *"Do NOT switch `DRY_RUN=false` on current evidence."*
+
+Source: [[../../docs/trial_registry.md|docs/trial_registry.md]], `CLAUDE.md`
+("Validation Status").
+
+## 2. Operational fee schedule
+
+| | Maker | Taker | Tier |
+|---|---:|---:|---|
+| **ADOPTED** — `pipeline/fees.py` `CURRENT_SCHEDULE` | {CURRENT_SCHEDULE.maker_rate:.1%} | {CURRENT_SCHEDULE.taker_rate:.1%} | {CURRENT_SCHEDULE.tier_name} |
+| **CANDIDATE — NOT ADOPTED** — single {candidate_observed_at} reading | {_CANDIDATE_MAKER_RATE:.1%} | {_CANDIDATE_TAKER_RATE:.1%} | {candidate_pricing_tier} |
+
+The adopted schedule (`{CURRENT_SCHEDULE.schedule_id}`) is a measured,
+independently audited 4-reading cohort — see
+`docs/operations/fee_tier_2026-09-15.json`. The candidate tier is a single
+{candidate_observed_at} reading and is **not written into `pipeline/fees.py`**;
+`active_schedule()` still returns only the adopted schedule. Formal adoption
+waits for its own 4-reading cohort ({cohort_start} → {cohort_end}) before any
+`FeeSchedule` entry is added for it.
+
+Source: `pipeline/fees.py`, `docs/operations/fee_tier_2026-09-15.json`,
+`backtesting/cost_sensitivity.py`.
+
+## 3. Cost-sensitivity headline (trial `2026-09-cost-sensitivity.v1`)
+
+> Prospective cost sensitivity, not an edge test — see
+> `docs/research/2026-09-cost-sensitivity.md` for the full write-up and every
+> caveat on how these numbers may and may not be used.
+
+**Break-even gross move** (the same across STOP_LOSS/MAX_HOLD/TAKE_PROFIT,
+because `close_position()` prices every exit at the taker rate):
+
+| Schedule | Break-even gross move |
+|---|---:|
+| ADOPTED (measured) | +{breakeven_adopted}% |
+| CANDIDATE, not adopted | +{breakeven_candidate}% |
+
+**The frozen V2 ZEC mechanism's own n={_ARTIFACT_N_CLOSED} trades, re-priced**
+(same entries/exits, different fee assumption — not a restatement of
+`docs/research/artifacts/results.json`):
+
+| Fee model | PF | Expectancy |
+|---|---:|---:|
+| Frozen artifact (historical fee model) | {_ARTIFACT_PF:.5f} | {_ARTIFACT_EXPECTANCY_PCT * 100:+.2f}%/trade |
+| PROSPECTIVE — ADOPTED | {pf_adopted} | {expectancy_adopted}%/trade |
+| PROSPECTIVE — CANDIDATE, not adopted | {pf_candidate} | {expectancy_candidate}%/trade |
+
+**One-sided 95% upper bound on the true per-trade edge:**
+
+| Scenario | Upper bound | Side of zero |
+|---|---:|---|
+| Frozen 1.0% model | {bound_frozen:+.4f}% | **Above zero** |
+| ADOPTED, measured | {bound_adopted:+.4f}% | **Below zero** |
+| CANDIDATE, not adopted | {bound_candidate:+.4f}% | **Below zero** |
+
+The frozen-model bound sits above zero while both operational-cost bounds sit
+below zero: at either the adopted or the candidate operational fee schedule,
+this sample rules out a profitable version of the frozen mechanism at 95%
+one-sided confidence. This does not change `DRY_RUN`, `LIVE_BALANCE_USD`,
+`ASSET_CONFIG`, V3 status, or Phase 7B status.
+
+Source: [[../../docs/research/2026-09-cost-sensitivity.md|docs/research/2026-09-cost-sensitivity.md]].
+"""
+    _write(folder / "Research Status.md", note)
+
+
 # ── README ────────────────────────────────────────────────────────────────────
 
 def generate_readme() -> None:
@@ -403,6 +623,7 @@ It grows automatically: every trade, backtest, and agent decision is logged here
 |--------|----------|
 | [[TradeJournal/]] | One note per closed trade — P&L, hold time, lessons |
 | [[Backtests/]] | Scanner results, Monte Carlo outputs, period analyses |
+| [[Research/]] | Validation status, fee schedule, and cost-sensitivity headline — derived from committed docs, regenerated each run |
 | [[Strategies/]] | Parameters, changelog, approach decisions |
 | [[ErrorsAndFixes/]] | Documented mistakes and how they were fixed |
 | [[AgentOutputs/]] | Daily agent decision logs |
@@ -512,6 +733,9 @@ def main() -> None:
 
     print("\nBacktests/")
     generate_backtest_notes()
+
+    print("\nResearch/")
+    generate_research_notes()
 
     print("\nStrategies/")
     generate_strategy_notes()
