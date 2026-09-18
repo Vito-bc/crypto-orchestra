@@ -39,6 +39,10 @@ data/
 *.db
 !data/.gitkeep
 
+# Committed research deliverables (inventories, not the raw candle cache)
+!docs/research/data/
+!docs/research/data/**
+
 # Coverage and reports
 .coverage
 htmlcov/
