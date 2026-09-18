@@ -675,3 +675,320 @@ resolve whether the candidate tier should be formally adopted — that decision
 rests on the 4-reading cohort (2026-09-17 → 2026-09-20) per
 `fee-tier-change-2026-09-16`, independent of this trial's conclusion.
 **LIVE NO-GO stands.**
+
+---
+
+## Standing policy — evidence requirements for every trial registered after this commit (2026-09-18)
+
+**Pre-registered for future trials; post-hoc for the two closures recorded
+below, which are its first applications.** This distinction is load-bearing:
+applying a rule after the data is in is not the same act as declaring it before,
+and the two closures do not get to claim the strength of a pre-registration they
+did not have. Every trial registered *after* this commit does, and there is no
+grandfather clause.
+
+Origin: `docs/research/literature/2026-09-17-review/`, in particular report 05
+§7b (equivalence framing, Lakens 2017), §1c (DSR needs `V[{SR_n}]`, PBO needs a
+synchronous `(T × N)` P&L matrix — neither reconstructible from PF and n alone),
+and §7c (Bailey et al.: "the counter of trials cannot be turned back"). Filing a
+review authorizes nothing; this section is the one thing that review changes
+about how trials are run.
+
+### 1. Declare a SESOI and a kill rule, before the trial runs
+
+Each trial's registry entry states, **before any data contact**:
+
+- a **SESOI** — the smallest economically meaningful per-trade edge — derived
+  from the **operational fee schedule in force at registration**
+  (`pipeline/fees.py` `CURRENT_SCHEDULE`, not the frozen research constants, and
+  not a candidate tier that has not cleared its reading cohort); and
+- a **kill rule**, stated exactly as: *the hypothesis of an edge ≥ SESOI is
+  rejected when the one-sided 95% upper bound on the per-trade mean falls below
+  SESOI.*
+
+The bound is `mean + 1.645 · SD / √n` on the trial's own measured per-trade net
+return series, with a percentile bootstrap on the mean reported alongside it as
+a shape check (fixed seed, declared at registration, not searched afterwards).
+
+A SESOI chosen after seeing the result is p-hacking with extra steps. A kill
+rule that cannot fire is not a kill rule.
+
+### 2. Declare the expected decidable-edge floor, and do not start a trial that fails it
+
+Each trial also states, before it runs, its **decidable-edge floor**:
+
+```
+floor = 1.645 · SD / sqrt(n_effective)
+```
+
+where `SD` is the best available estimate of per-trade net return dispersion
+(measured if one exists for a comparable mechanism, borrowed and explicitly
+labelled as borrowed otherwise) and `n_effective` is the number of
+**independent** trade events the trial expects to observe — not the raw trade
+count. Where assets are correlated, `n_effective` is reduced accordingly, and
+the estimator used must be named in the entry.
+
+**If that floor exceeds the trial's own SESOI, the trial is not started.** A
+trial that cannot distinguish the smallest edge worth having from zero cannot
+decide its own question, and running it produces a number that was never going
+to mean anything. This is a gate on starting, not a caveat to add afterwards.
+
+### 3. Retain per-trial return SERIES in the artifacts
+
+Summary statistics are not enough. Each trial's artifacts carry the per-trade
+return series itself, so that multiple-testing corrections — DSR's `V[{SR_n}]`,
+CSCV's `(T × N)` matrix — remain computable later. This costs nothing at the
+time and is the only thing that makes them computable at all afterwards.
+Retention is not conditional on a trial succeeding; failed trials are exactly
+the ones those corrections need.
+
+### 4. The trial counter is monotone
+
+Retiring a line and later reviving it **increments N**. A revived line is a new
+trial ID with its own hypothesis, boundaries and acceptance rule, and it may not
+inherit the retired line's thresholds, criteria or multiple-testing budget. The
+count of trials attempted in this repository never decreases, and every future
+claim is measured against the running total, not against the number of trials
+currently considered live.
+
+### What this policy does not do
+
+It does not authorize anything. It does not alter `DRY_RUN`,
+`LIVE_BALANCE_USD`, `ASSET_CONFIG`, V3's retirement, Phase 7B's unauthorized
+status or the standing decision that 7R3b is not run, and it does not license a
+new trial. It is a constraint on how a future trial must be registered if one is
+ever opened.
+
+---
+
+## Closure 1 — V2 / ZEC momentum: RETIRED AS AN ACTIVATION CANDIDATE, on EDGE (2026-09-18)
+
+**No new trial ID.** This is a verdict on the existing line
+`2026-08-warmup-semantics.v1` (ZEC-USD, continuous window 2021-06-26 →
+2026-07-12, n=114, PF 0.76141, −0.6227%/trade). No scan was re-run, no artifact
+regenerated, no frozen constant touched. It is the first application of the
+standing policy above — **post-hoc**, by construction.
+
+### The measurements
+
+Per-trade net return series, n=114, from
+[`research/2026-09-cost-sensitivity.md`](research/2026-09-cost-sensitivity.md)
+§6 (sample SD, n−1; `SE = SD/√114`; bound = `mean + 1.645·SE`):
+
+| Scenario | Mean | **Measured SD** | SE | One-sided 95% upper bound | Bootstrap bound (10^5 resamples, seed 20260917) |
+|---|---:|---:|---:|---:|---:|
+| Frozen 1.0% research model | −0.6227% | **5.1095%** | 0.4786% | **+0.1645%** | +0.1675% |
+| ADOPTED, measured (0.6% maker / 1.2% taker) | −1.4918% | **4.9969%** | 0.4680% | **−0.7220%** | −0.7194% |
+| CANDIDATE, not adopted (0.5% / 0.9%) | −1.0909% | **5.0121%** | 0.4694% | **−0.3187%** | −0.3161% |
+
+**Bootstrap agreement.** The per-trade distribution is visibly non-normal at the
+level of individual trades (skewness ≈ +0.62, excess kurtosis ≈ −0.32; the
+STOP_LOSS and TAKE_PROFIT clusters make it two-humped), so the normal-theory
+bound is checked rather than assumed. The percentile bootstrap on the *mean*
+lands within 0.003–0.004 percentage points of the normal-theory bound in every
+scenario and falls on the same side of zero in every scenario. The conclusion
+does not rest on the normal approximation.
+
+The measured SD is **larger** than the +1.75R/−1R two-point approximation the
+literature review worked from (4.70%), so that review's bound of +0.105%/trade
+was too narrow. The measured numbers above supersede it. The review's own caveat
+predicted the direction of its error correctly.
+
+### The SESOI, and its arithmetic
+
+SESOI is set from the operational fee schedule's **break-even gross move** — the
+gross move a trade must clear before it earns anything — at **one tenth** of it:
+
+| Schedule | entry / exit rate | Break-even gross move | **SESOI = 10% of break-even** |
+|---|---|---:|---:|
+| Frozen 1.0% research model (taker-priced exit) | 0.4% / 0.6% | +1.0060% | **+0.1006%/trade** |
+| ADOPTED (`pipeline/fees.py` `CURRENT_SCHEDULE`) | 0.6% / 1.2% | +1.8219% | **+0.1822%/trade** |
+| CANDIDATE, not adopted | 0.5% / 0.9% | +1.4127% | **+0.1413%/trade** |
+
+The reasoning behind the one-tenth coefficient: an edge smaller than a tenth of
+what the venue takes per round trip means more than 90% of the mechanism's gross
+output is fee, and the venue — not the account — is the party the mechanism
+earns for. **The coefficient is not load-bearing here.** At both operational
+schedules the bound is below **zero**, so the kill rule fires for *any*
+non-negative SESOI whatsoever; the coefficient matters only for the frozen-model
+row, where it does not change that row's outcome either
+(+0.1645% > +0.1006%, so the frozen model does not reject).
+
+### Applying the kill rule
+
+| Schedule | Bound | SESOI | Bound − SESOI | Fires? |
+|---|---:|---:|---:|---|
+| Frozen 1.0% research model | +0.1645% | +0.1006% | +0.0639% (+0.13 SE) | **No** |
+| ADOPTED, measured | −0.7220% | +0.1822% | −0.9042% (−1.93 SE) | **Yes — REJECT** |
+| CANDIDATE, not adopted | −0.3187% | +0.1413% | −0.4600% (−0.98 SE) | **Yes — REJECT** |
+
+Measured against zero rather than against SESOI, those two bounds sit 1.54 SE
+(adopted) and 0.68 SE (candidate) below it. The adopted-cost rejection is the
+robust one; the candidate-cost rejection is nearer the boundary but holds under
+both the normal-theory and the bootstrap bound at this sample size.
+
+### Verdict — RETIRED AS AN ACTIVATION CANDIDATE
+
+The sample does **not** establish that this mechanism loses money — at n=114 the
+conventional test is uninformative (t = −1.41, p = 0.159; 95% PF interval
+roughly [0.49, 1.13]), and anyone citing PF 0.761 as proof of a negative edge is
+over-reading it — and the sample **does** bound any true edge below zero at
+operational cost, because the one-sided 95% upper bound on the per-trade mean is
+−0.7220% at the adopted schedule and −0.3187% at the candidate schedule, so a
+profitable version of this mechanism is ruled out at the costs we face. Both
+statements are true at once, they are not in tension, and neither may be quoted
+without the other.
+
+The precise reading is this: **the edge is not demonstrably absent, it is
+demonstrably smaller than the cost of trading it on this venue.** At the frozen
+1.0% research model the one-sided 95% upper bound is **+0.1645%, above zero** —
+the sample there does not rule out a small positive edge at all. The rejection
+comes from the **cost gap**, not from the signal being disproved. Nothing in
+this closure shows the mechanism has no edge; it shows that whatever edge it may
+have is smaller than what Coinbase charges to collect it.
+
+(The PF interval is an approximation from the two-point +1.75R/−1R payoff model,
+quoted as [0.50, 1.13] in `literature/2026-09-17-review/04-momentum-breakout-evidence.md`
+§5a and [0.49, 1.11] in that review's `00-synthesis.md` §1. It is not measured,
+and the measured SD above implies the true interval is wider than either.)
+
+Two consequences follow, and no others:
+
+- V2 / ZEC is **retired as an activation candidate**, terminally for this trial
+  ID, on the same footing as V3: there is no trade count, no shadow cohort and
+  no forward window that reactivates it. Reviving this line means a new
+  pre-registered trial ID under the standing policy above, which increments N.
+- Because the rejection is a cost verdict rather than a signal verdict,
+  **execution optimisation cannot rescue it.** Perfect maker-both-legs execution
+  at the current rates reproduces a ~1.0% round trip — the exact cost assumption
+  under which this mechanism already measures PF 0.761. The ceiling on execution
+  work is the losing baseline, not break-even.
+
+Unchanged by this closure: `DRY_RUN=true`, **LIVE NO-GO**, `LIVE_BALANCE_USD`,
+`ASSET_CONFIG`, V3's retirement, Phase 7B's unauthorized status, and the
+standing decision that 7R3b is not run. Shadow/paper journaling continues as
+research infrastructure.
+
+### Recorded alongside, not part of the verdict
+
+The cross-asset ordering among BTC / ETH / SOL / ZEC is **not established**. The
+BTC (t = −6.79) and ETH (t = −4.47) losses are real; but no pairwise gap among
+the four survives Bonferroni across six comparisons, and SOL vs ZEC is a coin
+flip (t = −0.19). "ZEC is the least bad" is the top of an unresolved ranking of
+degrees of losing, not a fact about ZEC — ZEC's selection as the shadow asset
+rests on noise. These t-statistics come from the review's two-point payoff
+approximation applied to the artifact's PF/n values
+(`literature/2026-09-17-review/04-momentum-breakout-evidence.md` §4b), which
+understates dispersion, so the true |t| are smaller and the ordering is if
+anything *less* resolved than shown. This does not change the verdict above; it
+removes a premise that was never load-bearing and should stop being repeated.
+
+---
+
+## Closure 2 — broad-universe Coinbase spot trend: NOT STARTED, on FEASIBILITY (2026-09-18)
+
+**No new trial ID, and no trial.** This closes a line that was never opened. It
+is the first application of the standing policy's rule that *a trial whose
+decidable-edge floor exceeds its own SESOI is not run* — the gate fires at
+registration, before any data contact, which is the point of having it.
+
+**This closure is not comparable to Closure 1 and is deliberately not worded
+like it.** Closure 1 measured a mechanism and bounded its edge. This one
+measures nothing about returns at all.
+
+### What was measured
+
+From [`research/data/universe_inventory_2026-09-17.md`](research/data/universe_inventory_2026-09-17.md)
+— a read-only inventory in which no strategy return, PF, Sharpe, expectancy,
+equity curve or asset performance ranking is computed anywhere, in the document
+or in its source script:
+
+| Candidate rule | Pairs (N) | rho_bar | N_eff | Common overlap | Decidable-edge floor @95% |
+|---|---:|---:|---:|---|---|
+| A: ≥3y history, median 30d vol ≥ $1M | 31 | 0.5801 | 1.685 | 2023-07-13 → 2026-09-18 (3.19 y) | **2.02–2.97%** |
+| B: ≥2y history, median 30d vol ≥ $250k | 61 | 0.5695 | 1.734 | 2024-09-04 → 2026-09-18 (2.04 y) | **2.48–2.97%** |
+| C: ≥1y history, median 30d vol ≥ $5M | 20 | 0.5793 | 1.666 | 2025-08-20 → 2026-09-18 (1.08 y) | **3.11–3.76%** |
+
+`rho_bar` is the mean pairwise Pearson correlation of daily log returns over each
+rule's common overlap window; `N_eff = N / (1 + (N−1)·rho_bar)`. Each floor is a
+range because it is bracketed by two non-nested bases — a saturating
+portfolio-wide cluster count and a correlation-adjusted pooled count — and
+neither end dominates.
+
+**20 to 61 Coinbase USD pairs carry the information of fewer than two
+independent assets.** All three candidate rules land in the same narrow band,
+rho_bar 0.5695–0.5801 and N_eff 1.666–1.734. No rule escapes it.
+
+### The gate, and why it fires
+
+Against a break-even gross move of **1.41%** at the candidate schedule, every
+floor above is larger than the entire round-trip cost — 1.4× to 2.7× it — before
+any SESOI is applied at all. Under the standing policy's SESOI construction
+(one tenth of break-even, +0.1413%/trade at that schedule) the floors exceed the
+SESOI by a factor of roughly 14 to 27.
+
+The horizon arithmetic is the part worth recording. At rule A's pooled event
+rate — `N_eff 1.685 × 3.094 entries/asset/yr` = **5.21 entries/yr** — and the
+measured per-trade SD of 4.9969% (the adopted-schedule series from Closure 1,
+**borrowed** and labelled as borrowed, since nothing about this universe's own
+dispersion has been measured):
+
+| Floor target | n required | Years at 5.21 entries/yr |
+|---|---:|---:|
+| 1.0%/trade | 67.6 | **~13 years** |
+| 0.5%/trade | 270.3 | **~52 years** |
+
+A trial that needs thirteen years before it can detect a 1%/trade edge, on a
+venue whose fee schedule changed twice in the month this was written, is not a
+trial. It is a commitment to wait.
+
+### Verdict — NOT STARTED
+
+**A broad-universe trend trial on Coinbase spot is not started, because it
+cannot decide its own question within a usable horizon.** The decidable-edge
+floor for every candidate rule exceeds that rule's own SESOI by more than an
+order of magnitude, which is precisely the condition under which the standing
+policy above says a trial is not run.
+
+**This closes the line on FEASIBILITY.** No return hypothesis was evaluated, no
+P&L was computed, no strategy was simulated and no asset was ranked. **This is
+therefore NOT evidence that such a program would be unprofitable** — it is not
+evidence about profitability in either direction, and it must never be cited as
+if it were. The line is closed because the question is undecidable here at this
+event rate, not because it was answered.
+
+### Why breadth does not help
+
+The binding constraint is **cross-asset correlation, not trade count.** Going
+from 20 pairs to 61 moves `N_eff` from 1.666 to 1.734 — the information content
+of the book barely moves, while each added pair pays the full round-trip cost on
+every one of its own entries. **Adding correlated pairs multiplies cost without
+adding information.** Rule B is the direct demonstration: it admits roughly
+twice rule A's pairs and ends with the *smaller* pooled n, because admitting
+2-year-old listings shortens the overlap window every member must share. "Trade
+more names" is not an escape from this; it is the same trial with a larger fee
+bill.
+
+### These floors are the optimistic end
+
+The correlation-adjusted pooled floor treats `N_eff` independent assets as each
+firing at its measured event rate for the whole overlap window. That ignores two
+things, and both cut the same way: **one asset's entry events cluster in time**,
+and **a single trend regime moves many names together beyond what a daily-return
+`rho_bar` captures.** `rho_bar` is itself a full-window average of a
+regime-dependent quantity — report 03 of the review records BTC-alt R² swinging
+from 0.89 to roughly zero inside 24 months — so it is not a guarantee for any
+sub-period. The true floors are therefore **higher** than the table, by an
+unquantified amount, and the horizon arithmetic above is correspondingly
+optimistic.
+
+### What this closure does not do
+
+It does not evaluate, authorize, rank or reject any strategy family. It does not
+touch the LEGACY / UNVERIFIED slow-trend note (Project State item 6), which
+remains exactly what it was. It does not bear on Phase 7B, whose separate
+coverage contract is still open and still unmet; nor on 7R3b, which stands not
+run on its own separate grounds. It changes nothing operational. A future
+broad-universe test is not forbidden by this entry — it is required to clear the
+floor gate first, with a genuinely different universe, venue or event rate that
+makes its own question decidable.
