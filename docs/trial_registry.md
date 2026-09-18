@@ -607,3 +607,71 @@ See `docs/research/2026-08-professional-review-addendum.md`.
 - This research branch predates the latest main/safety hardening. Integrate the
   research-only changes onto the current safety history; never deploy from the
   research branch itself.
+
+## Trial `2026-09-cost-sensitivity.v1` — prospective cost sensitivity (2026-09-17)
+
+**PROSPECTIVE COST SENSITIVITY study — NOT a trial of a mechanism, NOT an edge
+test, NOT a parameter search.** Full write-up:
+[`2026-09-cost-sensitivity.md`](2026-09-cost-sensitivity.md). Its numbers must
+never be quoted as an edge result or as a restatement of any historical
+artifact, and it authorizes nothing.
+
+**Question.** PR #18 adopted a measured prospective operational fee schedule
+(`pipeline/fees.py` `CURRENT_SCHEDULE`: maker 0.6% / taker 1.2%, always taker
+on exit — see CLAUDE.md's "Fees" section) that is higher than the frozen
+historical research assumption (`_ENTRY_FEE`/`_TP_FEE`/`_SL_FEE`: 0.4% maker
+entry, 0.4% maker take-profit, 0.6% taker stop/max-hold). What gross move must
+a trade clear to break even at the measured tier, and where does the frozen
+V2 ZEC mechanism (trial `2026-08-warmup-semantics.v1`, n=114, PF 0.761,
+-0.62%/trade) sit against that threshold?
+
+**Two scenarios reported, per standing decision.** Coinbase changed the
+account's tier again on 2026-09-16 — one day after the 4-reading cohort
+`CURRENT_SCHEDULE` was itself confirmed from. As of 2026-09-17 there is one
+probe reading at the new tier (maker 0.5% / taker 0.9%, `pricing_tier
+"Intro"`), not yet the same 4-consecutive-reading bar. Memory
+`fee-tier-change-2026-09-16` records the decision the same day: do not adopt
+on one reading, but *"any cost-sensitivity analysis must report both 1.8%
+and 1.4% scenarios."* This trial reports both: **ADOPTED**
+(`pipeline/fees.py` `CURRENT_SCHEDULE`, 0.6%/1.2%) and **CANDIDATE, not
+adopted** (single 2026-09-17 reading, 0.5%/0.9%, hardcoded as local script
+constants — not written into `pipeline/fees.py`).
+
+**Method.** `backtesting/cost_sensitivity.py` re-runs the exact scan behind
+the `results.json` row `{asset: ZEC-USD, trial: V2-continuous}`, asserts it
+reproduces `n=114, PF=0.76141, expectancy=-0.006227` byte-for-byte, then
+re-prices the same entry/exit prices at each schedule. No frozen research
+constant was changed; no existing artifact was regenerated, overwritten, or
+superseded; no parameter was searched or swept.
+
+**Headline numbers** (arithmetic and full breakdown in the write-up):
+
+| | PF | Expectancy |
+|---|---:|---:|
+| Frozen artifact (historical fee model) | 0.761 | -0.62%/trade |
+| PROSPECTIVE SENSITIVITY — ADOPTED (0.6%/1.2%, same 114 trades) | 0.517 | -1.49%/trade |
+| PROSPECTIVE SENSITIVITY — CANDIDATE, not adopted (0.5%/0.9%, same 114 trades) | 0.617 | -1.09%/trade |
+
+- Break-even gross move: **+1.82%** at the ADOPTED schedule, **+1.41%** at
+  the CANDIDATE (unconfirmed) schedule, uniformly across
+  STOP_LOSS/MAX_HOLD/TAKE_PROFIT under both — `close_position()` always
+  prices the exit leg at TAKER, unlike the frozen research model's cheaper
+  maker-priced TAKE_PROFIT assumption.
+- At the median historical ATR, the ADOPTED break-even consumes ~57% of the
+  frozen mechanism's own 2.0x-ATR stop distance and ~33% of its 3.5x-ATR
+  target distance; the CANDIDATE break-even consumes ~44% and ~25%
+  respectively.
+- Converting TAKE_PROFIT exits to maker orders (cost side only, no non-fill
+  rate assumed — that needs its own pre-registered study) recovers only part
+  of the gap under either schedule: PF 0.582/-1.29%/trade (ADOPTED) or PF
+  0.664/-0.96%/trade (CANDIDATE). Still clearly negative both ways.
+
+**Decision.** This strategy family is not viable at either the measured
+(adopted) or the candidate (unconfirmed) operational cost structure; cost
+alone is sufficient to reject it independent of further mechanism research.
+Does not change `DRY_RUN`, `LIVE_BALANCE_USD`, `ASSET_CONFIG`, V3 status, or
+Phase 7B status — none of which this trial touches or authorizes. Does not
+resolve whether the candidate tier should be formally adopted — that decision
+rests on the 4-reading cohort (2026-09-17 → 2026-09-20) per
+`fee-tier-change-2026-09-16`, independent of this trial's conclusion.
+**LIVE NO-GO stands.**
