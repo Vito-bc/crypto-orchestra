@@ -177,13 +177,40 @@ The vault is a growing knowledge base — future goal is RAG for the orchestrato
 
 ## Validation Status — read `docs/trial_registry.md` before believing any number
 
-Authoritative record: `docs/trial_registry.md` (+ `docs/research/2026-08-strategy-review.md`
-and `docs/research/2026-08-professional-review-addendum.md`).
-Summary as of 2026-08-09:
+Authoritative record: `docs/trial_registry.md`. Evidence base:
+`docs/research/2026-09-cost-sensitivity.md`,
+`docs/research/data/universe_inventory_2026-09-17.md`, and the filed literature
+review at `docs/research/literature/2026-09-17-review/`.
+Summary as of 2026-09-18:
 
-- V2 momentum (ZEC): **PF 0.761 (-0.62%/trade, n=114) on the continuous
-  2021-06-26→2026-07-12 window**; the never-scanned 2023→mid-2024 gap loses
-  -2.35%/trade. Not profitable. Paper/shadow only.
+- **V2 momentum (ZEC): RETIRED AS AN ACTIVATION CANDIDATE (2026-09-18, Closure
+  1 in `docs/trial_registry.md`), on EDGE.** PF 0.761 (-0.62%/trade, n=114) on
+  the continuous 2021-06-26→2026-07-12 window. The point estimate is negative,
+  but the sample does **not** statistically establish a loss (t = -1.41,
+  p = 0.159; 95% PF interval roughly [0.49, 1.13]). What it does establish is
+  the bound: the one-sided 95% upper bound on the true per-trade mean is
+  **-0.7220% at the adopted operational schedule and -0.3187% at the candidate
+  schedule — below zero**, so a profitable version of this mechanism is ruled
+  out at the costs we face. At the frozen 1.0% research model that same bound is
+  **+0.1645%, above zero**: the rejection comes from the cost gap, not from the
+  signal being disproved. The edge is not demonstrably absent; it is
+  demonstrably smaller than the cost of trading it on this venue. (The
+  never-scanned 2023→mid-2024 gap inside that window loses -2.35%/trade — no
+  sub-window of it is a revival case.)
+- **Execution optimisation cannot rescue it.** Perfect maker-both-legs execution
+  at current rates reproduces a ~1.0% round trip — the modelled baseline under
+  which this mechanism already measures PF 0.761. That baseline is the ceiling,
+  not break-even.
+- **The cross-asset ordering among BTC/ETH/SOL/ZEC is NOT established.** BTC
+  (t = -6.79) and ETH (t = -4.47) lose for real, but no pairwise gap survives
+  Bonferroni across six comparisons and SOL vs ZEC is a coin flip (t = -0.19).
+  ZEC's selection as the shadow asset rests on noise.
+- **Broad-universe Coinbase spot: NOT STARTED (2026-09-18, Closure 2), on
+  FEASIBILITY — not on edge.** 20-61 USD pairs carry the information of fewer
+  than two independent assets (rho_bar 0.57-0.58, N_eff 1.67-1.73), so the
+  decidable-edge floor (2.02-3.76%) exceeds the 1.41% break-even gross move. No
+  return hypothesis was evaluated and no P&L was computed: this is **not**
+  evidence that such a program would be unprofitable.
 - **Warm-up correction (2026-08-13, trial `2026-08-warmup-semantics.v1`):** the
   scanner used to fail OPEN when an indicator was still warming up, so a
   declared gate that could not be computed was silently skipped. 19 ZEC trades
@@ -203,6 +230,12 @@ Summary as of 2026-08-09:
   that would require a new pre-registered trial ID. See `docs/trial_registry.md`.
 - Earlier "profitable, ready to go live" conclusions came from period-selected
   windows and an obsolete fee model. They are superseded.
+- **Standing policy for every trial registered after 2026-09-18:** a
+  pre-registered SESOI and equivalence kill rule, a declared decidable-edge
+  floor that must not exceed that SESOI, retained per-trial return series, and a
+  monotone trial counter. Pre-registered for future trials; the two closures
+  above are its first, explicitly post-hoc, applications. See
+  `docs/trial_registry.md`.
 
 **Do NOT switch `DRY_RUN=false` on current evidence.**
 

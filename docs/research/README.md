@@ -172,6 +172,65 @@ credential-free public hydration.
 | [`artifacts/results.json`](artifacts/results.json) | Machine-checked headline numbers |
 | [`artifacts/manifest.json`](artifacts/manifest.json) | Code, environment and input identity |
 | [`artifacts/superseded/`](artifacts/superseded/) | Retracted results, kept for audit |
+| [`2026-09-cost-sensitivity.md`](2026-09-cost-sensitivity.md) | Prospective cost sensitivity; §6 holds the measured per-trade SD and the one-sided bounds both closures rest on |
+| [`data/universe_inventory_2026-09-17.md`](data/universe_inventory_2026-09-17.md) | Read-only Coinbase spot universe / power inventory — no return, PF or ranking computed anywhere in it |
+| [`literature/2026-09-17-review/`](literature/2026-09-17-review/) | Filed literature review, 2026-09-17 — six files, verbatim, with provenance headers |
+
+## Literature review — 2026-09-17
+
+[`literature/2026-09-17-review/`](literature/2026-09-17-review/) — five parallel
+web-research agents, one per standing problem, plus a synthesis; sources
+quality-rated A..E by each agent. Filed 2026-09-18 verbatim, each file under a
+provenance header. Figures derived from this project's own PF/n values use a
+two-point +1.75R/−1R payoff approximation unless stated otherwise — it
+understates dispersion, and the measured per-trade SD in
+[`2026-09-cost-sensitivity.md`](2026-09-cost-sensitivity.md) §6 supersedes it.
+
+The review authorizes nothing and selects no strategy family. Section 5 of its
+synthesis is recorded as constraints on any **future** pre-registration, never
+as a plan or a recommendation. Its own "What the evidence does NOT establish"
+sections are part of the record, and the directory's own index lists the places
+where the synthesis overstates the reports beneath it.
+
+## What was closed, and on what grounds
+
+Two closures, recorded in [`../trial_registry.md`](../trial_registry.md). They
+rest on **different** grounds and read differently on purpose. Do not merge
+them.
+
+### V2 / ZEC momentum — RETIRED AS AN ACTIVATION CANDIDATE (2026-09-18), on EDGE
+
+No new trial ID; a verdict on the existing `2026-08-warmup-semantics.v1` line.
+The sample does **not** establish that the mechanism loses money (t = −1.41,
+p = 0.159, 95% PF interval roughly [0.49, 1.13]). It **does** bound any true
+edge below zero at operational cost: the one-sided 95% upper bound on the
+per-trade mean is −0.7220% at the adopted fee schedule and −0.3187% at the
+candidate one, with a percentile bootstrap agreeing to within 0.004 pp. At the
+frozen 1.0% research model the same bound is **+0.1645%, above zero** — so the
+rejection comes from the cost gap, not from the signal being disproved. The edge
+is not demonstrably absent; it is demonstrably smaller than the cost of trading
+it on this venue. Execution optimisation cannot exceed that frozen 1.0%
+baseline, which is itself the PF 0.761 losing case.
+
+Recorded alongside, not part of the verdict: the BTC/ETH/SOL/ZEC ordering is not
+established — no pairwise gap survives Bonferroni and SOL vs ZEC is t = −0.19,
+so ZEC's selection as the shadow asset rests on noise.
+
+### Broad-universe Coinbase spot trend — NOT STARTED (2026-09-18), on FEASIBILITY
+
+A line that was never opened, closed because it cannot decide its own question
+within a usable horizon. Across all three candidate rules in
+[`data/universe_inventory_2026-09-17.md`](data/universe_inventory_2026-09-17.md),
+20–61 USD pairs carry the information of fewer than two independent assets
+(rho_bar 0.5695–0.5801, N_eff 1.666–1.734), and the decidable-edge floors
+(A 2.02–2.97%, B 2.48–2.97%, C 3.11–3.76%) all exceed the 1.41% break-even
+gross move at the candidate schedule. Breadth does not help: the constraint is
+cross-asset correlation, not trade count, so adding correlated pairs multiplies
+cost without adding information.
+
+**No return hypothesis was evaluated and no P&L was computed.** This is not
+evidence that such a program would be unprofitable — it is not evidence about
+profitability in either direction.
 
 ## Open leads
 
