@@ -39,9 +39,13 @@ data/
 *.db
 !data/.gitkeep
 
-# Committed research deliverables (inventories, not the raw candle cache)
+# Committed research deliverables (inventories, not the raw candle cache).
+# The directory itself must be un-ignored before anything inside it can be,
+# but only the TEXT deliverables are: a .db, .parquet or .sqlite that lands
+# here is still local data and stays ignored.
 !docs/research/data/
-!docs/research/data/**
+!docs/research/data/*.csv
+!docs/research/data/*.md
 
 # Coverage and reports
 .coverage
