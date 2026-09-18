@@ -611,6 +611,7 @@ def test_fee_error_recovery_proceeds_even_when_entry_filters_would_veto_a_new_en
 
     with patch.object(runner, "_check_entry_filters",
                        return_value=(False, "vetoed for a NEW entry", 1.0)) as mock_filters, \
+         patch.object(runner, "_log_order_event"), \
          patch.object(runner, "send_telegram_message"), \
          patch("notifications.telegram.format_limit_order_filled", return_value=""), \
          patch("notifications.telegram.format_position_opened", return_value=""), \
