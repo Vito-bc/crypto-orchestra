@@ -1,0 +1,3 @@
+symbol,observations,sd_bps,mean_bps,worst_1d_change_bps,p99_abs_1d_change_bps
+BTCUSDT,14664,5.71,-1.36,107.76,12.82
+ETHUSDT,14664,6.45,-0.81,62.47,17.75
