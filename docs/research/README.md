@@ -174,6 +174,8 @@ credential-free public hydration.
 | [`artifacts/superseded/`](artifacts/superseded/) | Retracted results, kept for audit |
 | [`2026-09-cost-sensitivity.md`](2026-09-cost-sensitivity.md) | Prospective cost sensitivity; §6 holds the measured per-trade SD and the one-sided bounds both closures rest on |
 | [`data/universe_inventory_2026-09-17.md`](data/universe_inventory_2026-09-17.md) | Read-only Coinbase spot universe / power inventory — no return, PF or ranking computed anywhere in it |
+| [`2026-09-18-perps-scoping.md`](2026-09-18-perps-scoping.md) | Read-only fact sheet and price tag for Coinbase CFM perpetual-style futures — access, products, fees, funding drag, build cost. No rule simulated |
+| [`2026-09-19-perps-gate.md`](2026-09-19-perps-gate.md) | Blind feasibility gate on 4h BTC/ETH perps for two declared mechanisms — both **FAIL** the floor gate. No return, P&L or ranking computed anywhere in it |
 | [`literature/2026-09-17-review/`](literature/2026-09-17-review/) | Filed literature review, 2026-09-17 — six files, verbatim, with provenance headers |
 
 ## Literature review — 2026-09-17
