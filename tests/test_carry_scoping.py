@@ -290,7 +290,19 @@ def test_net_on_capital_is_never_larger_than_net_on_notional_when_positive() -> 
     assert 10.0 / multiple < 10.0
 
 
-@pytest.mark.integration
+# The proxy cache is gitignored and comes from a venue this repository does not
+# trade, so CI does not hydrate it. This is the same choice the perps-gate
+# document records for its own --verify, and it is made the same way here: skip
+# on missing data rather than couple a required check to Binance's archive
+# staying up. The repo's `integration` marker means the COINBASE candle cache
+# specifically, so it is the wrong marker for this test — using it made CI's
+# integration step fail on data it never fetches.
+_PROXY_AVAILABLE = bool(list(cs.DATA_DIR.glob("fund_BTCUSDT_*.csv")))
+
+
+@pytest.mark.skipif(not _PROXY_AVAILABLE,
+                    reason="Binance proxy cache absent; run "
+                           "backtesting/hydrate_perps_proxy.py to enable")
 def test_always_on_gross_reconciles_with_the_perps_gate() -> None:
     """
     The short leg's always-on funding receipt is the exact mirror of the long's
