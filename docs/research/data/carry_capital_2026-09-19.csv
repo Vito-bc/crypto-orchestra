@@ -1,0 +1,3 @@
+symbol,product_id,unit,spot_notional_usd,short_margin_usd,reserve_usd,total_per_unit_usd,units_at_10000,units_at_20000,units_at_live_balance_100
+BTCUSDT,BIP-20DEC30-CDE,0.01 BTC,808.3,247.66,61.92,1117.88,8,17,0
+ETHUSDT,ETP-20DEC30-CDE,0.1 ETH,258.4,86.51,21.63,366.54,27,54,0
