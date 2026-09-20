@@ -1,0 +1,42 @@
+{
+  "recorded_at": "2026-09-20T15:59:40Z",
+  "source": "GET /api/v3/brokerage/market/products?product_type=FUTURE",
+  "products": [
+    {
+      "product_id": "BIP-20DEC30-CDE",
+      "price": "81320",
+      "product_type": "FUTURE",
+      "display_name": "BTC PERP",
+      "product_venue": "FCM",
+      "future_product_details": {
+        "venue": "cde",
+        "contract_code": "BIP",
+        "contract_size": "0.01",
+        "contract_root_unit": "BTC",
+        "group_description": "nano BTC Perp Futures",
+        "funding_interval": "3600s",
+        "funding_rate": "0.00002",
+        "funding_time": "2026-09-20T16:00:00Z",
+        "display_name": "Bitcoin Perpetual"
+      }
+    },
+    {
+      "product_id": "ETP-20DEC30-CDE",
+      "price": "2639.5",
+      "product_type": "FUTURE",
+      "display_name": "ETH PERP",
+      "product_venue": "FCM",
+      "future_product_details": {
+        "venue": "cde",
+        "contract_code": "ETP",
+        "contract_size": "0.1",
+        "contract_root_unit": "ETH",
+        "group_description": "nano ETH Perp Futures",
+        "funding_interval": "3600s",
+        "funding_rate": "0.000008",
+        "funding_time": "2026-09-20T16:00:00Z",
+        "display_name": "Ethereum Perpetual"
+      }
+    }
+  ]
+}
