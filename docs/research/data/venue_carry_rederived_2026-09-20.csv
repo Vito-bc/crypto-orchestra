@@ -1,0 +1,7 @@
+symbol,spot_schedule,spot_round_trip_pct,cost_per_cycle_pct,cycles_full_window,median_cycle_days,topup_friction_pct_yr,break_even_median_cycle_pct_yr,break_even_realised_rate_pct_yr
+BTCUSDT,bullish_standard_individual,0.005,0.2,40,17.0,0.0078,4.3049,1.2075
+BTCUSDT,bitstamp_10_100k,0.5,0.695,40,17.0,0.7811,15.7134,4.95
+BTCUSDT,bitstamp_1_10k,0.7,0.895,40,17.0,1.0935,20.3229,6.462
+ETHUSDT,bullish_standard_individual,0.005,0.2,33,21.33,0.0126,3.4373,1.0023
+ETHUSDT,bitstamp_10_100k,0.5,0.695,33,21.33,1.2552,13.1562,4.6945
+ETHUSDT,bitstamp_1_10k,0.7,0.895,33,21.33,1.7572,17.083,6.1862

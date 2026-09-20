@@ -1,0 +1,6 @@
+venue,label,maker_pct,taker_pct,round_trip_pct,m1_fee_drag_pct_yr,m2_fee_drag_pct_yr
+coinbase_adopted,"Coinbase (ADOPTED, pipeline/fees.py)",0.6,1.2,1.8,34.308,345.24
+bullish_standard_individual,"Bullish US Standard markets, Individual (worst case, both taker)",0.0,0.005,0.005,0.0953,0.959
+bitstamp_0_1k,Bitstamp $0-1k/30d (0.00%/0.00%),0.0,0.0,0.0,0.0,0.0
+bitstamp_1_10k,Bitstamp $1k-10k/30d (0.30%/0.40%),0.3,0.4,0.7,13.342,134.26
+bitstamp_10_100k,Bitstamp $10k-100k/30d (0.20%/0.30%),0.2,0.3,0.5,9.53,95.9
