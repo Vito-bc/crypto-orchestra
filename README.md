@@ -57,16 +57,19 @@ on volatility and time in market, not on account size, so a larger balance
 does not reopen any of the lines above.
 
 **What would reopen a line, and what would not.** Two recorded conditions:
-Coinbase Financial Markets' own funding (never yet observed — the exchange has
-no funding history endpoint) sustaining above the carry break-even for longer
-than a cycle, or a venue with materially lower fees becoming reachable by a
-New York resident. A bigger account balance is explicitly not one of them.
+Coinbase Financial Markets' own funding, now recorded forward because the
+exchange has no funding-history endpoint, sustaining above the carry break-even
+for longer than a cycle; or a venue with materially lower fees becoming
+reachable by a New York resident. A bigger account balance is explicitly not
+one of them.
 
-**What runs today:** a daily execution-cost probe, credential-scoped
-view-only. **What does not run:** the seven-agent pipeline, any LLM call on a
-schedule, and any order path. The mechanism below is what would run if a line
-were ever reopened and authorized — it is documented, tested, and currently
-idle.
+**What runs today:** a daily execution-cost probe (optionally credential-scoped
+view-only for its fee-tier reading) and the credential-free hourly CFM funding
+monitor described in
+[`docs/operations/cfm_funding_monitor.md`](docs/operations/cfm_funding_monitor.md).
+**What does not run:** the seven-agent pipeline, any LLM call on a schedule,
+and any order path. The mechanism below is what would run if a line were ever
+reopened and authorized — it is documented, tested, and currently idle.
 
 ## Reproducibility
 

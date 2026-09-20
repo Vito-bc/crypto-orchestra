@@ -340,13 +340,15 @@ roughly 14-15%/yr, and 2026 is running at a fifth of it.**
 Since 2022 the median-cycle break-even has been cleared in only one year (2024,
 3-6% of the time) and never twice over.
 
-### Monitor design — design only, NOT built
+### Monitor spec — implemented 2026-09-20
 
 **CFM has no funding-history endpoint, so a monitor must record forward.** Every
 hour it misses is a permanently unrecoverable gap; there is no way to backfill.
 
-What [`../../backtesting/stf_cost_probe.py`](../../backtesting/stf_cost_probe.py)
-would have to add:
+[`../../backtesting/cfm_funding_monitor.py`](../../backtesting/cfm_funding_monitor.py)
+implements the following through the cost probe's public client; operating and
+verification instructions are in
+[`../operations/cfm_funding_monitor.md`](../operations/cfm_funding_monitor.md):
 
 | | |
 |---|---|
@@ -359,11 +361,10 @@ would have to add:
 | **Alert** | trailing 7-day mean annualised funding crossing **14.8%/yr (BTC) or 14.4%/yr (ETH)** (realised-rate break-even, adopted schedule). A second threshold at **45.7%/yr** marks the median-cycle break-even |
 | **Health check** | alert on *coverage*, not only on level: a monitor with gaps produces a trailing mean over an unknown denominator, which is worse than no reading |
 
-**Cost of building it: low.** It is one public call on a schedule the repository
-already runs, with no new credential and no new permission surface. **Cost of
-not building it: the clock starts whenever it starts** — there is no history to
-buy later, so a decision to evaluate carry on CFM a year from now begins with
-zero data either way.
+**Cost of building it was low.** It is one public call on an hourly schedule,
+with no new credential and no new permission surface. **Cost of not running it:
+the clock restarts whenever it stops** — there is no history to buy later, so a
+future decision to evaluate carry can use only the observations actually kept.
 
 ---
 
