@@ -176,6 +176,7 @@ credential-free public hydration.
 | [`data/universe_inventory_2026-09-17.md`](data/universe_inventory_2026-09-17.md) | Read-only Coinbase spot universe / power inventory — no return, PF or ranking computed anywhere in it |
 | [`2026-09-18-perps-scoping.md`](2026-09-18-perps-scoping.md) | Read-only fact sheet and price tag for Coinbase CFM perpetual-style futures — access, products, fees, funding drag, build cost. No rule simulated |
 | [`2026-09-19-perps-gate.md`](2026-09-19-perps-gate.md) | Blind feasibility gate on 4h BTC/ETH perps for two declared mechanisms — both **FAIL** the floor gate. No return, P&L or ranking computed anywhere in it |
+| [`2026-09-19-carry-scoping.md`](2026-09-19-carry-scoping.md) | Read-only pricing of long-spot / short-perp funding carry on this venue — net by year, capital per unit, margin-event frequency, regime map, monitor design. No strategy backtested, no recommendation |
 | [`literature/2026-09-17-review/`](literature/2026-09-17-review/) | Filed literature review, 2026-09-17 — six files, verbatim, with provenance headers |
 
 ## Literature review — 2026-09-17
