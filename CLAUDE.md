@@ -175,6 +175,53 @@ Auto-generated nightly from logs via `backtesting/generate_journal.py`.
 Windows Task Scheduler runs `scripts/update_obsidian.bat` every night at 23:00.
 The vault is a growing knowledge base — future goal is RAG for the orchestrator.
 
+## Research program status (2026-09-20)
+
+**The research program is COMPLETE. The project is in MONITOR mode.** Four
+lines are recorded in `docs/trial_registry.md`, each closed on different
+grounds — do not conflate them:
+
+- **Closure 1 — V2/ZEC momentum: RETIRED, on EDGE.** The one-sided 95% upper
+  bound on the true per-trade mean is below zero at operational cost.
+- **Closure 2 — broad-universe Coinbase spot: NOT STARTED, on
+  FEASIBILITY (correlation).** 20-61 pairs carry N_eff 1.67-1.73; the
+  decidable-edge floor exceeds break-even before any SESOI is applied.
+- **Closure 3 — 4h BTC/ETH perpetuals: NOT STARTED, on FEASIBILITY (funding
+  cost + minimums, and independently the trade-count identity).** Perp funding
+  is a documented cost for a long directional position, not an edge; CFM's
+  per-contract minimums exceed the $100 cap for BTC/SOL/ZEC; and both declared
+  mechanisms fail the floor gate (M1 22-29%/yr, M2 38-49%/yr against a
+  10%/yr SESOI) by an identity that makes trading more often unable to help —
+  `floor_annual = 1.645 · SD_bar · sqrt(bars in position per year / Y)`, where
+  the trade count cancels out exactly.
+- **Carry (long spot / short perp): PRICED, NOT STARTED.** Hedged, so the
+  floor identity does not bind it — carry is the one class the closures above
+  do not cover. Break-even funding is ~14.4-14.8%/yr; the measured premium has
+  been below that for five years running (2025 and 2026-to-date both net
+  negative). Not closed on edge or feasibility — simply not yet worth its cost.
+
+**Capital scale does not reopen any of this.** The floor-gate identity is
+scale-free — it depends on per-bar dispersion and time in market, not on
+position size or account balance — so a larger `LIVE_BALANCE_USD` changes
+nothing about whether a directional program can decide its own question.
+
+**Two recorded conditions would reopen the line, and only these two:**
+
+1. CFM's own funding, once observed, sustains above the carry break-even
+   (~14.4-14.8%/yr) for longer than a typical cycle — see the funding monitor
+   design in `docs/research/2026-09-19-carry-scoping.md` §5.
+2. A venue with maker rebates or near-zero effective fees, reachable by a
+   New York resident, becomes accessible — changing the cost side of the
+   floor-gate identity rather than the statistics.
+
+**What runs today:** the daily STF execution-cost probe (`stf_cost_probe.py`).
+**What does not run:** the seven-agent pipeline, any LLM call, and any order
+path — none of these is required by, or currently used for, anything the
+program above is deciding. Building the hourly CFM funding monitor designed in
+the carry document is the recorded next infrastructure step, pending the
+owner's decision to build it (see "Project State" below); it would join the
+cost probe as the second thing that runs.
+
 ## Validation Status — read `docs/trial_registry.md` before believing any number
 
 Authoritative record: `docs/trial_registry.md`. Evidence base:
@@ -270,14 +317,30 @@ instruction to repeat the work. Phases 6.7-6.10 are on `main`.
    skipped gates removed 475 `daily_trend` and 118 `btc_regime` signals the old
    tool traded. Output is a deterministic artifact under
    `docs/research/artifacts/walk_forward/`, verifiable with `--verify`.
-5. **Phase 7R is feasibility work, not an edge result.** It found only seven
-   common four-asset clusters in 4.92 years and a weak power ratio; no return
-   hypothesis was evaluated. The only active evidence collection is the STF
-   execution-cost probe. Do not fix a Phase 7B cutoff or start that trial until
-   its separately declared coverage contract is met and reviewed.
-6. The earlier "positive on all four assets" slow-trend result remains
-   **LEGACY / UNVERIFIED** and must not be used to select a family. A future
-   edge test requires a new pre-registration and genuinely unseen data.
-7. Run LLM agents on scanner events rather than hourly until an ablation shows
-   measurable incremental value.
-8. n8n pipeline for visual automation (good for portfolio/resume)
+5. **RESOLVED (2026-09-19, Closures 2-3).** Phase 7R's feasibility finding is
+   now folded into Closure 2 (broad-universe spot, feasibility on correlation)
+   and Closure 3 (4h BTC/ETH perpetuals, feasibility on funding cost +
+   minimums, and independently the floor-gate identity). **Phase 7B is now
+   moot**: the coverage contract it was gated behind no longer needs meeting,
+   because the venue and asset class it targeted are closed on feasibility.
+   The STF execution-cost probe continues to run daily as research
+   infrastructure, independent of any trial.
+6. **RESOLVED, in effect (2026-09-19, Closure 3).** The floor-gate identity
+   generalizes across directional rules at this cost and volatility: no
+   re-parameterization changes the annual floor, because the trade count
+   cancels out of it exactly. This does not disprove the legacy result — no
+   P&L was computed against it — but it explains why chasing it further is not
+   decidable without a new venue, asset, or volatility regime. It remains
+   **LEGACY / UNVERIFIED** and is still not to be used to select a family.
+7. **RESOLVED, as moot (2026-09-19).** With the directional class closed on
+   feasibility (Closures 2-3) and no active directional trial, there is no
+   live decision for an agent-call-frequency ablation to optimize. Revisit
+   only if a future closure reopens a directional line.
+8. n8n pipeline for visual automation (good for portfolio/resume) — optional
+   portfolio work, unaffected by the closures above.
+9. **Funding monitor for Coinbase CFM perpetuals** — designed, not built.
+   Specified in `docs/research/2026-09-19-carry-scoping.md` §5: a public
+   product-record poll (`get_public_products(product_type="FUTURE")`, no
+   credential required), hourly, alerting on the carry break-even thresholds
+   (14.8%/yr BTC, 14.4%/yr ETH). Build is pending the owner's decision — see
+   "Research program status" above.

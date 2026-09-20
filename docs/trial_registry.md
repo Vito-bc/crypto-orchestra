@@ -992,3 +992,184 @@ run on its own separate grounds. It changes nothing operational. A future
 broad-universe test is not forbidden by this entry — it is required to clear the
 floor gate first, with a genuinely different universe, venue or event rate that
 makes its own question decidable.
+
+---
+
+## Closure 3 — 4h BTC/ETH perpetuals: NOT STARTED, on FEASIBILITY (2026-09-19)
+
+**No new trial ID, and no trial.** This closes a line that was never opened,
+using the same rule as Closure 2: a trial whose decidable-edge floor exceeds its
+own SESOI is not run. Source:
+[`../research/2026-09-19-perps-gate.md`](../research/2026-09-19-perps-gate.md) —
+a blind gate that computed no P&L, profit factor, expectancy, Sharpe, drawdown
+or equity curve, and ranked neither mechanism nor asset by outcome.
+
+**This closure is not comparable to Closures 1 or 2 and is deliberately not
+worded like either.** Closure 1 measured a mechanism and bounded its edge.
+Closure 2 and this one measure nothing about returns at all.
+
+### What was measured
+
+Two mechanisms, declared before the gate touched data, fixed with no parameter
+searched, tuned or compared on outcome: **M1**, a Donchian 55/20 breakout on 4h
+bars (the frozen STF-CLOSE-55-20 rule on a faster clock — its lookbacks are
+imported from the frozen protocol, not chosen for this gate); and **M2**, a
+30-bar time-series-momentum sign rule, always in a position, both assets. They
+bracket the event-rate axis: the rarest plausible rule and the densest one.
+
+BTC and ETH USDT-margined perps (Binance, proxy history for Coinbase CFM,
+venue mismatch declared) carry **rho_bar 0.8385 on 4h log returns, N_eff
+1.088** — two perps hold less independent information than the 20-61 spot
+pairs of Closure 2 (N_eff 1.666-1.734). Breadth is worse here, not better.
+
+| Mechanism | Basis | Decidable-edge floor @ 6.7y | SESOI | Gate |
+|---|---|---:|---:|---|
+| M1 (Donchian 55/20, 4h) | BTCUSDT / ETHUSDT | **22.1-28.8%/yr** | 10%/yr | **FAIL** |
+| M2 (30-bar TSMOM, every bar) | BTCUSDT / ETHUSDT | **37.8-49.4%/yr** | 10%/yr | **FAIL** |
+
+Both fail by 2.2x to 4.9x. Horizons to reach the 10%/yr floor at each
+mechanism's own BTC event rate: **33 years** for M1 (34% of bars held) and
+**96 years** for M2 (always in a position). A trial that needs a human
+lifetime before it can detect the smallest edge worth having is not a trial;
+it is a commitment to wait — the same reading Closure 2 gave its own 13-52
+year horizons.
+
+### The identity, stated as the reusable result
+
+Substituting the gate's declared dispersion construction (`sigma_trade =
+SD_bar · sqrt(mean hold in bars)`) into the floor gives:
+
+```
+floor_annual = 1.645 · SD_bar · sqrt(bars in position per year / Y)
+```
+
+Because trades-per-year times mean-hold-in-bars **is** bars-in-position-per-year,
+**the trade count cancels out of the floor exactly.** Trading the same exposure
+more often cannot lower the annual floor — it depends only on per-bar
+dispersion and time in market — and it only multiplies the fee bill, which
+scales with the trade count and not its square root. M2's worse floor than
+M1's comes entirely from spending 2.9x the time in market, not from its 10x
+trade count; the trade count bought it nothing statistically and cost it
+34%/yr in fees. There is no trading frequency that escapes this identity, on
+these assets, at this cost.
+
+**Consequence.** At BTC's measured ~60% annualised volatility, the floor
+identity's one-sided 95% bound is `1.645/sqrt(Y)` on a per-unit-of-volatility
+basis: at the 6.7-year proxy history that is **0.64**, and even a full 20-year
+history only reaches **0.37**. A directional program on an asset at this
+volatility therefore needs an after-cost Sharpe above roughly 0.6-0.4,
+depending on how much history is available, before this venue's history could
+tell it apart from zero. No documented retail crypto directional result in the
+literature this project has reviewed is measured net of a round-trip cost this
+high (the review's own synthesis: "No study models a 1.5-2% round trip
+explicitly," and "No peer-reviewed result at >=1.5% round-trip cost" —
+`literature/2026-09-17-review/02-strategy-families-cost-tolerance.md`), so this
+is an absence of evidence rather than evidence that no such result exists —
+but it is the honest state of the record.
+
+### Verdict — NOT STARTED
+
+**A directional trial on 4h BTC/ETH perpetuals is not started, because neither
+declared mechanism can decide its own question within a usable horizon.** This
+closes the **CLASS** of directional programs on these two assets at this cost
+and volatility level — not one venue, not one mechanism. A different asset, a
+materially lower-volatility instrument, or a materially cheaper venue changes
+the inputs to the identity and would have to be re-evaluated on its own terms;
+this closure does not pre-judge that case. **No P&L, profit factor, Sharpe,
+drawdown or equity curve was computed anywhere in the gate document or its
+source code**, and no return hypothesis was evaluated.
+
+### The correction this closure records
+
+The 2026-09-18 CFM scoping document ([`../research/2026-09-18-perps-scoping.md`](../research/2026-09-18-perps-scoping.md)
+§7) reported a 4h decidable-edge floor of **0.0286%/trade at three years** and
+called it "the first time in this repository a floor has come in below the
+cost of trading." **That number was correct and the reading was wrong.** A
+mechanism trading at that frequency must clear it roughly 2,387 times a year;
+expressed annually the same floor is **~68%/yr** — worse than every spot
+figure Closure 2 recorded. The per-trade framing divided the requirement by
+the very trade count that generates it. **State every future decidable-edge
+floor annually, not per-trade**, unless the annual figure is given alongside
+it. This does not reopen or alter Closure 2; it corrects how a floor from any
+future feasibility gate must be read.
+
+### What this closure does not do
+
+It does not evaluate, authorize, rank or reject any strategy family, and it
+does not bear on carry (below), whose income source is documented and
+non-directional and which this identity does not bind. It does not touch V3's
+retirement, Phase 7B's status (now moot — see CLAUDE.md), or the standing
+decision that 7R3b is not run. It changes nothing operational. A future
+directional trial on this asset class is not forbidden — it is required to
+clear the floor gate first, with a genuinely different asset, venue or cost
+structure that makes its own question decidable.
+
+---
+
+## Carry (long spot / short perpetual) — PRICED, NOT STARTED (2026-09-19)
+
+**Not a closure, and not a trial.** Nothing here is retired, rejected, or ruled
+out on edge or on feasibility. Source:
+[`../research/2026-09-19-carry-scoping.md`](../research/2026-09-19-carry-scoping.md)
+— read-only pricing of long-spot / short-perpetual funding carry on this
+account's venue. No strategy was backtested, no parameter was searched, and no
+trial was registered; the document's own conclusion section is titled
+"numbers," not "verdict."
+
+### Why this is the one class the four closures above do not cover
+
+Closures 1-3 and the floor-gate identity bound **directional** programs, whose
+per-trade variance is the underlying's own price variance. A hedged carry
+position (long spot, short a contract-equivalent perp) cancels that price
+exposure; its income is the funding series this project has so far measured
+only as a long's **cost** (Closure 3's source document, and
+`2026-09-18-perps-scoping.md` §6). Hedged means low variance, and low variance
+means a given edge is decidable in a much shorter window than any directional
+one — the floor-gate identity works **for** a program like this, not against
+it. Carry is not closed on edge or on feasibility; it has simply not been
+started, because the measured premium has not cleared this venue's cost.
+
+### The numbers
+
+At the operational spot schedule (`pipeline/fees.py` `CURRENT_SCHEDULE`, 0.6%
+maker / 1.2% taker) plus CFM's perp rate (0.095%/0.100%): the spot leg's
+1.80% round trip is **~9x** the perp leg's 0.195% and is what sets the
+break-even. Break-even funding — the realised cycle rate, the conservative
+reading being the higher median-cycle figure — is **14.78%/yr (BTC), 14.39%/yr
+(ETH)** on the realised cycle rate, or **38-46%/yr** on a typical single cycle.
+
+Full-window (6.67 years) net on committed capital: **+0.04%/yr BTC,
++3.1%/yr ETH** — and essentially all of ETH's full-window income was earned in
+2020-2021, not since. **2025 and 2026-to-August are net negative on both
+assets**, at both the adopted and the uncleared candidate spot schedule.
+
+Trailing 7-day funding has cleared the median-cycle break-even only rarely
+since 2022: **0% of readings in 2022 and 2025 (both assets), briefly in 2023
+(ETH, 0.18% of readings) and 2024 (BTC 3.37%, ETH 5.56%), and 0% of readings
+in 2026 to date on either asset.** 2026 median trailing funding is 3.0%/yr
+(BTC) and 1.9%/yr (ETH) — a fifth of the ~15%/yr bar.
+
+### Verdict — NOT STARTED, condition for re-evaluation recorded
+
+**Carry is not closed on edge — its income source is documented and
+non-directional, and the floor identity does not bind it. It is NOT STARTED
+because the premium has been below this venue's break-even for five years. A
+funding monitor with thresholds 14.8%/14.4% (BTC/ETH) is the recorded
+condition for re-evaluation**, designed but not built in
+`2026-09-19-carry-scoping.md` §5 (public product record, no credential
+required, hourly poll against CFM's own `funding_rate` field).
+
+Two structural risks are recorded alongside, not part of the verdict:
+committed capital exceeds the $100 `LIVE_BALANCE_USD` cap for one hedged unit
+of either product (a hedged BTC unit costs $1,118, ETH $367), and a
+non-overlapping full-margin excursion on the short leg occurred 10 times (BTC)
+and 21 times (ETH) over 6.7 years on a 7-day view — concentrated in the same
+years that produced the income.
+
+### What this entry does not do
+
+It does not authorize a trial, a monitor build, or a transfer of funds into
+the CFM wallet. It does not evaluate whether the Binance proxy history
+transfers to CFM's own (undocumented) funding levels. It changes nothing
+operational: `DRY_RUN=true`, **LIVE NO-GO**, `LIVE_BALANCE_USD`,
+`ASSET_CONFIG` and every closure above are untouched.
