@@ -1,0 +1,11 @@
+{
+  "signals": {
+    "technical": {"agent":"technical","asset":"ZEC-USD","timestamp":"2026-09-20T12:01:00Z","signal":"BUY","confidence":0.72,"reasoning":"Recorded technical alignment.","ttl_minutes":60,"key_levels":null,"regime":null,"metrics":{"adx":31.0}},
+    "macro": {"agent":"macro","asset":"ZEC-USD","timestamp":"2026-09-20T12:01:00Z","signal":"NEUTRAL","confidence":0.55,"reasoning":"Recorded macro conditions are mixed.","ttl_minutes":60,"key_levels":null,"regime":"RANGING","metrics":{"local_recovery":false}},
+    "sentiment": {"agent":"sentiment","asset":"ZEC-USD","timestamp":"2026-09-20T12:01:00Z","signal":"NEUTRAL","confidence":0.48,"reasoning":"Recorded sentiment is balanced.","ttl_minutes":60,"key_levels":null,"regime":null,"metrics":{}},
+    "whale": {"agent":"whale","asset":"ZEC-USD","timestamp":"2026-09-20T12:01:00Z","signal":"BUY","confidence":0.61,"reasoning":"Recorded positioning leans positive.","ttl_minutes":60,"key_levels":null,"regime":null,"metrics":{}},
+    "risk": {"agent":"risk","asset":"ZEC-USD","timestamp":"2026-09-20T12:01:00Z","signal":"BUY","confidence":0.70,"reasoning":"Recorded risk inputs are available.","ttl_minutes":60,"key_levels":null,"regime":null,"metrics":{"ok_to_trade":true,"position_size_pct":0.02,"stop_loss_price":48.0,"take_profit_price":57.0}},
+    "news": {"agent":"news","asset":"ZEC-USD","timestamp":"2026-09-20T12:01:00Z","signal":"NEUTRAL","confidence":0.52,"reasoning":"Recorded news has no critical veto.","ttl_minutes":60,"key_levels":null,"regime":null,"metrics":{"critical_veto":false}}
+  },
+  "decision": {"asset":"ZEC-USD","timestamp":"2026-09-20T12:02:00Z","action":"HOLD","confidence":0.44,"position_size_pct":null,"stop_loss_price":48.0,"take_profit_price":57.0,"reasoning":"Recorded combined decision remains below its declared threshold.","votes":[],"overrides":[],"veto_triggered":false,"veto_reason":null}
+}
