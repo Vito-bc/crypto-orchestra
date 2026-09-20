@@ -1,0 +1,17 @@
+control,mechanism,symbol,target_annual_edge_pct,per_bar_drift_pct,bars_in_position_per_year,seed,replications,expectation
+A_floor_1x,M1,BTCUSDT,22.0896,0.029567,747.1,20260919,1000,~50% of replications clear zero
+B_floor_2x,M1,BTCUSDT,44.1792,0.059134,747.1,20260919,1000,~95% of replications clear zero
+C_sesoi,M1,BTCUSDT,10.0000,0.013385,747.1,20260919,1000,well under 50% — the floor is above the SESOI
+D_null_shuffled,M1,BTCUSDT,0.0000,0.000000,747.1,20260920,1000,~5% clear zero — the nominal false-positive rate
+A_floor_1x,M1,ETHUSDT,28.8147,0.038808,742.5,20260919,1000,~50% of replications clear zero
+B_floor_2x,M1,ETHUSDT,57.6294,0.077615,742.5,20260919,1000,~95% of replications clear zero
+C_sesoi,M1,ETHUSDT,10.0000,0.013468,742.5,20260919,1000,well under 50% — the floor is above the SESOI
+D_null_shuffled,M1,ETHUSDT,0.0000,0.000000,742.5,20260920,1000,~5% clear zero — the nominal false-positive rate
+A_floor_1x,M2,BTCUSDT,37.7877,0.017285,2186.1,20260919,1000,~50% of replications clear zero
+B_floor_2x,M2,BTCUSDT,75.5754,0.034571,2186.1,20260919,1000,~95% of replications clear zero
+C_sesoi,M2,BTCUSDT,10.0000,0.004574,2186.1,20260919,1000,well under 50% — the floor is above the SESOI
+D_null_shuffled,M2,BTCUSDT,0.0000,0.000000,2186.1,20260920,1000,~5% clear zero — the nominal false-positive rate
+A_floor_1x,M2,ETHUSDT,49.4394,0.022616,2186.0,20260919,1000,~50% of replications clear zero
+B_floor_2x,M2,ETHUSDT,98.8788,0.045233,2186.0,20260919,1000,~95% of replications clear zero
+C_sesoi,M2,ETHUSDT,10.0000,0.004575,2186.0,20260919,1000,well under 50% — the floor is above the SESOI
+D_null_shuffled,M2,ETHUSDT,0.0000,0.000000,2186.0,20260920,1000,~5% clear zero — the nominal false-positive rate
