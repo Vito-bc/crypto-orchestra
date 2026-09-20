@@ -7,6 +7,15 @@ carries only the headline verdict; this page carries the detail, and
 **Read the registry before believing any number anywhere in this repository**,
 including the numbers on this page.
 
+**Reading order.** The research program is complete: four lines are closed and
+a fifth is priced but not started. Start with "What was closed, and on what
+grounds" below for all four verdicts side by side, then
+[`2026-09-19-perps-gate.md`](2026-09-19-perps-gate.md) for the floor-gate
+identity that generalizes across directional rules on a given asset, then
+[`2026-09-19-carry-scoping.md`](2026-09-19-carry-scoping.md) for the one class
+— hedged carry — that identity does not bind. `../trial_registry.md` is the
+authoritative source if any number here and there ever disagree.
+
 ## Verdict
 
 No positive expectancy has been demonstrated. The frozen V2 momentum mechanism
@@ -197,9 +206,9 @@ where the synthesis overstates the reports beneath it.
 
 ## What was closed, and on what grounds
 
-Two closures, recorded in [`../trial_registry.md`](../trial_registry.md). They
-rest on **different** grounds and read differently on purpose. Do not merge
-them.
+Four lines, recorded in [`../trial_registry.md`](../trial_registry.md), plus a
+fifth that is priced but not started. They rest on **different** grounds and
+read differently on purpose. Do not merge them.
 
 ### V2 / ZEC momentum — RETIRED AS AN ACTIVATION CANDIDATE (2026-09-18), on EDGE
 
@@ -234,6 +243,46 @@ cost without adding information.
 **No return hypothesis was evaluated and no P&L was computed.** This is not
 evidence that such a program would be unprofitable — it is not evidence about
 profitability in either direction.
+
+### 4h BTC/ETH perpetuals — NOT STARTED (2026-09-19), on FEASIBILITY
+
+Two mechanisms declared before data was touched — a Donchian 55/20 breakout
+and a 30-bar time-series-momentum sign rule, one bracketing the rare end of
+the event-rate axis and one the dense end — both fail the same decidable-edge
+floor gate against a 10%/yr minimum-effect-size threshold, by 2.2x to 4.9x
+([`2026-09-19-perps-gate.md`](2026-09-19-perps-gate.md)). BTC and ETH perps
+carry N_eff 1.088, less independent information than the spot pairs above.
+
+**The reusable result.** Substituting the gate's own dispersion construction
+into the floor gives `floor_annual = 1.645 · SD_bar · sqrt(bars in position
+per year / Y)` — the trade count cancels out exactly, so a directional rule
+cannot lower its own floor by trading more often; it can only pay more fees
+doing it. This generalizes past the two mechanisms tested: **it closes the
+class of directional programs on these two assets at this cost and
+volatility, not one venue or one mechanism.** No P&L was computed anywhere in
+the gate document or its source code.
+
+A correction is recorded alongside: an earlier scoping document's per-trade 4h
+floor (0.0286%) was arithmetically correct and read misleadingly — multiplied
+by its own trade count it is ~68%/yr, worse than every spot figure above.
+State decidable-edge floors annually from now on.
+
+### Long-spot / short-perp funding carry — PRICED, NOT STARTED (2026-09-19)
+
+**Not a closure.** A hedged position cancels price exposure, so its income —
+the funding series the two closures above measured only as a long's cost — has
+low variance and is decidable in a much shorter window than any directional
+program; the floor-gate identity works *for* a program like this, not against
+it. This is the one class the closures do not cover
+([`2026-09-19-carry-scoping.md`](2026-09-19-carry-scoping.md)).
+
+It is not started because the premium has not cleared this venue's cost: the
+spot leg's round trip is ~9x the perp leg's, setting a break-even near
+14.4-14.8%/yr, and trailing funding has been below it in every year since 2022
+except brief, single-digit-percent readings in 2023 and 2024. 2025 and
+2026-to-date are net negative on both assets. A funding monitor with
+thresholds at that break-even is designed, not built, and is the recorded
+condition for re-evaluation.
 
 ## Open leads
 
