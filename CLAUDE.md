@@ -209,18 +209,18 @@ nothing about whether a directional program can decide its own question.
 
 1. CFM's own funding, once observed, sustains above the carry break-even
    (~14.4-14.8%/yr) for longer than a typical cycle — see the funding monitor
-   design in `docs/research/2026-09-19-carry-scoping.md` §5.
+   spec in `docs/research/2026-09-19-carry-scoping.md` §5 and operations guide
+   in `docs/operations/cfm_funding_monitor.md`.
 2. A venue with maker rebates or near-zero effective fees, reachable by a
    New York resident, becomes accessible — changing the cost side of the
    floor-gate identity rather than the statistics.
 
-**What runs today:** the daily STF execution-cost probe (`stf_cost_probe.py`).
+**What runs today:** the daily STF execution-cost probe (`stf_cost_probe.py`)
+and hourly credential-free CFM funding monitor (`cfm_funding_monitor.py`).
 **What does not run:** the seven-agent pipeline, any LLM call, and any order
 path — none of these is required by, or currently used for, anything the
-program above is deciding. Building the hourly CFM funding monitor designed in
-the carry document is the recorded next infrastructure step, pending the
-owner's decision to build it (see "Project State" below); it would join the
-cost probe as the second thing that runs.
+program above is deciding. The funding monitor records the condition for
+re-evaluation and decides nothing itself.
 
 ## Validation Status — read `docs/trial_registry.md` before believing any number
 
@@ -338,9 +338,9 @@ instruction to repeat the work. Phases 6.7-6.10 are on `main`.
    only if a future closure reopens a directional line.
 8. n8n pipeline for visual automation (good for portfolio/resume) — optional
    portfolio work, unaffected by the closures above.
-9. **Funding monitor for Coinbase CFM perpetuals** — designed, not built.
-   Specified in `docs/research/2026-09-19-carry-scoping.md` §5: a public
+9. **BUILT (2026-09-20). Funding monitor for Coinbase CFM perpetuals.**
+   Specified in `docs/research/2026-09-19-carry-scoping.md` §5 and operated per
+   `docs/operations/cfm_funding_monitor.md`: a public
    product-record poll (`get_public_products(product_type="FUTURE")`, no
    credential required), hourly, alerting on the carry break-even thresholds
-   (14.8%/yr BTC, 14.4%/yr ETH). Build is pending the owner's decision — see
-   "Research program status" above.
+   (14.8%/yr BTC, 14.4%/yr ETH) with fail-closed coverage reporting.

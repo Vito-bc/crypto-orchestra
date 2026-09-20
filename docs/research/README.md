@@ -280,9 +280,10 @@ It is not started because the premium has not cleared this venue's cost: the
 spot leg's round trip is ~9x the perp leg's, setting a break-even near
 14.4-14.8%/yr, and trailing funding has been below it in every year since 2022
 except brief, single-digit-percent readings in 2023 and 2024. 2025 and
-2026-to-date are net negative on both assets. A funding monitor with
-thresholds at that break-even is designed, not built, and is the recorded
-condition for re-evaluation.
+2026-to-date are net negative on both assets. The credential-free hourly
+funding monitor now records CFM's own rates forward with thresholds at that
+break-even; it is the recorded condition for re-evaluation and decides nothing
+itself ([operations guide](../operations/cfm_funding_monitor.md)).
 
 ## Open leads
 

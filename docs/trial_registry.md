@@ -1155,9 +1155,10 @@ in 2026 to date on either asset.** 2026 median trailing funding is 3.0%/yr
 non-directional, and the floor identity does not bind it. It is NOT STARTED
 because the premium has been below this venue's break-even for five years. A
 funding monitor with thresholds 14.8%/14.4% (BTC/ETH) is the recorded
-condition for re-evaluation**, designed but not built in
-`2026-09-19-carry-scoping.md` §5 (public product record, no credential
-required, hourly poll against CFM's own `funding_rate` field).
+condition for re-evaluation**. It was built on 2026-09-20 as a credential-free
+hourly poll of CFM's public `funding_rate` field; it records and alerts but
+decides nothing (`2026-09-19-carry-scoping.md` §5 and
+`operations/cfm_funding_monitor.md`).
 
 Two structural risks are recorded alongside, not part of the verdict:
 committed capital exceeds the $100 `LIVE_BALANCE_USD` cap for one hedged unit
