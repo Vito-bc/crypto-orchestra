@@ -1,0 +1,4 @@
+btc_price_usd,contract_notional_usd,commission_per_side_usd,exchange_clearing_per_side_usd,per_side_usd,round_trip_usd,per_side_pct_notional,round_trip_pct_notional,m1_fee_drag_pct_yr,m2_fee_drag_pct_yr
+60000,6000.0,2.25,1.2,3.45,6.9,0.0575,0.115,2.1919,22.057
+70000,7000.0,2.25,1.2,3.45,6.9,0.0493,0.0986,1.8788,18.906
+80000,8000.0,2.25,1.2,3.45,6.9,0.0431,0.0863,1.6439,16.5428
