@@ -364,10 +364,16 @@ convention on either account size at any of the three BTC prices tested — one
 contract alone is **30% to 133% of the entire account**, let alone a sizing
 fraction of it. The 50%/25% circuit-breaker reductions are equally
 inexpressible (the CSV's `cb_50pct_expressible`/`cb_25pct_expressible` columns
-are `False` everywhere for MBT). The Spot-Quoted contract becomes marginally
-expressible from the 5% fraction upward, but with large residual directional
-exposure from integer rounding — e.g. at $10k/$60k-BTC/10% sizing, the exact
-target is 1.667 contracts; rounding to 2 leaves a **20% residual** against the
+are `False` everywhere for MBT).
+
+**The 0.01-BTC Spot-Quoted contract IS expressible at 5% and 10% sizing on a
+$10,000 account (1 and 2 contracts respectively), but NOT at 2%** (rounds to
+0) — and its per-contract fee schedule at IBKR is **unverified**: no IBKR fee
+page for this specific contract was found (see traps), so the expressibility
+finding above is about contract-count granularity only, not about what it
+would cost to hold one. Where it is expressible, integer rounding still
+leaves a large residual — e.g. at $10k/$60k-BTC/10% sizing, the exact target
+is 1.667 contracts; rounding to 2 leaves a **20% residual** against the
 sizing target (see the CSV's `residual_pct_of_target` column, which runs
 20–100% across the grid).
 
@@ -558,31 +564,84 @@ spot fee changes
 | ETH | Bitstamp $10k–100k | 0.695% | 1.26%/yr | 13.16%/yr | 4.69%/yr |
 | ETH | Bitstamp $1k–10k | 0.895% | 1.76%/yr | 17.08%/yr | 6.19%/yr |
 
-At Bullish's individual spot rate, the break-even collapses from **14.4–14.8%/yr
-to ~1.0–1.2%/yr (realised-rate)** — an order of magnitude, because the spot
-leg was 9× the perp leg's cost in the original pairing and is now negligible
-next to it. This does **not** mean carry becomes profitable: the carry
-document's own regime map shows trailing 7-day funding has not cleared even
-the **old, higher** 14.4–14.8% break-even at any point in 2026, and 2026's
-median trailing funding (3.0% BTC, 1.9% ETH) is still below the **new,
-lower** ~1.0–1.2% break-even on some but not most days — the venue question
-and the "is funding high enough right now" question are separate, and this
-document answers only the first.
+At Bullish's individual spot rate, the break-even *before any transfer cost*
+collapses from **14.4–14.8%/yr to ~1.0–1.2%/yr (realised-rate)** — an order
+of magnitude, because the spot leg was 9× the perp leg's cost in the original
+pairing and is now negligible next to it. **That headline is incomplete**:
+`topup_friction_pct_yr` above prices only the spot-fee cost of the top-up
+*trade*; it does not price the cost of *moving cash between two companies*,
+which every Bullish/Bitstamp pairing requires because the spot leg and the
+CFM perp leg sit on different venues. The original Coinbase-ADOPTED pairing
+never needed this correction because both legs sit on the **same** company —
+no cross-venue transfer, no line item.
 
-**The two-venue margin problem, restated per pairing.** In every pairing
-above, the spot leg and the perp leg sit on **different venues** (Bullish or
-Bitstamp for spot, Coinbase CFM for the perp), so a P&L swing on one cannot
-top up margin on the other without an explicit transfer — the same structural
-problem the original carry document raised for Coinbase-spot-vs-CFM, now
-doubled by adding a third company into the loop. Rails: crypto on-chain
-transfer (BTC ~10–60 min confirmation depending on fee/congestion, no
-intermediary) versus USD ACH (1–3 business days) or wire (same-day,
-$25–30 fee at each of Bullish/Bitstamp). Using the carry document's own
-margin-event frequencies (7-day, 50%-of-margin threshold): **10.13 events/yr
-(BTC)** and **14.90 events/yr (ETH)** — a two-venue pairing would need a
-cross-company transfer roughly **once a month (BTC) to once every 3.5 weeks
-(ETH)** merely to keep the short leg funded, each transfer carrying wire fees
-and multi-day settlement risk that a same-venue pairing would not.
+**Cross-venue transfer friction, quantified.** Two declared rails, both
+sourced from Part A's own fee facts and applied to every pairing: a **$30
+wire** (Bullish's published USD wire fee) and a much cheaper **~$4.20
+on-chain BTC transfer** (Bullish's published 0.00006 BTC withdrawal fee at a
+$70,000 BTC reference price). The dollar cost is flat per transfer, so its
+%/yr impact is expressed against the **account's** capital ($10k / $20k), not
+against one CFM contract's own notional — a different basis from every other
+column in this table, made explicit rather than blended silently
+([`data/venue_carry_rederived_2026-09-20.csv`](data/venue_carry_rederived_2026-09-20.csv)
+carries both rails at both account sizes in full; the table below shows the
+wire rail, the more conservative of the two):
+
+| Symbol | Spot venue | Break-even, realised rate (no transfer) | Wire transfer friction, $10k / $20k | **Break-even, realised, incl. wire transfer, $10k / $20k** |
+|---|---|---:|---:|---:|
+| BTC | Coinbase ADOPTED — same venue as CFM, **no transfer needed** | 14.78%/yr | — | — |
+| BTC | **Bullish Standard, Individual** | 1.21%/yr | 3.06% / 1.53% | **4.27% / 2.74%** |
+| BTC | Bitstamp $10k–100k | 4.95%/yr | 3.06% / 1.53% | 8.01% / 6.48% |
+| BTC | Bitstamp $1k–10k | 6.46%/yr | 3.06% / 1.53% | 9.52% / 7.99% |
+| ETH | Coinbase ADOPTED — same venue as CFM, **no transfer needed** | 14.39%/yr | — | — |
+| ETH | **Bullish Standard, Individual** | 1.00%/yr | 4.50% / 2.25% | **5.50% / 3.25%** |
+| ETH | Bitstamp $10k–100k | 4.69%/yr | 4.50% / 2.25% | 9.19% / 6.94% |
+| ETH | Bitstamp $1k–10k | 6.19%/yr | 4.50% / 2.25% | 10.69% / 8.44% |
+
+Transfer friction is computed from the same margin-event count the top-up
+friction term already uses (7-day window, 50%-of-margin threshold):
+**10.20 events/yr (BTC)**, **15.00 events/yr (ETH)** — a two-venue pairing
+needs a cross-company transfer roughly **once every 5 weeks (BTC) to once
+every 3.5 weeks (ETH)**, each one carrying a flat fee regardless of transfer
+size, which is why the friction shrinks (in %/yr terms) as the account grows.
+
+**Re-reading 2026 against the corrected figure.** The carry document's own
+regime map gives 2026's median trailing funding as **3.01%/yr (BTC)** and
+**1.86%/yr (ETH)**. Against the Bullish pairing's corrected, wire-inclusive
+break-even:
+
+- **BTC clears it on a $20,000 account** (3.01% > 2.74%) **but not on a
+  $10,000 account** (3.01% < 4.27%) — the wire rail alone is enough to flip
+  the sign depending on account size.
+- **ETH does not clear it at either account size** (1.86% < 3.25% at $20k;
+  1.86% < 5.50% at $10k) — a reversal from the pre-correction picture, where
+  ETH's 1.00% no-transfer break-even sat comfortably below the 1.86% median.
+
+**The cheaper on-chain rail changes this again.** At ~$4.20/transfer, BTC's
+break-even incl. transfer is 1.42%/yr ($20k) / 1.64%/yr ($10k) — 2026's 3.01%
+median clears both comfortably. ETH's is 1.32%/yr ($20k) / 1.63%/yr ($10k) —
+2026's 1.86% median now clears **both** as well, reversing the wire-rail
+finding above. **Which rail is used is not a rounding detail here: it decides
+whether ETH's 2026 funding clears break-even or not.** This document prices
+both rails and states the reversal; it does not pick one, since the actual
+rail available depends on operational choices (KYC'd wire limits, on-chain
+withdrawal availability, timing) outside this task's scope.
+
+**The two-venue margin problem, restated per pairing.** In every Bullish or
+Bitstamp pairing, the spot leg and the perp leg sit on **different venues**,
+so a P&L swing on one cannot top up margin on the other without an explicit
+transfer — the same structural problem the original carry document raised for
+Coinbase-spot-vs-CFM, now doubled by adding a third company into the loop.
+Rails, latency and cost: crypto on-chain transfer (BTC ~10–60 min
+confirmation depending on fee/congestion, no intermediary, ~$4.20 at
+Bullish's published withdrawal rate) versus USD wire (same-day, $30 at
+Bullish's published rate) or ACH (1–3 business days, fee not gathered for
+either spot venue in this task). At **10.20 events/yr (BTC)** and **15.00
+events/yr (ETH)**, a two-venue pairing needs a cross-company transfer roughly
+**once every 5 weeks (BTC) to once every 3.5 weeks (ETH)** merely to keep the
+short leg funded — each one carrying settlement latency and, on the wire
+rail, a fee large enough to move the break-even by 1.5–4.5 percentage points
+depending on account size, as quantified above.
 
 **A single-venue carry row is not available.** Bullish does not offer
 perpetuals or futures to US individuals (Part A), so no same-venue carry

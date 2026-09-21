@@ -1,7 +1,7 @@
-symbol,spot_schedule,spot_round_trip_pct,cost_per_cycle_pct,cycles_full_window,median_cycle_days,topup_friction_pct_yr,break_even_median_cycle_pct_yr,break_even_realised_rate_pct_yr
-BTCUSDT,bullish_standard_individual,0.005,0.2,40,17.0,0.0078,4.3049,1.2075
-BTCUSDT,bitstamp_10_100k,0.5,0.695,40,17.0,0.7811,15.7134,4.95
-BTCUSDT,bitstamp_1_10k,0.7,0.895,40,17.0,1.0935,20.3229,6.462
-ETHUSDT,bullish_standard_individual,0.005,0.2,33,21.33,0.0126,3.4373,1.0023
-ETHUSDT,bitstamp_10_100k,0.5,0.695,33,21.33,1.2552,13.1562,4.6945
-ETHUSDT,bitstamp_1_10k,0.7,0.895,33,21.33,1.7572,17.083,6.1862
+symbol,spot_schedule,spot_round_trip_pct,cost_per_cycle_pct,cycles_full_window,median_cycle_days,margin_events_per_year_7d_50pct,topup_friction_pct_yr,break_even_median_cycle_pct_yr,break_even_realised_rate_pct_yr,transfer_friction_pct_yr_wire_10000,break_even_realised_incl_transfer_wire_10000,transfer_friction_pct_yr_onchain_btc_10000,break_even_realised_incl_transfer_onchain_btc_10000,transfer_friction_pct_yr_wire_20000,break_even_realised_incl_transfer_wire_20000,transfer_friction_pct_yr_onchain_btc_20000,break_even_realised_incl_transfer_onchain_btc_20000
+BTCUSDT,bullish_standard_individual,0.005,0.2,40,17.0,10.198,0.0078,4.3049,1.2075,3.0594,4.2669,0.4283,1.6358,1.5297,2.7372,0.2142,1.4217
+BTCUSDT,bitstamp_10_100k,0.5,0.695,40,17.0,10.198,0.7811,15.7134,4.95,3.0594,8.0094,0.4283,5.3783,1.5297,6.4797,0.2142,5.1642
+BTCUSDT,bitstamp_1_10k,0.7,0.895,40,17.0,10.198,1.0935,20.3229,6.462,3.0594,9.5214,0.4283,6.8903,1.5297,7.9917,0.2142,6.6762
+ETHUSDT,bullish_standard_individual,0.005,0.2,33,21.33,14.997,0.0126,3.4373,1.0023,4.4991,5.5014,0.6299,1.6322,2.2496,3.2519,0.3149,1.3172
+ETHUSDT,bitstamp_10_100k,0.5,0.695,33,21.33,14.997,1.2552,13.1562,4.6945,4.4991,9.1936,0.6299,5.3244,2.2496,6.9441,0.3149,5.0094
+ETHUSDT,bitstamp_1_10k,0.7,0.895,33,21.33,14.997,1.7572,17.083,6.1862,4.4991,10.6853,0.6299,6.8161,2.2496,8.4358,0.3149,6.5011

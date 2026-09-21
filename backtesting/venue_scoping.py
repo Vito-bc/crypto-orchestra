@@ -354,6 +354,62 @@ _NEW_CARRY_SCHEDULES = {
     "bitstamp_1_10k": {**BITSTAMP_TIERS["bitstamp_1_10k"]},
 }
 
+# CROSS-VENUE TRANSFER FRICTION. Every pairing above puts the spot leg on a
+# DIFFERENT company than the perp leg (Coinbase CFM), so a margin top-up needs
+# an explicit transfer -- a cost the topup_friction_pct_yr term above does NOT
+# price (that term is the spot-fee cost of the top-up TRADE, not the cost of
+# MOVING the cash between the two companies). Two declared rails, both
+# sourced from Part A's own fee-schedule facts and applied uniformly to every
+# pairing (a Bitstamp-specific figure was not independently gathered for this
+# task):
+#
+#   wire:        $30 flat -- Bullish's own published USD Fedwire / International
+#                Wire / CHATS withdrawal fee (docs/research/2026-09-20-venue-
+#                scoping.md Part A).
+#   onchain_btc: a BTC on-chain transfer, priced at Bullish's own published BTC
+#                withdrawal fee (0.00006 BTC) and the $70,000 BTC price point
+#                -- the middle of Part B's own three price points. Used as ONE
+#                rail for BOTH the BTC and ETH pairings: a real top-up would
+#                typically convert through BTC regardless of which asset the
+#                carry position itself holds, since BTC is the more liquid
+#                on-chain settlement asset at both venues.
+#
+# The cost is FLAT PER TRANSFER, independent of position size, so it is
+# amortised over the ACCOUNT's total capital (a single wire covers however
+# many hedged units that account runs, since all units are triggered by the
+# same underlying price move at once) -- not over one CFM contract's own
+# notional, which is the denominator every other column in this table uses.
+# The two are therefore NOT the same basis, and the "incl. transfer" columns
+# below combine them on the explicit, declared assumption that the account
+# deploys roughly its full capital into the hedge (spot notional roughly
+# equal to account size) -- the same order-of-magnitude reading this
+# correction's own brief uses.
+TRANSFER_RAIL_WIRE_USD = 30.0
+TRANSFER_RAIL_ONCHAIN_BTC_FEE_BTC = 0.00006        # Bullish's published rate
+TRANSFER_RAIL_ONCHAIN_REFERENCE_PRICE_USD = 70_000  # mid of BTC_PRICE_POINTS
+TRANSFER_RAILS_USD = {
+    "wire": TRANSFER_RAIL_WIRE_USD,
+    "onchain_btc": round(TRANSFER_RAIL_ONCHAIN_BTC_FEE_BTC
+                         * TRANSFER_RAIL_ONCHAIN_REFERENCE_PRICE_USD, 2),
+}
+
+# The margin-event window/threshold the carry document's own top-up
+# convention uses (7-day window, 50%-of-margin threshold), so the transfer
+# count matches the event count `topup_friction_pct_yr` already prices.
+_MARGIN_EVENT_WINDOW_DAYS = 7
+_MARGIN_EVENT_THRESHOLD = 0.50
+
+
+def _margin_events_per_year(margin_rows: list[dict], total_years: float) -> float:
+    row = next((r for r in margin_rows
+                if r["year"] == "full_window"
+                and r["window_days"] == _MARGIN_EVENT_WINDOW_DAYS
+                and r["threshold_of_margin"] == _MARGIN_EVENT_THRESHOLD), None)
+    if row is None or not total_years:
+        raise VenueScopingError(
+            "margin-event row not found for cross-venue transfer friction")
+    return row["episodes"] / total_years
+
 
 def carry_rederived_rows() -> list[dict]:
     for key, sched in _NEW_CARRY_SCHEDULES.items():
@@ -364,7 +420,9 @@ def carry_rederived_rows() -> list[dict]:
         for key in _NEW_CARRY_SCHEDULES:
             result = carry_scoping.analyse_symbol(symbol, key)
             full = result["rows"][-1]
-            rows.append({
+            events_per_year = _margin_events_per_year(
+                result["margin_rows"], result["total_years"])
+            row = {
                 "symbol": symbol,
                 "spot_schedule": key,
                 "spot_round_trip_pct": round(
@@ -373,10 +431,20 @@ def carry_rederived_rows() -> list[dict]:
                 "cost_per_cycle_pct": result["cost_per_cycle_pct"],
                 "cycles_full_window": full["cycles"],
                 "median_cycle_days": result["median_cycle_days"],
+                "margin_events_per_year_7d_50pct": round(events_per_year, 4),
                 "topup_friction_pct_yr": result["topup_friction_pct_yr"],
                 "break_even_median_cycle_pct_yr": result["break_even_pct_yr"],
                 "break_even_realised_rate_pct_yr": result["break_even_realised_pct_yr"],
-            })
+            }
+            for account in ACCOUNT_SIZES_USD:
+                for rail_key, rail_cost_usd in TRANSFER_RAILS_USD.items():
+                    friction_pct = events_per_year * rail_cost_usd / account * 100.0
+                    incl = result["break_even_realised_pct_yr"] + friction_pct
+                    row[f"transfer_friction_pct_yr_{rail_key}_{account}"] = (
+                        round(friction_pct, 4))
+                    row[f"break_even_realised_incl_transfer_{rail_key}_{account}"] = (
+                        round(incl, 4))
+            rows.append(row)
     return rows
 
 
