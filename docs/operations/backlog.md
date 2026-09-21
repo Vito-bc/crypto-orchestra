@@ -15,15 +15,20 @@ closure, on `DRY_RUN`, or on `LIVE_BALANCE_USD`.
   Scheduled Tasks history for that run. This is why the fee-tier reading
   cohort below skips 09-20 — see (d).
 
-- **(b) The agent pipeline's live price source and the research harness's
-  source disagree.** `tools/price_data.py` pulls from `yfinance` (Yahoo
-  Finance); every research consumer — `backtesting/hydrate_research_data.py`,
-  `backtesting/hydrate_perps_proxy.py`, `backtesting/hydrate_carry_basis.py` —
-  pulls from Coinbase's own public endpoints or Binance's public archive. A
-  live run and a backtest of the same nominal mechanism are not reading the
-  same tape. This has not mattered operationally because the agent pipeline
-  does not currently run (see `CLAUDE.md` "Research program status"), but it
-  would need resolving before any future live or shadow reactivation.
+- **(b) The live pipeline has used Yahoo data by accident when Coinbase
+  candle fetching fails.** The scanner's `_fetch_ohlcv` silently fell back to
+  `yfinance` after any Coinbase error. Reproduced on 2026-09-21 from main
+  `7deb2ed`: a current ZEC cache made the next 1h and 4h fetch start in the
+  future; Coinbase returned HTTP 400 (`start must not be in the future`),
+  both frames came from Yahoo, and the 1d frame came from Coinbase. Earlier
+  `logs/scheduler.log` entries ("Fetching 90 days of ZEC-USD data from Yahoo
+  Finance") show this has occurred since at least July. `tools/price_data.py`
+  is another explicit Yahoo price source, independent of this scanner defect.
+  This PR prevents the future-start request and labels each served scanner
+  frame and its written records, but **does not change the live pipeline's
+  permitted fallback policy**. Whether live trading may ever use Yahoo data
+  remains an owner decision; until then, its results are not directly
+  comparable to Coinbase-only research.
 
 - **(c) `check_and_fill` does not check `cancel_order`'s return value.**
   `pipeline/limit_orders.py:389` calls `cancel_order(exch_id)` and discards

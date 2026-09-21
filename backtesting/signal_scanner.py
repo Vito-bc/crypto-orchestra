@@ -650,6 +650,23 @@ class StrictSourceError(RuntimeError):
 # actually used, which is worse than failing.
 STRICT_COINBASE_ONLY = False
 
+# Optional per-call audit sink for callers that write provenance-bearing records.
+# The scanner's merge path stays unchanged; source identity is captured at fetch.
+from contextvars import ContextVar
+
+_PROVIDER_AUDIT: ContextVar[dict[str, str] | None] = ContextVar(
+    "candle_provider_audit", default=None
+)
+
+
+def _label_provider(frame: pd.DataFrame, asset: str, interval: str, provider: str) -> pd.DataFrame:
+    frame.attrs["provider"] = provider
+    audit = _PROVIDER_AUDIT.get()
+    if audit is not None:
+        audit[f"{asset}:{interval}"] = provider
+    print(f"[Candles] {asset} {interval}: provider={provider}")
+    return frame
+
 
 def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFrame | None:
     """
@@ -670,7 +687,10 @@ def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFram
                 df = df.set_index("time")
                 df.index = pd.to_datetime(df.index, utc=True)
                 df.index.name = None  # avoid "time is both index and column" ambiguity
-                return df.dropna(subset=["close", "open", "high", "low", "volume"])
+                return _label_provider(
+                    df.dropna(subset=["close", "open", "high", "low", "volume"]),
+                    asset, interval, "coinbase",
+                )
     except Exception as exc:
         cb_error = exc      # fall through to yfinance unless strict
 
@@ -680,6 +700,9 @@ def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFram
             f"({cb_error or 'insufficient rows'}) and STRICT_COINBASE_ONLY is set. "
             "Refusing to fall back to yfinance during a registered run."
         )
+
+    print(f"[Candles] {asset} {interval}: Coinbase unavailable "
+          f"({cb_error or 'insufficient rows'}); trying yfinance", file=sys.stderr)
 
     # ── yfinance fallback ──────────────────────────────────────────────────────
     try:
@@ -691,7 +714,10 @@ def _fetch_ohlcv(asset: str, start: str, end: str, interval: str) -> pd.DataFram
             raw.columns = raw.columns.get_level_values(0)
         raw.columns = [c.lower() for c in raw.columns]
         raw.index   = pd.to_datetime(raw.index, utc=True)
-        return raw.dropna(subset=["close", "open", "high", "low", "volume"])
+        return _label_provider(
+            raw.dropna(subset=["close", "open", "high", "low", "volume"]),
+            asset, interval, "yfinance",
+        )
     except Exception:
         return None
 
@@ -749,7 +775,11 @@ def _download_and_compute(asset: str, start: str, end: str, interval: str) -> pd
         df["time"]  = df.index
         df["trend"] = np.where(df["ema50"] > df["ema200"], "bull", "bear")
 
-        return df.dropna(subset=["rsi", "ema50", "atr"])
+        result = df.dropna(subset=["rsi", "ema50", "atr"])
+        result.attrs["provider"] = raw.attrs.get("provider")
+        return result
+    except StrictSourceError:
+        raise
     except Exception as exc:
         print(f"    indicator error: {exc}")
         return None
@@ -1050,6 +1080,11 @@ def scan_latest(asset: str) -> dict | None:
     sig_df   = _download_and_compute(asset, warmup,        today, "1h")
     trend_df = _download_and_compute(asset, warmup,        today, "4h")
     daily_df = _download_and_compute(asset, "2020-01-01",  today, "1d")
+    data_providers = {
+        f"{asset}:{interval}": source.attrs["provider"]
+        for interval, source in (("1h", sig_df), ("4h", trend_df), ("1d", daily_df))
+        if source is not None and source.attrs.get("provider")
+    }
 
     if sig_df is None or trend_df is None or len(sig_df) < 50:
         return None
@@ -1065,6 +1100,8 @@ def scan_latest(asset: str) -> dict | None:
                              and bool(cfg.get("btc_regime_filter", False)))
     if btc_regime_applicable:
         btc_daily = _download_and_compute("BTC-USD", _DAILY_HISTORY_START, today, "1d")
+        if btc_daily is not None and btc_daily.attrs.get("provider"):
+            data_providers["BTC-USD:1d"] = btc_daily.attrs["provider"]
         if btc_daily is not None:
             btc_regime_cols = btc_daily[["time", "close", "ema50"]].copy()
             btc_regime_cols = btc_regime_cols.rename(
@@ -1122,6 +1159,7 @@ def scan_latest(asset: str) -> dict | None:
 
     signal_dict = {
         "asset":           asset,
+        "data_providers": data_providers,
         "entry_time":      str(ts),
         "entry_price":     float(df.iloc[i]["close"]),
         "atr":             float(df.iloc[i].get("atr", 0)),

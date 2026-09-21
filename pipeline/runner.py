@@ -95,11 +95,13 @@ _HOLD_EXT_ATR_MULT  = 1.5 # ATR multiplier for extension trailing stop below HWM
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-def _log_decision(asset: str, signals: list[AgentSignal], decision: TradeDecision) -> None:
+def _log_decision(asset: str, signals: list[AgentSignal], decision: TradeDecision,
+                  data_providers: dict[str, str] | None = None) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     record = {
         "logged_at_utc": datetime.now(timezone.utc).isoformat(),
         "asset":         asset,
+        "data_providers": data_providers or {},
         "action":        decision.action.value,
         "confidence":    decision.confidence,
         "reasoning":     decision.reasoning,
@@ -1108,7 +1110,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                 veto_triggered=True, veto_reason=_cb_reason,
                 position_size_pct=None, stop_loss_price=None, take_profit_price=None,
             )
-            _log_decision(asset, signals, decision)
+            _log_decision(asset, signals, decision, _scanner_signal.get("data_providers"))
             _print_decision(asset, signals, decision)
             _settle_disposition("blocked_elsewhere")   # circuit breaker
             return decision
@@ -1253,7 +1255,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                                 position_size_pct=None, stop_loss_price=None,
                                 take_profit_price=None,
                             )
-                            _log_decision(asset, signals, decision)
+                            _log_decision(asset, signals, decision, _scanner_signal.get("data_providers"))
                             _print_decision(asset, signals, decision)
                             _settle_disposition("blocked_elsewhere")  # outbox gate
                             return decision
@@ -1384,7 +1386,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                 print(f"[Filter] Momentum check PASSED — candle body {candle_body:+.3%} confirms SELL.")
 
     # ── 6. Log + notify ───────────────────────────────────────────────────────
-    _log_decision(asset, signals, decision)
+    _log_decision(asset, signals, decision, _scanner_signal.get("data_providers"))
     _print_decision(asset, signals, decision)
 
     if decision.action == TradeAction.SELL:

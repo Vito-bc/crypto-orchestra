@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -23,6 +23,7 @@ class Candidate:
     atr_stop: float
     atr_target: float
     max_hold_hours: int
+    data_providers: dict[str, str] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -44,6 +45,7 @@ def produce_candidates(
     *,
     latest_only: bool = False,
     now: datetime | None = None,
+    strict_coinbase_only: bool = False,
 ) -> list[Candidate]:
     """Return trigger + declared-hard-gate candidates before ``min_conditions``."""
     start_ts = pd.Timestamp(start)
@@ -72,13 +74,22 @@ def produce_candidates(
             raise ValueError(f"asset has no declared scanner config: {asset}")
         cfg = scanner.ASSET_CONFIG[asset]
         btc_applicable = _btc_regime_applicable(asset, cfg)
-        frame, _ = scanner.build_merged_frame(
-            asset,
-            start_ts.date().isoformat(),
-            end_ts.date().isoformat(),
-            cfg,
-            btc_regime_applicable=btc_applicable,
-        )
+        providers: dict[str, str] = {}
+        token = scanner._PROVIDER_AUDIT.set(providers)
+        previous_strict = scanner.STRICT_COINBASE_ONLY
+        if strict_coinbase_only:
+            scanner.STRICT_COINBASE_ONLY = True
+        try:
+            frame, _ = scanner.build_merged_frame(
+                asset,
+                start_ts.date().isoformat(),
+                end_ts.date().isoformat(),
+                cfg,
+                btc_regime_applicable=btc_applicable,
+            )
+        finally:
+            scanner.STRICT_COINBASE_ONLY = previous_strict
+            scanner._PROVIDER_AUDIT.reset(token)
         if frame is None or frame.empty:
             continue
         eligible = frame[(frame.index >= start_ts) & (frame.index <= end_ts)]
@@ -118,6 +129,7 @@ def produce_candidates(
                     atr_stop=float(cfg["atr_stop"]),
                     atr_target=float(cfg["atr_target"]),
                     max_hold_hours=int(strategy_cfg.get("max_hold_hours", 36)),
+                    data_providers=dict(providers),
                 )
             )
     found.sort(key=lambda item: (item.candle_time, item.asset))
@@ -132,4 +144,5 @@ def latest_candidates(assets: Iterable[str], *, now: datetime | None = None) -> 
         current + timedelta(days=1),
         latest_only=True,
         now=current,
+        strict_coinbase_only=True,
     )

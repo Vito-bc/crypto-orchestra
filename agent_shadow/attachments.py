@@ -81,13 +81,21 @@ def attach_price_paths(
         earliest = min(pd.Timestamp(item["candle_time"]) for item in asset_items)
         cfg = scanner.ASSET_CONFIG[asset]
         btc_applicable = asset != "BTC-USD" and bool(cfg.get("btc_regime_filter", False))
-        frame, _ = build(
-            asset,
-            (earliest - pd.Timedelta(days=120)).date().isoformat(),
-            (pd.Timestamp(current) + pd.Timedelta(days=1)).date().isoformat(),
-            cfg,
-            btc_regime_applicable=btc_applicable,
-        )
+        providers: dict[str, str] = {}
+        token = scanner._PROVIDER_AUDIT.set(providers)
+        previous_strict = scanner.STRICT_COINBASE_ONLY
+        scanner.STRICT_COINBASE_ONLY = True
+        try:
+            frame, _ = build(
+                asset,
+                (earliest - pd.Timedelta(days=120)).date().isoformat(),
+                (pd.Timestamp(current) + pd.Timedelta(days=1)).date().isoformat(),
+                cfg,
+                btc_regime_applicable=btc_applicable,
+            )
+        finally:
+            scanner.STRICT_COINBASE_ONLY = previous_strict
+            scanner._PROVIDER_AUDIT.reset(token)
         if frame is None or frame.empty:
             continue
         for candidate in asset_items:
@@ -114,6 +122,7 @@ def attach_price_paths(
                     "event_id": candidate["event_id"],
                     "variant_id": candidate["variant_id"],
                     "asset": asset,
+                    "data_providers": dict(providers),
                     "candle_time": candidate["candle_time"],
                     "price_path": horizon_values,
                     "atr_bracket": _bracket(frame, entry_i, candidate),
