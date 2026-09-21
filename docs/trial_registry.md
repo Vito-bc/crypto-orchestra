@@ -474,6 +474,42 @@ hash of every input — the same scheme as the main research runner
 Live status is unchanged and cannot be changed by this work: **LIVE NO-GO**,
 `DRY_RUN=true`, V3 off.
 
+## Infrastructure change — Coinbase candle timestamp unit (2026-09-20)
+
+Not a trial: no strategy parameter, gate, input value or research result
+changed. The main `results.json` is byte-identical before and after, and every
+walk-forward result row is unchanged.
+
+### What changed and why
+
+`exchange/coinbase_candles.py` now declares `ns` as the single timestamp unit
+at the candle-loader boundary and applies one normalization helper after live
+API parsing, cached-parquet loading, and cache/live concat/dedup. Previously,
+live Coinbase rows were `datetime64[s, UTC]`, while the research parquet cache
+could load as `datetime64[ms, UTC]`. A cache plus fresh live tail could
+therefore make the 1h and 1d frames reach `merge_asof` with incompatible keys
+and crash candidate production before any agent call. The scanner's existing
+daily-frame cast was left unchanged; normalization belongs at the producer
+boundary shared by every consumer.
+
+### Provenance cost
+
+The loader is result-determining code for the main research and walk-forward
+artifacts, so both were regenerated and verified:
+
+| Artifact | Old `provenance_sha256` | New `provenance_sha256` |
+|---|---|---|
+| Main research | `32ab8a8ac45ea70a03bfad1d0325e2c76200b2c94e90733217d60d6fe9a4b468` | `86c6b53354753756009727deb40aacf677b903fb5a2cca19a2423be77f977a28` |
+| Walk-forward | `5e9f1d74e9abe1df16b9975268df2a6ae3468047390c2d55a5feac1a8042acde` | `b491f74936a0b311588b30406402a7e1328df4a92645219059925839914cdb90` |
+
+No reported research number moved. Regeneration also refreshed the main
+manifest's informational `physical_rows` and `physical_sha256` for the BTC
+cache tail that already existed beyond the frozen 2026-07-12 scope; those
+fields are explicitly excluded from identity, and all in-scope logical hashes
+and coverage statistics are unchanged. The STF feasibility and power
+artifacts do not hash the candle loader and both reproduced byte-for-byte on
+their own `--verify` paths.
+
 ## Infrastructure change — Phase 6.9 reproducibility (2026-08-15)
 
 Not a trial: no scan was run, no parameter changed, and `results.json` is

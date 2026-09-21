@@ -54,6 +54,18 @@ _SECONDS = {
     "ONE_DAY":  86400,
 }
 
+# One timestamp unit at the cache/API boundary keeps downstream merges stable.
+_TIME_UNIT = "ns"
+
+
+def _normalise_time_unit(df: pd.DataFrame) -> pd.DataFrame:
+    """Return *df* with UTC candle timestamps in the declared fixed unit."""
+    if "time" in df.columns:
+        df["time"] = pd.to_datetime(df["time"], utc=True).astype(
+            f"datetime64[{_TIME_UNIT}, UTC]"
+        )
+    return df
+
 
 def _get_client():
     from exchange.coinbase_client import _get_client as _base
@@ -78,7 +90,8 @@ def _candles_to_df(raw: list[dict]) -> pd.DataFrame:
     df["time"] = pd.to_datetime(df["start"].astype(int), unit="s", utc=True)
     for col in ("open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df[["time", "open", "high", "low", "close", "volume"]].sort_values("time").reset_index(drop=True)
+    df = df[["time", "open", "high", "low", "close", "volume"]].sort_values("time").reset_index(drop=True)
+    return _normalise_time_unit(df)
 
 
 def _resample_4h(df: pd.DataFrame) -> pd.DataFrame:
@@ -114,9 +127,7 @@ def _load_existing(asset: str, granularity: str) -> pd.DataFrame:
     if not p.exists():
         return pd.DataFrame()
     df = pd.read_parquet(p)
-    if "time" in df.columns:
-        df["time"] = pd.to_datetime(df["time"], utc=True)
-    return df
+    return _normalise_time_unit(df)
 
 
 def download(
@@ -189,6 +200,7 @@ def download(
             combined = combined.drop_duplicates("time").sort_values("time").reset_index(drop=True)
         else:
             combined = existing
+        combined = _normalise_time_unit(combined)
 
         if not combined.empty:
             p = _parquet_path(asset, store_key)
