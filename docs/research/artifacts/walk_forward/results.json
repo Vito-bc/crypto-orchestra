@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "788e60784c13a6dd75ef50c4f9b9e6463058a89c10db408f095d5b530340bbbe",
+    "code_sha256": "6c41dc4da84b2564c708511f5593ef2b8fa71a4efca784c0dbd2f24b684f9523",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -20,7 +20,7 @@
       },
       {
         "file": "exchange/coinbase_candles.py",
-        "sha256": "cc31fde12e8547aa4bd0452c4d98365dd509f17f0b73844ed9ca0b9bd0e6953f"
+        "sha256": "de55fa763323cafa2c89b8ba44ad8228d7f4566a4d534192305227c85736ed83"
       }
     ]
   },
@@ -177,7 +177,7 @@
     ]
   },
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "5e9f1d74e9abe1df16b9975268df2a6ae3468047390c2d55a5feac1a8042acde",
+  "provenance_sha256": "b491f74936a0b311588b30406402a7e1328df4a92645219059925839914cdb90",
   "rows": [
     {
       "asset": "BTC-USD",

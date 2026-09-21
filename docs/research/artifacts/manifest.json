@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "40d49202ee6eb01905a1754eb5ff3e530a89ab0a71fe97ee1ab2ccccfb3d0cdf",
+    "code_sha256": "60c785d3b2056922e4ace2f9f83c44f6b6896b7482caa631a2ebf065061d4849",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -24,11 +24,11 @@
       },
       {
         "file": "exchange/coinbase_candles.py",
-        "sha256": "cc31fde12e8547aa4bd0452c4d98365dd509f17f0b73844ed9ca0b9bd0e6953f"
+        "sha256": "de55fa763323cafa2c89b8ba44ad8228d7f4566a4d534192305227c85736ed83"
       }
     ]
   },
-  "code_commit": "4c2d2442fa198795e73695c9de3f03d3037f961e",
+  "code_commit": "5fc6f399076cebfccee15bec9063bd43f37bb391",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
@@ -171,8 +171,8 @@
       "min_ts": "2020-01-02T00:00:00+00:00",
       "missing_bars_est": 0,
       "n_gaps": 0,
-      "physical_rows": 2412,
-      "physical_sha256": "12516629df95e1d5c796ee2f45b2bceaa81bd02f86f0053a55571303d7016928",
+      "physical_rows": 2455,
+      "physical_sha256": "c1ea8c7a418c6a7b285f647a0523417aa783cffef2fa241663f4fc174000c596",
       "rows": 2384,
       "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
       "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
@@ -212,8 +212,8 @@
       "min_ts": "2020-01-01T01:00:00+00:00",
       "missing_bars_est": 16,
       "n_gaps": 6,
-      "physical_rows": 57888,
-      "physical_sha256": "8153bd70e90ad25864b28cd7f46dcdaaf3a4bae0448814f3934038d0251fee9c",
+      "physical_rows": 58904,
+      "physical_sha256": "a8cfb796fcfa2d0f3573fd585564f6861c368d00e73b494f3354abdeb2360c6f",
       "rows": 57200,
       "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
       "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
@@ -371,5 +371,5 @@
     }
   ],
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "32ab8a8ac45ea70a03bfad1d0325e2c76200b2c94e90733217d60d6fe9a4b468"
+  "provenance_sha256": "86c6b53354753756009727deb40aacf677b903fb5a2cca19a2423be77f977a28"
 }
