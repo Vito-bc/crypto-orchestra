@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from datetime import datetime, timedelta, timezone
 
 import exchange.coinbase_candles as candles
 
@@ -103,3 +104,39 @@ def test_build_merged_frame_accepts_ms_hourly_and_s_daily_caches(
     assert daily is not None and not daily.empty
     assert str(merged["time"].dtype) == expected_dtype
     assert str(daily["time"].dtype) == expected_dtype
+
+
+def test_current_cache_serves_slice_without_future_api_request(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(candles, "DATA_DIR", tmp_path)
+    latest = pd.Timestamp(datetime.now(timezone.utc)).floor("h")
+    cached = _ohlcv_frame(pd.Series([latest], dtype="datetime64[ms, UTC]"))
+    cached.to_parquet(candles._parquet_path("ZEC-USD", "1h"), index=False)
+    monkeypatch.setattr(candles, "_get_client", lambda: pytest.fail("client opened"))
+    monkeypatch.setattr(candles, "_fetch_batch", lambda *a: pytest.fail("API called"))
+
+    result = candles.download("ZEC-USD", latest - timedelta(hours=1),
+                              latest + timedelta(days=1), verbose=False)
+    assert result["time"].tolist() == [latest]
+
+
+def test_cache_past_requested_end_never_calls_api(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(candles, "DATA_DIR", tmp_path)
+    latest = pd.Timestamp("2026-01-02", tz="UTC")
+    _ohlcv_frame(pd.Series([latest], dtype="datetime64[ms, UTC]")).to_parquet(
+        candles._parquet_path("ZEC-USD", "1d"), index=False
+    )
+    monkeypatch.setattr(candles, "_get_client", lambda: pytest.fail("client opened"))
+    monkeypatch.setattr(candles, "_fetch_batch", lambda *a: pytest.fail("API called"))
+
+    result = candles.download("ZEC-USD", "2026-01-01", "2026-01-02",
+                              granularity="1d", verbose=False)
+    assert result["time"].tolist() == [latest]
+
+
+def test_coinbase_api_error_is_not_swallowed(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(candles, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(candles, "_get_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(candles, "_fetch_batch", lambda *a: (_ for _ in ()).throw(
+        RuntimeError("Coinbase unavailable")))
+    with pytest.raises(RuntimeError, match="Coinbase unavailable"):
+        candles.download("ZEC-USD", "2026-01-01", "2026-01-02", verbose=False)

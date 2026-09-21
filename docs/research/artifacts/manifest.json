@@ -1,6 +1,6 @@
 {
   "code": {
-    "code_sha256": "60c785d3b2056922e4ace2f9f83c44f6b6896b7482caa631a2ebf065061d4849",
+    "code_sha256": "d920ae57988064d2e50c7bf7d440e6f08ae5b32ad3fcbf34e6881401a673b584",
     "files": [
       {
         "file": "backtesting/backtest.py",
@@ -20,15 +20,15 @@
       },
       {
         "file": "backtesting/signal_scanner.py",
-        "sha256": "b7c7ea90c2ea8d5b7684873a98d6369265416d9167a610280e70287461becf4d"
+        "sha256": "4906c5168dd214ab02439314a93cf276b7abeec7a0cd832dd9ceb0d0e42dd460"
       },
       {
         "file": "exchange/coinbase_candles.py",
-        "sha256": "de55fa763323cafa2c89b8ba44ad8228d7f4566a4d534192305227c85736ed83"
+        "sha256": "26cbd8b299b891941126ce9521a8645b261234bf7e38ca7ebc24428a1bd3f3ec"
       }
     ]
   },
-  "code_commit": "5fc6f399076cebfccee15bec9063bd43f37bb391",
+  "code_commit": "0b9ac964ee4a7d4f9c28b5e3a5e38bbee7c3d35e",
   "config": {
     "accepted_gap_bars": {
       "BTC_USD_1d.parquet": 0,
@@ -212,8 +212,8 @@
       "min_ts": "2020-01-01T01:00:00+00:00",
       "missing_bars_est": 16,
       "n_gaps": 6,
-      "physical_rows": 58904,
-      "physical_sha256": "a8cfb796fcfa2d0f3573fd585564f6861c368d00e73b494f3354abdeb2360c6f",
+      "physical_rows": 58919,
+      "physical_sha256": "9343826545c26c1056d061050e97cab4070929d47b6447c8d3f7b1190fe2530f",
       "rows": 57200,
       "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
       "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
@@ -330,8 +330,8 @@
       "min_ts": "2020-12-08T00:00:00+00:00",
       "missing_bars_est": 0,
       "n_gaps": 0,
-      "physical_rows": 2071,
-      "physical_sha256": "3e4bd2ca64bf63f0d79cae5872338d6e94a9d4e7896cffee31e2d4767c61d8ed",
+      "physical_rows": 2114,
+      "physical_sha256": "277a9e3da292838c4880b773bd806796aba434373904ae926a65444f73e80809",
       "rows": 2043,
       "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
       "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
@@ -363,13 +363,13 @@
       "min_ts": "2020-12-08T17:00:00+00:00",
       "missing_bars_est": 15,
       "n_gaps": 4,
-      "physical_rows": 49664,
-      "physical_sha256": "6b981614724eb2c6a5ab43f2e57f50b9e6510b6733a10d1e411ad9a7aa169b93",
+      "physical_rows": 50695,
+      "physical_sha256": "26a51d78705c593bde96f8da4d15129fa41464110eca253ad721f6ac147664ec",
       "rows": 48977,
       "scope_end_inclusive": "2026-07-12T00:00:00+00:00",
       "scope_start_inclusive": "2020-01-01T00:00:00+00:00"
     }
   ],
   "provenance_schema": "research-content-provenance-v1",
-  "provenance_sha256": "86c6b53354753756009727deb40aacf677b903fb5a2cca19a2423be77f977a28"
+  "provenance_sha256": "ba2d29cab4d20a62a31158fe1c958c31ef22dc005181eee3439bfa52817062bf"
 }

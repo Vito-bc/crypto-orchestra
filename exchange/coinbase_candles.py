@@ -171,7 +171,9 @@ def download(
 
     fetch_end = end
 
-    if fetch_from >= fetch_end:
+    # A current cache can put the next candle beyond wall-clock time. Coinbase
+    # rejects future starts even when the caller's requested end is later.
+    if fetch_from >= fetch_end or fetch_from >= datetime.now(timezone.utc):
         df = existing
     else:
         if verbose:

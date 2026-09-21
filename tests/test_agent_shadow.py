@@ -79,6 +79,55 @@ def test_candidate_production_matches_fixed_slice_census(monkeypatch) -> None:
     assert [item.n_met for item in candidates] == [2, 3, 4, 5]
 
 
+def test_shadow_coinbase_failure_writes_no_log_or_spend(tmp_path, monkeypatch) -> None:
+    import agent_shadow.runner as runner
+    import exchange.coinbase_candles as candles
+    from backtesting import signal_scanner as scanner
+
+    variant = dict(_variant(), assets=["ZEC-USD"])
+    monkeypatch.setattr(runner, "get_variant", lambda *a: variant)
+    monkeypatch.setattr(runner, "assert_variant_matches_runtime", lambda *a: None)
+    monkeypatch.setattr(candles, "download", lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("Coinbase HTTP 400")))
+    monkeypatch.setattr(scanner.yf, "download", lambda *a, **kw: pytest.fail(
+        "shadow must not ask Yahoo"))
+    log = tmp_path / "shadow.jsonl"
+    spend = tmp_path / "spend.json"
+
+    with pytest.raises(scanner.StrictSourceError, match="Coinbase HTTP 400"):
+        runner.main(["--log", str(log), "--spend-file", str(spend),
+                     "--candidate-cap", "2"])
+    assert not log.exists()
+    assert not spend.exists()
+    assert scanner.STRICT_COINBASE_ONLY is False
+
+
+def test_fallback_frame_is_visibly_labelled(monkeypatch, capsys) -> None:
+    import exchange.coinbase_candles as candles
+    from backtesting import signal_scanner as scanner
+
+    monkeypatch.setattr(scanner, "STRICT_COINBASE_ONLY", False)
+    monkeypatch.setattr(candles, "download", lambda *a, **kw: (_ for _ in ()).throw(
+        RuntimeError("Coinbase HTTP 400")))
+    index = pd.date_range("2026-01-01", periods=30, freq="h", tz="UTC")
+    yahoo = pd.DataFrame({
+        "Open": [100.0] * 30, "High": [101.0] * 30,
+        "Low": [99.0] * 30, "Close": [100.0] * 30,
+        "Volume": [10.0] * 30,
+    }, index=index)
+    monkeypatch.setattr(scanner.yf, "download", lambda *a, **kw: yahoo)
+
+    audit = {}
+    token = scanner._PROVIDER_AUDIT.set(audit)
+    try:
+        frame = scanner._fetch_ohlcv("ZEC-USD", "2026-01-01", "2026-01-03", "1h")
+    finally:
+        scanner._PROVIDER_AUDIT.reset(token)
+    assert frame is not None and frame.attrs["provider"] == "yfinance"
+    assert audit == {"ZEC-USD:1h": "yfinance"}
+    assert "provider=yfinance" in capsys.readouterr().out
+
+
 def test_variant_registry_is_append_only(tmp_path: Path) -> None:
     path = tmp_path / "variants.jsonl"
     variant = _variant()
@@ -231,6 +280,47 @@ def test_agent_failure_is_logged_and_does_not_abort(tmp_path: Path) -> None:
     assert failed["direction"] == "NEUTRAL"
     assert failed["error"] == "recorded fixture failure"
     assert records[-1]["record_type"] == "orchestrator_decision"
+
+
+def test_vote_and_decision_carry_candidate_frame_providers(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    candidate = replace(_candidate(), data_providers={"ZEC-USD:1h": "coinbase"})
+    log = ShadowLog(tmp_path / "shadow.jsonl")
+
+    class StubAgent:
+        def run(self, asset):
+            return AgentSignal.model_validate(_fixture()["signals"]["technical"])
+
+    class StubOrchestrator:
+        def decide(self, asset, signals):
+            return TradeDecision.model_validate(_fixture()["decision"])
+
+    run_candidates(
+        [candidate], _variant(), log=log,
+        budget=MonthlyBudget(tmp_path / "spend.json"), candidate_cap=1,
+        agent_factories={name: StubAgent for name in _variant()["agents"]},
+        orchestrator_factory=StubOrchestrator,
+    )
+    assert all(record["data_providers"] == {"ZEC-USD:1h": "coinbase"}
+               for record in log.records())
+
+
+def test_live_decision_record_includes_served_frame_providers(tmp_path: Path, monkeypatch) -> None:
+    from pipeline import runner as live_runner
+
+    monkeypatch.setattr(live_runner, "LOG_DIR", tmp_path)
+    path = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(live_runner, "DECISIONS_LOG", path)
+    decision = TradeDecision.model_validate(_fixture()["decision"])
+    live_runner._log_decision(
+        "ZEC-USD", [], decision,
+        {"ZEC-USD:1h": "yfinance", "ZEC-USD:1d": "coinbase"},
+    )
+    recorded = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert recorded["data_providers"] == {
+        "ZEC-USD:1h": "yfinance", "ZEC-USD:1d": "coinbase",
+    }
 
 
 _BANNED_MODULES = {

@@ -98,6 +98,7 @@ def _base_record(candidate: Candidate, variant_id: str) -> dict:
         "atr_stop": candidate.atr_stop,
         "atr_target": candidate.atr_target,
         "max_hold_hours": candidate.max_hold_hours,
+        "data_providers": candidate.data_providers,
     }
 
 
