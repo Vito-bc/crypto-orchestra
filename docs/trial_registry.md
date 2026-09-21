@@ -474,6 +474,49 @@ hash of every input — the same scheme as the main research runner
 Live status is unchanged and cannot be changed by this work: **LIVE NO-GO**,
 `DRY_RUN=true`, V3 off.
 
+## Infrastructure change — strict shadow candles and provider visibility (2026-09-21)
+
+Not a trial: no strategy parameter, gate, input value, or research number
+changed. Main `results.json` remained byte-identical, all walk-forward result
+rows remained unchanged, and both STF artifacts remained byte-identical.
+
+### What changed and why
+
+The preceding timestamp-unit entry fixed a real dtype inconsistency but
+misidentified the cause of the shadow's first-run crash. Tracing the live path
+on main `7deb2ed` showed a current Coinbase cache made the next 1h/4h fetch
+start in the future; Coinbase rejected it with HTTP 400, and the scanner
+silently substituted Yahoo 1h/4h data while using Coinbase 1d data. The
+mixed units were a symptom of the mixed providers. The downloader now serves
+the requested inclusive cache slice without an API call whenever the next
+fetch is at or after wall-clock time or the requested end. An actual API error
+still propagates from `download()`.
+
+Shadow candidate production and price-path attachments now require Coinbase;
+an unavailable Coinbase frame raises before any agent call, shadow log, or
+spend-file write. The existing live pipeline fallback policy is unchanged,
+but each served scanner frame logs its provider, and provider names are carried
+into shadow and live records. The live Yahoo usage found in `scheduler.log`
+remains an owner decision, recorded in `docs/operations/backlog.md` (b).
+No scanner merge helper or frozen trading constant changed.
+
+### Provenance cost
+
+| Artifact | Old `provenance_sha256` | New `provenance_sha256` |
+|---|---|---|
+| Main research | `86c6b53354753756009727deb40aacf677b903fb5a2cca19a2423be77f977a28` | `ba2d29cab4d20a62a31158fe1c958c31ef22dc005181eee3439bfa52817062bf` |
+| Walk-forward | `b491f74936a0b311588b30406402a7e1328df4a92645219059925839914cdb90` | `e116de56688f47e650a07fde518a9198f75708e6c502083f0bb2df20108c3d1d` |
+| STF feasibility | `7cc9e60084cdc3c3700b86a3c0a456872ec5bd39cd280465c06c10e2d870c6d7` | unchanged |
+| STF power | `acbb037789e1c3d6e55508dc8120c4f27f4e9f45372de292aeea164a48ce5ae8` | unchanged |
+
+All four artifacts were regenerated and verified on their own paths. The STF
+`_CODE_PATHS` lists do not include the loader or scanner, so their output
+and hashes stayed identical. Main and walk-forward changed only code identity
+and provenance metadata. Main's informational physical cache-tail metadata
+also refreshed for BTC 1h and ZEC 1h/1d after those files had grown beyond
+the frozen 2026-07-12 scope; their in-scope logical hashes, coverage, and all
+research results remained unchanged. No parquet file was edited by this work.
+
 ## Infrastructure change — Coinbase candle timestamp unit (2026-09-20)
 
 Not a trial: no strategy parameter, gate, input value or research result

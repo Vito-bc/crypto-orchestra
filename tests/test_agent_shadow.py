@@ -306,6 +306,23 @@ def test_vote_and_decision_carry_candidate_frame_providers(tmp_path: Path) -> No
                for record in log.records())
 
 
+def test_live_decision_record_includes_served_frame_providers(tmp_path: Path, monkeypatch) -> None:
+    from pipeline import runner as live_runner
+
+    monkeypatch.setattr(live_runner, "LOG_DIR", tmp_path)
+    path = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(live_runner, "DECISIONS_LOG", path)
+    decision = TradeDecision.model_validate(_fixture()["decision"])
+    live_runner._log_decision(
+        "ZEC-USD", [], decision,
+        {"ZEC-USD:1h": "yfinance", "ZEC-USD:1d": "coinbase"},
+    )
+    recorded = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert recorded["data_providers"] == {
+        "ZEC-USD:1h": "yfinance", "ZEC-USD:1d": "coinbase",
+    }
+
+
 _BANNED_MODULES = {
     "pipeline.runner",
     "pipeline.limit_orders",

@@ -905,7 +905,13 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
     # The signal_scanner is our validated entry model. It fires only when EMA50
     # cross + 4/5 conditions are met. If no signal, skip agents entirely.
     # When signal fires, agents act as veto-only (macro SELL blocks).
-    _scanner_signal = scan_latest(asset)
+    from backtesting import signal_scanner as _source_scanner
+    _data_providers: dict[str, str] = {}
+    _provider_token = _source_scanner._PROVIDER_AUDIT.set(_data_providers)
+    try:
+        _scanner_signal = scan_latest(asset)
+    finally:
+        _source_scanner._PROVIDER_AUDIT.reset(_provider_token)
 
     # Research-journal disposition for this signal. Tracked EXPLICITLY at the
     # points where the outcome is actually decided, never inferred from the
@@ -999,7 +1005,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
             veto_triggered=False, veto_reason=None,
             position_size_pct=None, stop_loss_price=None, take_profit_price=None,
         )
-        _log_decision(asset, [], _hold)
+        _log_decision(asset, [], _hold, _data_providers)
         _print_decision(asset, [], _hold)
         return _hold
 
@@ -1110,7 +1116,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                 veto_triggered=True, veto_reason=_cb_reason,
                 position_size_pct=None, stop_loss_price=None, take_profit_price=None,
             )
-            _log_decision(asset, signals, decision, _scanner_signal.get("data_providers"))
+            _log_decision(asset, signals, decision, _data_providers)
             _print_decision(asset, signals, decision)
             _settle_disposition("blocked_elsewhere")   # circuit breaker
             return decision
@@ -1255,7 +1261,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                                 position_size_pct=None, stop_loss_price=None,
                                 take_profit_price=None,
                             )
-                            _log_decision(asset, signals, decision, _scanner_signal.get("data_providers"))
+                            _log_decision(asset, signals, decision, _data_providers)
                             _print_decision(asset, signals, decision)
                             _settle_disposition("blocked_elsewhere")  # outbox gate
                             return decision
@@ -1386,7 +1392,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
                 print(f"[Filter] Momentum check PASSED — candle body {candle_body:+.3%} confirms SELL.")
 
     # ── 6. Log + notify ───────────────────────────────────────────────────────
-    _log_decision(asset, signals, decision, _scanner_signal.get("data_providers"))
+    _log_decision(asset, signals, decision, _data_providers)
     _print_decision(asset, signals, decision)
 
     if decision.action == TradeAction.SELL:
