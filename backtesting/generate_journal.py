@@ -721,15 +721,19 @@ def generate_agent_notes() -> None:
 # ── Agent Shadow ─────────────────────────────────────────────────────────────
 #
 # logs/agent_shadow.jsonl (schema: docs/operations/agent_shadow.md) is an
-# engineering observation stream, wired 2026-09-20, currently EMPTY — no WIDE
-# candidate has occurred since the hourly task was registered on 2026-09-21.
-# It decides nothing, places nothing, and sits outside pipeline/, off every
+# engineering observation stream, wired 2026-09-20. It decides nothing, places nothing, and sits outside pipeline/, off every
 # trading path. Every note below says so prominently and quotes the reading
 # rule declared before the stream's first run: a candidate stream counts as a
 # RESULT only if, over a stated period, its one-sided 95% bound clears zero
 # AND its annualised Sharpe exceeds 1.645/√years — anything short of both is
 # OBSERVATION, and selecting a subset for its observed outcome and moving it
 # onto the trading gate is forbidden without a new pre-registered trial.
+#
+# Since schema 2 (2026-09-23) every vote and decision also carries a LIVE /
+# BACKFILL flag and its lag after bar close: a catch-up run decides missed
+# bars with agents reading CURRENT context, so those are a different
+# observation from a live one. Every note and the index show the flag; the
+# reading rule applies per population, never to the two pooled silently.
 
 _SHADOW_OBSERVATION_NOTICE = (
     "**OBSERVATION ONLY — no trade resulted.** This is an engineering "
@@ -751,13 +755,24 @@ def _shadow_slug(candle_time: object, asset: str, candidate_id: str) -> str:
     return f"{safe_ts}_{asset}_{candidate_id}"
 
 
+def _shadow_timing(record: dict | None) -> tuple[str, str]:
+    """(flag, lag) for a vote or decision; schema-1 records predate both."""
+    if not record or not record.get("timing"):
+        return "NOT RECORDED", "n/a"
+    lag = record.get("lag_hours_after_bar_close")
+    return str(record["timing"]), ("n/a" if lag is None else f"{float(lag):.2f}")
+
+
 def _shadow_call_footer(record: dict) -> str:
     cost = record.get("cost_usd")
     cost_str = f"${cost:.6f}" if cost is not None else "not recorded"
+    flag, lag = _shadow_timing(record)
     return (
         f"*model={record.get('model_id', '?')}  "
         f"latency={record.get('latency_ms', '?')}ms  "
-        f"api_calls={record.get('api_calls', '?')}  cost={cost_str}*"
+        f"api_calls={record.get('api_calls', '?')}  cost={cost_str}  "
+        f"timing={flag}  lag={lag}h after bar close  "
+        f"decided_at={record.get('decided_at', 'not recorded')}*"
     )
 
 
@@ -780,6 +795,14 @@ def _render_shadow_note(
     atr_stop     = base.get("atr_stop")
     atr_target   = base.get("atr_target")
     max_hold     = base.get("max_hold_hours")
+    # The decision's own timing classifies the observation: its time is at
+    # or after every vote it used, so its lag bounds the whole input set.
+    flag, lag = _shadow_timing(decision or (votes[0] if votes else None))
+    if decision and decision.get("earliest_vote_at"):
+        input_span = (f"{decision['earliest_vote_at']} → "
+                      f"{decision.get('latest_vote_at', '?')}")
+    else:
+        input_span = "not recorded"
 
     if votes:
         vote_sections = []
@@ -831,7 +854,9 @@ type: agent-shadow
 variant_id: {variant_id}
 candidate_id: {candidate_id}
 n_met: {n_met}
-tags: [agent-shadow, observation-only, {asset.lower().replace('-', '')}]
+timing: {flag}
+lag_hours_after_bar_close: {lag}
+tags: [agent-shadow, observation-only, {flag.lower().replace(' ', '-')}, {asset.lower().replace('-', '')}]
 ---
 
 # Agent shadow — {asset} — {candle_time}
@@ -840,6 +865,11 @@ tags: [agent-shadow, observation-only, {asset.lower().replace('-', '')}]
 
 ## Candidate
 
+- **Timing:** **{flag}** — decided {lag}h after the bar closed
+  (a BACKFILL decision's agents read context from later than its candle; it
+  is a different observation from a LIVE one — read the two separately)
+- **Decided at:** {(decision or {}).get('decided_at', 'not recorded')}
+- **Votes gathered:** {input_span}
 - **Variant:** {variant_id}
 - **Candle time:** {candle_time}
 - **n_met:** {n_met}
@@ -866,11 +896,18 @@ def _render_shadow_index(entries: list[tuple[str, dict]]) -> str:
         rows = "\n".join(
             f"| [[{_shadow_slug(base.get('candle_time', '?'), base.get('asset', 'UNKNOWN'), cid)}"
             f"|{base.get('candle_time', '?')}]] | {base.get('asset', '?')} | "
-            f"{base.get('variant_id', '?')} | {base.get('n_met', '?')} |"
+            f"{base.get('variant_id', '?')} | {base.get('n_met', '?')} | "
+            f"{_shadow_timing(base)[0]} | {_shadow_timing(base)[1]} |"
             for cid, base in entries
         )
     else:
         rows = "*none yet*"
+    populations: dict[str, int] = {}
+    for _cid, base in entries:
+        flag = _shadow_timing(base)[0]
+        populations[flag] = populations.get(flag, 0) + 1
+    population_line = ", ".join(
+        f"{flag} {count}" for flag, count in sorted(populations.items())) or "none"
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return f"""---
@@ -883,16 +920,28 @@ tags: [agent-shadow, index, observation-only]
 
 > {_SHADOW_OBSERVATION_NOTICE}
 
-Newest first.
+Newest first. Populations: {population_line}. LIVE and BACKFILL are
+different observations — any reading must separate them or justify pooling
+them, and the reading rule's bound/Sharpe test applies to each on its own.
 
-| Candle time | Asset | Variant | n_met |
-|---|---|---|---:|
+| Candle time | Asset | Variant | n_met | Timing | Lag after close (h) |
+|---|---|---|---:|---|---:|
 {rows}
 """
 
 
-def _render_shadow_placeholder() -> str:
+def _render_shadow_placeholder(checkpoint: dict | None = None) -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if checkpoint:
+        through = checkpoint.get("examined_through") or {}
+        scanned = (
+            f"\n\nThe scanner is running: last run {checkpoint.get('run_at', '?')} "
+            "examined every closed bar through "
+            + (", ".join(f"{a} {t}" for a, t in sorted(through.items())) or "—")
+            + " and found no candidate."
+        )
+    else:
+        scanned = ""
     return f"""---
 date: {today}
 type: agent-shadow-index
@@ -903,12 +952,11 @@ tags: [agent-shadow, index, observation-only, placeholder]
 
 > {_SHADOW_OBSERVATION_NOTICE}
 
-**Awaiting first candidate.** `logs/agent_shadow.jsonl` does not exist yet, or
-exists but is empty — no WIDE candidate has occurred since the hourly task
-was registered on 2026-09-21 (`docs/operations/agent_shadow.md`). This is
-expected, not an error: a successful no-event poll prints zero candidates and
-costs nothing. This page lists decisions from the moment the first one is
-recorded.
+**Awaiting first candidate.** `logs/agent_shadow.jsonl` holds no candidate
+yet — no WIDE candidate has occurred since the hourly task was registered on
+2026-09-21 (`docs/operations/agent_shadow.md`). This is expected, not an
+error: a successful no-event poll records zero candidates and costs nothing.
+This page lists decisions from the moment the first one is recorded.{scanned}
 """
 
 
@@ -926,9 +974,13 @@ def generate_agent_shadow_notes() -> None:
                 except json.JSONDecodeError:
                     pass
 
-    if not records:
-        _write(folder / "Index.md", _render_shadow_placeholder())
-        print("  → 0 shadow notes (log empty or missing) — placeholder written")
+    # scan_checkpoint records (schema 2) carry no candidate_id: a log holding
+    # only those is still "awaiting first candidate", not an empty index.
+    if not any(r.get("candidate_id") for r in records):
+        checkpoints = [r for r in records if r.get("record_type") == "scan_checkpoint"]
+        _write(folder / "Index.md",
+               _render_shadow_placeholder(checkpoints[-1] if checkpoints else None))
+        print("  → 0 shadow notes (no candidate yet) — placeholder written")
         return
 
     votes_by_candidate: dict[str, list[dict]] = {}

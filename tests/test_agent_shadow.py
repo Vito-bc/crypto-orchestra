@@ -263,7 +263,7 @@ def test_agent_failure_is_logged_and_does_not_abort(tmp_path: Path) -> None:
         for name in _variant()["agents"]
     }
     log = ShadowLog(tmp_path / "shadow.jsonl")
-    counts = run_candidates(
+    outcome = run_candidates(
         [_candidate()],
         _variant(),
         log=log,
@@ -273,7 +273,8 @@ def test_agent_failure_is_logged_and_does_not_abort(tmp_path: Path) -> None:
         orchestrator_factory=FixtureOrchestrator,
     )
 
-    assert counts == {"candidates": 1, "votes": 6, "decisions": 1, "skipped": 0}
+    assert outcome.counts == {"candidates": 1, "votes": 6, "decisions": 1,
+                              "skipped": 0, "deferred": 0}
     records = log.records()
     assert len(records) == 7
     failed = next(item for item in records if item.get("agent_name") == "whale")

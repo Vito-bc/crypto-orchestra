@@ -5,4 +5,4 @@ position. The structural guard in ``tests/test_agent_shadow.py`` enforces that
 boundary over every Python file in this package.
 """
 
-LOG_SCHEMA_VERSION = 1
+LOG_SCHEMA_VERSION = 2

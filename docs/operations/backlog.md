@@ -51,3 +51,19 @@ closure, on `DRY_RUN`, or on `LIVE_BALANCE_USD`.
   09-20, which (a) above lost — so the follow-up PR adding a new
   `FeeSchedule` (new id, old one kept in the registry) is due once the
   09-21 reading lands in `logs/stf_cost_probe.jsonl`, not before.
+
+- **(e) The STF cost probe loses a missed day rather than delaying it — the
+  same class of problem the agent shadow had, for a different reason.**
+  The shadow's catch-up run used to examine only the newest bar, so a sleep
+  window thinned its stream; that is fixed by examining every missed bar
+  (see `agent_shadow.md`, "Catch-up after a gap"). The probe cannot be fixed
+  the same way, by design: it is anchored to 00:05 UTC, inside a 90-minute
+  execution window, with `StartWhenAvailable = $false`
+  (`scripts/register_stf_cost_probe_task.ps1`), because a reading taken hours
+  late samples a different market than the protocol specifies. So a day the
+  host is asleep through the window is a **lost** reading, not a delayed one.
+  Observed 2026-09-20 and 2026-09-21: no entry in `logs/stf_cost_probe.jsonl`
+  for either window (the fee-tier cohort in `fee_tier_2026-09-22.json`
+  records both as lost). Not changed here; recorded so the gap pattern is not
+  mistaken for a probe fault. Any fix belongs to the host's wake behaviour
+  ((a) above), not to the probe's schedule.

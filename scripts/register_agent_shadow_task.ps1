@@ -46,8 +46,9 @@ $settings = New-ScheduledTaskSettingsSet `
 $settings.StartWhenAvailable = $true
 
 $description = @"
-Log-only event-triggered agent shadow. Polls the latest closed hourly candle at
-minute :05 and calls models only for a new WIDE candidate. Writes observations
+Log-only event-triggered agent shadow. At minute :05 examines every closed
+hourly candle since the last one it recorded (72h look-back cap) and calls
+models only for a new WIDE candidate. Writes observations
 to logs\agent_shadow.jsonl; it has no order path. Wake and battery runs are
 enabled; each invocation is limited to twenty minutes.
 "@
