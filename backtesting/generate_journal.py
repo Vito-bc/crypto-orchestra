@@ -47,6 +47,13 @@ VAULT = ROOT / "obsidian_vault"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Monkeypatchable independently of ROOT/VAULT: a test that redirects the
+# decisions log to a scratch tmp_path must not also lose the real,
+# committed agents/orchestrator.py that _orchestrator_action_threshold()
+# parses — the two are unrelated inputs and vary independently in tests.
+DECISIONS_LOG_PATH  = ROOT / "logs" / "agent_decisions.jsonl"
+ORCHESTRATOR_PY_PATH = ROOT / "agents" / "orchestrator.py"
+
 # ── Vault ownership & pruning ────────────────────────────────────────────────
 
 _MARKER = "<!-- generated-by: crypto-orchestra-journal -->"
@@ -218,31 +225,37 @@ tags: [{", ".join(tags)}]
 
 # ── Agent Outputs ─────────────────────────────────────────────────────────────
 #
-# AgentOutputs/ shows decisions, not silence. A "decision" here means agents
-# actually ran and voted — the orchestrator combined those votes into
-# something. A HOLD the scanner gate produced without calling any agent is
-# not that, on either side of the fix in pipeline/runner.py:
+# AgentOutputs/ shows decisions, not silence — and, as of 2026-09-22, not
+# every decision either: a HOLD with routine confidence and no trade behind
+# it is not information-dense enough to earn its own note among nearly two
+# thousand of them. Three populations, each rendered differently:
 #
-#   NEW records (2026-09-22 onward): pipeline.runner no longer calls
-#   _log_decision() for a scanner-gate skip at all — see
-#   pipeline/scanner_activity.py. Nothing to filter; they were never written.
+#   1. SCANNER-GATE SKIPS — no agent was ever called. Structural test:
+#      empty `votes` AND empty `agent_signals` (`_is_gate_skip_record`), not
+#      a string match on `reasoning`. NEW records (2026-09-22 onward) are
+#      never written this way at all — see pipeline/scanner_activity.py.
+#      OLD records (~2,235 of them) still carry this shape and are excluded
+#      at RENDER time, since the log itself is never rewritten. Folded into
+#      Scanner Activity.md's "legacy silent hours" table.
 #
-#   OLD records (through 2026-09-22, ~2,235 of them): a scanner-gate skip WAS
-#   written to agent_decisions.jsonl, with the same shape every time — empty
-#   votes AND empty agent_signals, because no agent was ever called to
-#   produce either. That shape (`_is_gate_skip_record` below), not a string
-#   match on `reasoning`, is what this renderer excludes — a render-time
-#   filter, since the log itself is never rewritten or deleted.
+#   2. REAL DECISIONS, NOT INDIVIDUALLY WORTHY — agents voted, but the
+#      decision was HOLD, below the orchestrator's own documented
+#      action-confidence threshold, and not tied to a placed order
+#      (`_is_individual_worthy` below). The large majority of the ~1,995
+#      real (agent-called) decisions in this log fall here. Folded into
+#      Scanner Activity.md's "Agent-era decisions" section as a
+#      distribution — per-day/asset counts, a confidence histogram, a
+#      veto-reason breakdown — not one note per instance.
 #
-# Excluded records are not discarded: their counts are folded into
-# `Scanner Activity.md`, the one rolling note for silence, alongside the
-# ongoing per-day tally from pipeline/scanner_activity.py.
+#   3. REAL DECISIONS, INDIVIDUALLY WORTHY — action != HOLD, or confidence
+#      clears the threshold, or the decision is tied to an order/position
+#      lifecycle event (see `_is_individual_worthy`). These get one note
+#      each, with full agent-by-agent detail.
 #
-# Order-lifecycle events (LIMIT_ORDER_PLACED, POSITION_OPENED, ...) also
-# live in this same JSONL file but have no "action" field at all — they are
-# a different record shape, already covered by TradeJournal/ via
-# logs/trade_history.jsonl, and are excluded here rather than rendered as a
-# malformed decision.
+# Order-lifecycle events (LIMIT_ORDER_PLACED, POSITION_OPENED, ...) live in
+# this same JSONL file but have no "action" field at all — a different
+# record shape, already covered by TradeJournal/ via logs/trade_history.jsonl,
+# excluded here rather than rendered as a malformed decision.
 
 _LEGACY_AGENT_OUTPUTS_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}_decisions\.md$")
 
@@ -291,6 +304,67 @@ def _is_gate_skip_record(record: dict) -> bool:
     return not record.get("votes") and not record.get("agent_signals")
 
 
+_ORDER_TIE_PREFIX = re.compile(r"^\[Limit\] Order #")
+
+
+def _orchestrator_action_threshold() -> float:
+    """
+    The confidence floor above which a real decision counts as "actionable or
+    nearly so" — see `_is_individual_worthy` below. Parsed from
+    `agents/orchestrator.py`'s own module docstring ("Confidence < X always
+    produces HOLD"), `_require()`-style, rather than hardcoded: the standing
+    convention this generator uses everywhere else in this file (see
+    `generate_research_notes`) is to derive a governing number from its
+    source rather than retype it, so a change there is caught here (raise)
+    instead of silently drifting.
+
+    WHY THE DOCSTRING AND NOT A NUMERIC CONSTANT — documented here because it
+    is not obvious: `agents/orchestrator.py` has exactly two ENFORCED
+    thresholds, `_BUY_THRESHOLD` (0.45) and `_SELL_THRESHOLD` (-0.35), both
+    applied to `composite_score` — a Python-local quantity computed inside
+    `decide()` and never written to `agent_decisions.jsonl`. The only field
+    the log actually persists is `confidence`, the LLM's own self-reported
+    figure, which as of this writing is gated by no enforced code path at
+    all. The docstring's "0.55" is the sole number in the module stated
+    against `confidence` specifically — this generator trusts it as the
+    intended selection threshold for that reason, not because it is
+    currently enforced in code. If `_BUY_THRESHOLD` and this docstring line
+    are ever reconciled to agree, this function keeps working unchanged.
+    """
+    text = ORCHESTRATOR_PY_PATH.read_text(encoding="utf-8")
+    m = _require(r"Confidence < ([\d.]+) always produces HOLD", text,
+                 ORCHESTRATOR_PY_PATH,
+                 "the orchestrator's documented confidence-for-HOLD threshold")
+    return float(m.group(1))
+
+
+def _is_individual_worthy(record: dict, threshold: float) -> bool:
+    """
+    An individual AgentOutputs note only when the decision is actionable or
+    nearly so:
+
+      - `action != "HOLD"`, or
+      - `confidence >= threshold` (the orchestrator's documented action
+        threshold — see `_orchestrator_action_threshold`), or
+      - the decision is tied to an order/position lifecycle event: runner.py
+        stamps `"[Limit] Order #<id> placed..."` onto a HOLD record's
+        `reasoning` the moment a BUY becomes a resting limit order (the LIVE
+        action is the order, not the persisted HOLD label). Without this
+        branch every one of this log's 7 real trades would be invisible as
+        an individual note — 2 of the 7 carry confidence below even this
+        threshold.
+
+    Everything else — a routine-confidence HOLD with no trade behind it, the
+    large majority of this log — folds into the rolling aggregate instead;
+    the distribution is the information there, not each instance.
+    """
+    if record.get("action") != "HOLD":
+        return True
+    if (record.get("confidence") or 0.0) >= threshold:
+        return True
+    return bool(_ORDER_TIE_PREFIX.match(record.get("reasoning") or ""))
+
+
 def _decision_slug(record: dict) -> str:
     """Filesystem-safe `{timestamp}_{asset}` — unique, sorts chronologically."""
     ts = record.get("logged_at_utc") or "unknown-time"
@@ -326,8 +400,25 @@ def _render_decision_note(record: dict) -> str:
             for v in votes
         )
         vote_table = f"| Agent | Vote | Confidence | Weight |\n|---|---|---:|---:|\n{vote_rows}"
+    elif signals:
+        # Checked against this log, not assumed: empty `votes` alongside
+        # non-empty `agent_signals` is NOT the general shape of the
+        # pre-scanner-gate era — 1982 of that era's 1995 real records DO
+        # carry per-agent votes. It is specific to the orchestrator's
+        # NewsVeto pre-check (agents/orchestrator.py): a critical-news veto
+        # returns before per-agent votes are ever built, so `votes=[]`
+        # while `agent_signals` (collected earlier, from the sub-agents
+        # themselves) is still fully populated. Stated plainly, as a fact
+        # about THIS record, not papered over as a generic gap.
+        vote_table = (
+            "*Per-agent vote weights were not persisted on this specific "
+            "record — `votes` is empty. This orchestrator path (a critical "
+            "news veto short-circuits before votes are built) always skips "
+            "them; it is not a general gap in this era. See per-agent "
+            "signals below instead, which were recorded in full.*"
+        )
     else:
-        vote_table = "*No per-agent vote weights recorded on this record.*"
+        vote_table = "*No per-agent vote weights or signals recorded on this record.*"
 
     if signals:
         signal_block = "\n\n".join(
@@ -407,29 +498,103 @@ their votes into this decision.
 """
 
 
-def _scanner_activity_note(current_activity: list[dict], legacy_skips: list[dict]) -> str:
-    """
-    The single rolling note for scanner silence — current tallies from
-    pipeline/scanner_activity.py plus, for everything before that module
-    existed, an aggregate of the legacy gate-skip records excluded from
-    AgentOutputs/ above. Neither half is rendered as individual notes; this
-    is their only trace in the vault.
-    """
-    legacy_by_key: dict[tuple[str, str], int] = {}
-    for r in legacy_skips:
+def _date_asset_table(records: list[dict], header: str) -> tuple[str, int]:
+    """A `| Date | Asset | count |` table grouped from `logged_at_utc`/`asset`."""
+    by_key: dict[tuple[str, str], int] = {}
+    for r in records:
         date = (r.get("logged_at_utc") or "")[:10] or "unknown"
         key = (date, r.get("asset", "UNKNOWN"))
-        legacy_by_key[key] = legacy_by_key.get(key, 0) + 1
-    legacy_total = sum(legacy_by_key.values())
+        by_key[key] = by_key.get(key, 0) + 1
+    total = sum(by_key.values())
+    if not by_key:
+        return "*None on record.*", 0
+    rows = "\n".join(f"| {date} | {asset} | {count} |"
+                      for (date, asset), count in sorted(by_key.items()))
+    return f"| Date | Asset | {header} |\n|---|---|---:|\n{rows}", total
 
-    if legacy_by_key:
-        legacy_rows = "\n".join(
-            f"| {date} | {asset} | {count} |"
-            for (date, asset), count in sorted(legacy_by_key.items())
-        )
-        legacy_table = f"| Date | Asset | Silent hours (legacy) |\n|---|---|---:|\n{legacy_rows}"
-    else:
-        legacy_table = "*None on record.*"
+
+def _confidence_bucket(confidence: float) -> str:
+    clamped = max(0.0, min(confidence, 1.0))
+    lo = min(int(clamped * 10), 9) / 10
+    return f"{lo:.1f}–{lo + 0.1:.1f}"
+
+
+def _confidence_histogram(records: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for r in records:
+        bucket = _confidence_bucket(r.get("confidence") or 0.0)
+        counts[bucket] = counts.get(bucket, 0) + 1
+    if not counts:
+        return "*None on record.*"
+    ordered = sorted(counts.items(), key=lambda kv: kv[0])
+    rows = "\n".join(f"| {bucket} | {count} |" for bucket, count in ordered)
+    return f"| Confidence | Count |\n|---|---:|\n{rows}"
+
+
+def _veto_category(record: dict) -> str:
+    """
+    A small, fixed set of veto CATEGORIES, not raw `veto_reason` text.
+
+    `veto_reason`/`reasoning` on a vetoed decision is free-form LLM prose —
+    on this log, 653 of 911 vetoed records have a distinct `veto_reason`
+    string, so grouping on it verbatim would produce a table with almost as
+    many rows as instances, defeating the entire point of an aggregate
+    ("the distribution is the information, not each instance"). This buckets
+    by the reliable structural signals actually present instead: the two
+    hardcoded pre-check paths in `agents/orchestrator.py` stamp a
+    `[NewsVeto]`/`[RiskVeto]` prefix onto `reasoning`, `pipeline/runner.py`'s
+    circuit breaker stamps `[CircuitBreaker]`, and the free-text LLM vetoes
+    overwhelmingly (880 of 911 here) mention "BEAR" (macro regime BEAR or
+    FULL_BEAR) or "ok_to_trade"/"ATR volatility" (a risk-agent flag the LLM
+    incorporated into its own veto, distinct from the hardcoded RiskVeto
+    pre-check). Verified against this log: zero records fall through to
+    "other veto (uncategorised)" — that bucket exists as an honest catch-all
+    for whatever a future run's free text does not match, not because it is
+    currently populated.
+    """
+    if not record.get("veto_triggered"):
+        return "(no veto)"
+    reasoning = record.get("reasoning") or ""
+    if reasoning.startswith("[NewsVeto]"):
+        return "NewsVeto (critical news)"
+    if reasoning.startswith("[RiskVeto]"):
+        return "RiskVeto (agent absent / ok_to_trade=false, hard pre-check)"
+    if reasoning.startswith("[CircuitBreaker]"):
+        return "CircuitBreaker (portfolio drawdown halt)"
+    if "BEAR" in reasoning.upper():
+        return "Macro regime veto (BEAR / FULL_BEAR)"
+    if "ok_to_trade" in reasoning or "ATR volatility" in reasoning:
+        return "Risk veto (ok_to_trade / ATR volatility, in LLM reasoning)"
+    return "other veto (uncategorised)"
+
+
+def _veto_reason_breakdown(records: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for r in records:
+        key = _veto_category(r)
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "*None on record.*"
+    rows = "\n".join(f"| {reason} | {count} |"
+                      for reason, count in sorted(counts.items(), key=lambda kv: -kv[1]))
+    return f"| Veto category | Count |\n|---|---:|\n{rows}"
+
+
+def _scanner_activity_note(
+    current_activity: list[dict],
+    legacy_skips: list[dict],
+    agent_era_aggregate: list[dict],
+    threshold: float,
+) -> str:
+    """
+    The single rolling note for everything AgentOutputs/ does NOT render as
+    an individual note: scanner-gate silence (current tally + legacy
+    gate-skip records) and, separately, the real-but-routine agent-era
+    decisions `_is_individual_worthy` excluded. Distribution, not instances —
+    see the module header comment above `generate_agent_notes` for the full
+    three-population split this note and AgentOutputs/ together cover.
+    """
+    legacy_table, legacy_total = _date_asset_table(legacy_skips, "Silent hours (legacy)")
 
     if current_activity:
         current_rows = "\n".join(
@@ -450,6 +615,10 @@ def _scanner_activity_note(current_activity: list[dict], legacy_skips: list[dict
             "hour of any kind since it was added.*"
         )
 
+    era_table, era_total = _date_asset_table(agent_era_aggregate, "HOLDs")
+    era_histogram = _confidence_histogram(agent_era_aggregate)
+    era_vetoes = _veto_reason_breakdown(agent_era_aggregate)
+
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return f"""---
 date: {today}
@@ -462,13 +631,16 @@ tags: [scanner-activity, derived, rolling]
 > One note, not one per day. Rebuilt every run from
 > `logs/scanner_activity.jsonl` / `logs/scanner_activity_state.json` (the
 > per-day tally, in place since 2026-09-22 — see
-> `pipeline/scanner_activity.py`) and, for everything before that existed,
-> aggregated directly from `logs/agent_decisions.jsonl`'s legacy
-> scanner-gate-silent records.
+> `pipeline/scanner_activity.py`), aggregated directly from
+> `logs/agent_decisions.jsonl`'s legacy scanner-gate-silent records, and
+> (below) from every real agent-era decision that did not clear
+> `_is_individual_worthy` — see `docs/operations/agent_outputs_selection.md`.
 
-This is **not** a decision log. Every row here is hours the scanner gate
-skipped every agent — nothing was decided, nothing was voted on. Real
-decisions are one note each, elsewhere in this folder.
+This is **not** a decision log. Everything on this page is a distribution,
+not a record of any one event. Individually worthy decisions — action !=
+HOLD, confidence at or above the orchestrator's documented threshold
+({threshold:.2f}), or tied to a placed order — are one note each, elsewhere
+in this folder.
 
 ## Current tally (2026-09-22 onward)
 
@@ -483,6 +655,26 @@ never rewritten — this table is derived at render time, on every run, and is
 their only trace in the vault.
 
 {legacy_table}
+
+## Agent-era decisions (aggregate)
+
+{era_total} real decision(s) — agents voted, the orchestrator decided — that
+did not clear the individual-note bar: HOLD, below {threshold:.2f}
+confidence, and not tied to a placed order. All predate the scanner-gate
+architecture (2026-04-15 → 2026-07-11). The distribution is the information
+here, not each instance.
+
+**HOLDs per day/asset:**
+
+{era_table}
+
+**Confidence histogram:**
+
+{era_histogram}
+
+**Veto-reason breakdown:**
+
+{era_vetoes}
 """
 
 
@@ -492,7 +684,7 @@ def generate_agent_notes() -> None:
 
     from pipeline.scanner_activity import read_activity
 
-    path = ROOT / "logs" / "agent_decisions.jsonl"
+    path = DECISIONS_LOG_PATH
     records: list[dict] = []
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -511,15 +703,19 @@ def generate_agent_notes() -> None:
     real = [d for d in decisions if not _is_gate_skip_record(d)]
     legacy_skips = [d for d in decisions if _is_gate_skip_record(d)]
 
-    for record in real:
+    threshold = _orchestrator_action_threshold()
+    individual = [r for r in real if _is_individual_worthy(r, threshold)]
+    aggregate = [r for r in real if not _is_individual_worthy(r, threshold)]
+
+    for record in individual:
         _write(folder / f"{_decision_slug(record)}.md", _render_decision_note(record))
 
     _write(folder / "Scanner Activity.md",
-           _scanner_activity_note(read_activity(), legacy_skips))
+           _scanner_activity_note(read_activity(), legacy_skips, aggregate, threshold))
 
-    print(f"  → {len(real)} real decision note(s), "
-          f"{len(legacy_skips)} legacy gate-skip record(s) folded into "
-          "Scanner Activity.md")
+    print(f"  → {len(individual)} individual decision note(s), "
+          f"{len(aggregate)} agent-era decision(s) + {len(legacy_skips)} "
+          "legacy gate-skip record(s) folded into Scanner Activity.md")
 
 
 # ── Agent Shadow ─────────────────────────────────────────────────────────────
@@ -996,9 +1192,18 @@ def _require(pattern: str, text: str, source: Path, what: str) -> "re.Match[str]
     """
     m = re.search(pattern, text, re.DOTALL)
     if not m:
+        try:
+            shown = source.relative_to(ROOT)
+        except ValueError:
+            # `source` is not under the current ROOT — a test pointing this
+            # parser at a scratch file is the normal way that happens, and
+            # the fail-loud error below must report the path it actually
+            # tried, not crash on its own formatting with a different,
+            # more confusing exception.
+            shown = source
         raise RuntimeError(
             f"generate_journal.py Research page: could not find {what} in "
-            f"{source.relative_to(ROOT)}. The source format changed — fix the "
+            f"{shown}. The source format changed — fix the "
             "parser rather than emit a page with a blank or a stale number."
         )
     return m

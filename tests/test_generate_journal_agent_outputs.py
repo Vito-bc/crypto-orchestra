@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -46,15 +47,21 @@ def vault(tmp_path, monkeypatch):
 
 
 def _decisions_log(tmp_path, monkeypatch, records: list[dict]) -> Path:
-    path = tmp_path / "agent_decisions.jsonl"
+    """
+    Writes the scratch log and redirects ONLY `DECISIONS_LOG_PATH` — never
+    `gj.ROOT` — so `_orchestrator_action_threshold()` keeps reading the real,
+    committed `agents/orchestrator.py` instead of a tmp_path that does not
+    have one. The decisions log and the orchestrator threshold are
+    independent inputs; a test redirecting one must not silently lose the
+    other.
+    """
+    path = tmp_path / "logs" / "agent_decisions.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "\n".join(json.dumps(r) for r in records) + ("\n" if records else ""),
         encoding="utf-8")
-    monkeypatch.setattr(gj, "ROOT", tmp_path)
-    (tmp_path / "logs").mkdir(exist_ok=True)
-    real_path = tmp_path / "logs" / "agent_decisions.jsonl"
-    real_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-    return real_path
+    monkeypatch.setattr(gj, "DECISIONS_LOG_PATH", path)
+    return path
 
 
 def _real_decision(asset="ETH-USD", action="HOLD", ts="2026-04-15T16:31:47.914305+00:00"):
@@ -168,13 +175,105 @@ def test_order_lifecycle_events_are_excluded_entirely(vault, tmp_path, monkeypat
 def test_missing_agent_decisions_log_writes_only_the_placeholder(
     vault, tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(gj, "ROOT", tmp_path)
-    (tmp_path / "logs").mkdir(exist_ok=True)
+    monkeypatch.setattr(gj, "DECISIONS_LOG_PATH", tmp_path / "logs" / "agent_decisions.jsonl")
 
     gj.generate_agent_notes()
 
     notes = list((vault / "AgentOutputs").glob("*.md"))
     assert [n.name for n in notes] == ["Scanner Activity.md"]
+
+
+# ── _orchestrator_action_threshold(): parsed, not hardcoded ─────────────────
+
+def test_threshold_is_parsed_from_the_real_orchestrator_docstring() -> None:
+    """
+    Pinned against the committed source, like generate_research_notes()'s
+    other _require()-based parses: if agents/orchestrator.py's docstring
+    line changes, this test — not a silent drift — is what catches it.
+    """
+    assert gj._orchestrator_action_threshold() == 0.55
+
+
+def test_threshold_parser_raises_if_the_docstring_line_is_gone(
+    tmp_path, monkeypatch
+) -> None:
+    stub = tmp_path / "orchestrator.py"
+    stub.write_text('"""No threshold documented here."""\n', encoding="utf-8")
+    monkeypatch.setattr(gj, "ORCHESTRATOR_PY_PATH", stub)
+
+    with pytest.raises(RuntimeError, match="confidence-for-HOLD threshold"):
+        gj._orchestrator_action_threshold()
+
+
+def test_threshold_parser_follows_a_changed_docstring_value(
+    tmp_path, monkeypatch
+) -> None:
+    stub = tmp_path / "orchestrator.py"
+    stub.write_text(
+        '"""\nConfidence < 0.40 always produces HOLD\n"""\n', encoding="utf-8")
+    monkeypatch.setattr(gj, "ORCHESTRATOR_PY_PATH", stub)
+
+    assert gj._orchestrator_action_threshold() == 0.40
+
+
+# ── _is_individual_worthy(): the three-way OR ────────────────────────────────
+
+def test_non_hold_action_is_always_individually_worthy() -> None:
+    record = _real_decision(action="SELL")
+    record["confidence"] = 0.0
+    assert gj._is_individual_worthy(record, threshold=0.55) is True
+
+
+def test_high_confidence_hold_is_individually_worthy() -> None:
+    record = _real_decision(action="HOLD")
+    record["confidence"] = 0.55
+    assert gj._is_individual_worthy(record, threshold=0.55) is True
+
+
+def test_low_confidence_hold_is_not_individually_worthy() -> None:
+    record = _real_decision(action="HOLD")
+    record["confidence"] = 0.54
+    assert gj._is_individual_worthy(record, threshold=0.55) is False
+
+
+def test_order_tied_hold_is_individually_worthy_even_at_low_confidence() -> None:
+    """
+    The load-bearing branch: of this project's 7 real trades, 2 carry
+    confidence below 0.55 (0.46 and 0.41) and would be invisible as
+    individual notes without this exact match on runner.py's stamp.
+    """
+    record = _real_decision(action="HOLD")
+    record["confidence"] = 0.10
+    record["reasoning"] = "[Limit] Order #abc123 placed at support $99.00. rest of reasoning"
+    assert gj._is_individual_worthy(record, threshold=0.55) is True
+
+
+def test_order_tie_match_is_a_prefix_not_a_substring() -> None:
+    """A decision that merely MENTIONS a placed order in passing must not be
+    swept in — only runner.py's actual stamp, at the start of `reasoning`."""
+    record = _real_decision(action="HOLD")
+    record["confidence"] = 0.10
+    record["reasoning"] = "Noting that Order #abc123 was placed earlier is irrelevant here."
+    assert gj._is_individual_worthy(record, threshold=0.55) is False
+
+
+def test_generate_agent_notes_splits_individual_from_aggregate(
+    vault, tmp_path, monkeypatch
+) -> None:
+    worthy = _real_decision(asset="ETH-USD", action="SELL",
+                             ts="2026-04-15T16:31:47.914305+00:00")
+    not_worthy = _real_decision(asset="ETH-USD", action="HOLD",
+                                 ts="2026-04-15T17:00:00+00:00")
+    not_worthy["confidence"] = 0.10
+    _decisions_log(tmp_path, monkeypatch, [worthy, not_worthy])
+
+    gj.generate_agent_notes()
+
+    notes = list((vault / "AgentOutputs").glob("*.md"))
+    assert len(notes) == 2  # one individual note + Scanner Activity.md
+    page = (vault / "AgentOutputs" / "Scanner Activity.md").read_text(encoding="utf-8")
+    assert "1 real decision(s)" in page
+    assert "Agent-era decisions" in page
 
 
 # ── One-time legacy migration ────────────────────────────────────────────────
@@ -268,3 +367,143 @@ def test_prune_only_touches_owned_folders(vault) -> None:
 
     assert removed == 0
     assert tagged.exists()
+
+
+# ── _veto_category(): buckets, not raw text ──────────────────────────────────
+
+def test_no_veto_is_its_own_category() -> None:
+    record = _real_decision()
+    record["veto_triggered"] = False
+    assert gj._veto_category(record) == "(no veto)"
+
+
+def test_news_veto_prefix_is_recognised() -> None:
+    record = _real_decision()
+    record["veto_triggered"] = True
+    record["reasoning"] = "[NewsVeto] critical exploit disclosed"
+    assert gj._veto_category(record) == "NewsVeto (critical news)"
+
+
+def test_risk_veto_prefix_is_recognised() -> None:
+    record = _real_decision()
+    record["veto_triggered"] = True
+    record["reasoning"] = "[RiskVeto] RiskAgent absent"
+    assert "RiskVeto" in gj._veto_category(record)
+
+
+def test_circuit_breaker_prefix_is_recognised() -> None:
+    record = _real_decision()
+    record["veto_triggered"] = True
+    record["reasoning"] = "[CircuitBreaker] drawdown halt"
+    assert "CircuitBreaker" in gj._veto_category(record)
+
+
+def test_macro_bear_keyword_is_recognised_case_insensitively() -> None:
+    record = _real_decision()
+    record["veto_triggered"] = True
+    record["reasoning"] = "Macro regime is bear with an explicit SELL signal"
+    assert "BEAR" in gj._veto_category(record)
+
+
+def test_risk_metric_phrasing_is_recognised() -> None:
+    record = _real_decision()
+    record["veto_triggered"] = True
+    record["reasoning"] = "ok_to_trade=false due to ATR volatility"
+    assert "Risk veto" in gj._veto_category(record)
+
+
+def test_unrecognised_veto_text_falls_to_the_honest_catch_all() -> None:
+    record = _real_decision()
+    record["veto_triggered"] = True
+    record["reasoning"] = "Some brand new veto phrasing nobody has seen before."
+    assert gj._veto_category(record) == "other veto (uncategorised)"
+
+
+def test_veto_breakdown_produces_a_bounded_number_of_rows_not_one_per_instance() -> None:
+    """The defect this covers: grouping on raw `veto_reason` text produced a
+    row for nearly every instance (653 of 911 on the real log). Many records
+    sharing a category, each with distinct free-text reasoning, must collapse
+    to one row."""
+    records = [
+        {**_real_decision(), "veto_triggered": True,
+         "reasoning": f"Macro regime is BEAR, unique detail #{i}"}
+        for i in range(50)
+    ]
+    table = gj._veto_reason_breakdown(records)
+    assert table.count("\n") < 5  # header + separator + exactly one data row
+    assert "| Macro regime veto (BEAR / FULL_BEAR) | 50 |" in table
+
+
+# ── _confidence_bucket() / _confidence_histogram() ───────────────────────────
+
+def test_confidence_bucket_boundaries() -> None:
+    assert gj._confidence_bucket(0.0) == "0.0\u20130.1"
+    assert gj._confidence_bucket(0.09) == "0.0\u20130.1"
+    assert gj._confidence_bucket(0.10) == "0.1\u20130.2"
+    assert gj._confidence_bucket(0.54) == "0.5\u20130.6"
+    assert gj._confidence_bucket(1.0) == "0.9\u20131.0"
+
+
+def test_confidence_histogram_sums_to_input_count() -> None:
+    records = [{"confidence": c} for c in (0.05, 0.12, 0.12, 0.99, 0.5)]
+    table = gj._confidence_histogram(records)
+    total = sum(int(line.split("|")[-2].strip())
+                for line in table.splitlines() if line.startswith("| 0"))
+    assert total == len(records)
+
+
+# ── Individual notes render agent_signals and state empty votes plainly ─────
+
+def test_individual_note_with_empty_votes_states_the_fact_not_a_generic_gap(
+    vault, tmp_path, monkeypatch
+) -> None:
+    """
+    Checked against the real log: empty `votes` alongside non-empty
+    `agent_signals` happens on 13 of 1995 real records, all NewsVeto
+    pre-check early-returns — not a general property of any era. An
+    individually-worthy record with this shape must render agent_signals in
+    full and say plainly, and specifically, why votes is empty.
+    """
+    record = _real_decision(action="SELL")  # non-HOLD -> individually worthy
+    record["votes"] = []
+    record["agent_signals"] = [
+        {"agent": "macro", "signal": "SELL", "confidence": 0.7,
+         "reasoning": "bear regime detail", "metrics": {}},
+    ]
+    _decisions_log(tmp_path, monkeypatch, [record])
+
+    gj.generate_agent_notes()
+
+    [note] = [p for p in (vault / "AgentOutputs").glob("*.md")
+              if p.name != "Scanner Activity.md"]
+    text = note.read_text(encoding="utf-8")
+    assert "bear regime detail" in text  # agent_signals rendered in full
+    assert "were not persisted on this specific record" in text
+    assert "not a general gap in this era" in text
+
+
+# ── _require()'s own error path must not crash on a scratch-file source ─────
+
+def test_require_reports_a_source_outside_root_without_crashing(tmp_path) -> None:
+    """
+    `_require`'s failure message formats `source.relative_to(ROOT)` — which
+    itself raises ValueError when `source` is a scratch/test file, not
+    something under the real ROOT. That must not replace the intended
+    RuntimeError with a confusing ValueError from the error path itself.
+    """
+    outside = tmp_path / "not_under_root.py"
+    outside.write_text("nothing relevant here", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=re.escape(str(outside))):
+        gj._require(r"NEVER MATCHES", "irrelevant text", outside, "a test fact")
+
+
+# ── The ops doc stays in lockstep with the code ──────────────────────────────
+
+def test_ops_doc_declares_the_same_threshold_as_the_code() -> None:
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "operations"
+           / "agent_outputs_selection.md").read_text(encoding="utf-8")
+    threshold = gj._orchestrator_action_threshold()
+    assert f"{threshold:.2f}" in doc or f"0.{int(threshold * 100)}" in doc
+    assert "[Limit] Order #" in doc
+    assert "_BUY_THRESHOLD" in doc
