@@ -436,10 +436,25 @@ def generate_research_notes() -> None:
     registry_text = registry_path.read_text(encoding="utf-8")
     claude_text = claude_md_path.read_text(encoding="utf-8")
 
+    # CLAUDE.md's V2 bullet leads with a STATUS in bold and carries the
+    # PF/expectancy/n further into the same bullet:
+    #
+    #   - **V2 momentum (ZEC): RETIRED AS AN ACTIVATION CANDIDATE (2026-09-18,
+    #     Closure 1 in `docs/trial_registry.md`), on EDGE.** PF 0.761
+    #     (-0.62%/trade, n=114) on the continuous ... window.
+    #
+    # The status is parsed too, rather than described in a literal here, for
+    # the same reason the numbers are: a bullet that changes from RETIRED to
+    # anything else must not leave this page asserting the old disposition.
+    # `[^*]` keeps the status capture inside its own bold run, so the match
+    # cannot slide past it into a later bullet's numbers.
     m = _require(
-        r"V2 momentum \(ZEC\): \*\*PF ([\d.]+) \((-?[\d.]+)%/trade, n=(\d+)\)",
-        claude_text, claude_md_path, "the V2 ZEC headline PF/expectancy/n")
-    v2_pf, v2_expectancy_pct, v2_n = m.group(1), m.group(2), m.group(3)
+        r"\*\*V2 momentum \(ZEC\): ([^*]+?)\*\*\s*"
+        r"PF ([\d.]+) \((-?[\d.]+)%/trade, n=(\d+)\)",
+        claude_text, claude_md_path,
+        "the V2 ZEC headline status and PF/expectancy/n")
+    v2_status = " ".join(m.group(1).split())
+    v2_pf, v2_expectancy_pct, v2_n = m.group(2), m.group(3), m.group(4)
 
     _require(r"Do NOT switch `DRY_RUN=false` on current evidence\.",
               claude_text, claude_md_path, "the DRY_RUN refusal statement")
@@ -568,7 +583,7 @@ tags: [research, validation-status, fees, cost-sensitivity, derived]
 real-money trading is authorized.
 
 - V2 momentum (ZEC-USD, frozen mechanism): **PF {v2_pf} ({v2_expectancy_pct}%/trade, n={v2_n})**
-  — not profitable at the historical research fee assumption.
+  — *{v2_status}*
 - `docs/trial_registry.md` records the **LIVE NO-GO** verdict.
 - `CLAUDE.md` is explicit: *"Do NOT switch `DRY_RUN=false` on current evidence."*
 
