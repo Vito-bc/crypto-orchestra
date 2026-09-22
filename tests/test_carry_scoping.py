@@ -249,21 +249,33 @@ def test_spot_leg_is_priced_from_pipeline_fees() -> None:
     """
     The adopted schedule must BE `pipeline/fees.py`, not a number copied beside
     it that can drift. The candidate tier is reported alongside, never instead.
+
+    `pipeline/fees.py` CURRENT_SCHEDULE moved to 0.5%/0.9% on 2026-09-22
+    (coinbase-intro-2026-09-22); `carry_scoping.py`'s own CANDIDATE entry
+    (0.5%/0.9%, "read 2026-09-18, not adopted") was NOT recomputed by that
+    change — this module's numbers were declared not-to-be-recomputed for
+    that PR, and are now conservative rather than current. See
+    `docs/trial_registry.md`'s cost-sensitivity note. The two happen to be
+    numerically equal today; that is a coincidence of the two schedules, not
+    a claim that either was rebased on the other.
     """
     from pipeline.fees import CURRENT_SCHEDULE
 
     adopted = cs.SPOT_SCHEDULES["adopted"]
-    assert adopted["maker"] == CURRENT_SCHEDULE.maker_rate == 0.006
-    assert adopted["taker"] == CURRENT_SCHEDULE.taker_rate == 0.012
+    assert adopted["maker"] == CURRENT_SCHEDULE.maker_rate
+    assert adopted["taker"] == CURRENT_SCHEDULE.taker_rate
     candidate = cs.SPOT_SCHEDULES["candidate"]
     assert (candidate["maker"], candidate["taker"]) == (0.005, 0.009)
-    assert cs.spot_round_trip(adopted) > cs.spot_round_trip(candidate)
+    assert cs.spot_round_trip(adopted) >= cs.spot_round_trip(candidate)
 
 
 def test_cycle_cost_is_both_legs() -> None:
+    from pipeline.fees import CURRENT_SCHEDULE
+
     adopted = cs.SPOT_SCHEDULES["adopted"]
+    adopted_round_trip = CURRENT_SCHEDULE.maker_rate + CURRENT_SCHEDULE.taker_rate
     assert cs.perp_round_trip() == pytest.approx(0.00195)
-    assert cs.cycle_cost(adopted) == pytest.approx(0.018 + 0.00195)
+    assert cs.cycle_cost(adopted) == pytest.approx(adopted_round_trip + 0.00195)
 
 
 def test_committed_capital_includes_margin_and_the_declared_reserve() -> None:

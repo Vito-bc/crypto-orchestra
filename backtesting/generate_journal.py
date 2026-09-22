@@ -449,7 +449,23 @@ def generate_research_notes() -> None:
               "the DRY_RUN=true statement")
 
     # ── 2. Operational fee schedule: pipeline/fees.py + fee-tier evidence ──────
-    evidence_path = ROOT / "docs" / "operations" / "fee_tier_2026-09-15.json"
+    #
+    # The evidence filename is derived from CURRENT_SCHEDULE.source rather than
+    # hardcoded to one date: this same page previously pinned
+    # "fee_tier_2026-09-15.json" as a literal, and that literal silently
+    # stopped matching CURRENT_SCHEDULE the moment the 2026-09-22 tier was
+    # adopted — the mismatch below would have raised regardless of whether
+    # anyone remembered to update this path by hand. Deriving it means the
+    # NEXT tier change can't reintroduce the same failure mode.
+    m = _require(r"^(docs/operations/fee_tier_[\d-]+\.json)",
+                  CURRENT_SCHEDULE.source, ROOT / "pipeline" / "fees.py",
+                  "CURRENT_SCHEDULE's evidence file path in its source field")
+    # `m` is reassigned by every later _require() call in this function, so
+    # the group is captured into its own name now rather than read back off
+    # `m` inside the f-string built at the end — that read would silently
+    # pick up whatever `m` was rebound to last, not this match.
+    evidence_relpath = m.group(1)
+    evidence_path = ROOT / evidence_relpath
     if not evidence_path.exists():
         raise RuntimeError(f"Research page needs {evidence_path} — not found")
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -463,6 +479,17 @@ def generate_research_notes() -> None:
             f"({measured['maker_fee_rate']}/{measured['taker_fee_rate']}) — "
             "these must describe the same adopted schedule"
         )
+    # Whether the adopted cohort was independently audited is itself a fact
+    # that changes between schedules (the 2026-09-15 cohort was; the
+    # 2026-09-22 one was only reproduced from the local probe log, not
+    # separately audited) — read from the evidence file rather than asserted
+    # as a generator literal, so an unaudited adoption is never described as
+    # audited.
+    audited = bool(evidence.get("evidence", {}).get("independently_audited"))
+    audited_clause = (
+        "a measured, independently audited 4-reading cohort" if audited else
+        "a measured 4-reading cohort, reproduced from the local probe log "
+        "but not independently audited")
 
     cost_sensitivity_py = ROOT / "backtesting" / "cost_sensitivity.py"
     cs_source = cost_sensitivity_py.read_text(encoding="utf-8")
@@ -555,15 +582,14 @@ Source: [[../../docs/trial_registry.md|docs/trial_registry.md]], `CLAUDE.md`
 | **ADOPTED** — `pipeline/fees.py` `CURRENT_SCHEDULE` | {CURRENT_SCHEDULE.maker_rate:.1%} | {CURRENT_SCHEDULE.taker_rate:.1%} | {CURRENT_SCHEDULE.tier_name} |
 | **CANDIDATE — NOT ADOPTED** — single {candidate_observed_at} reading | {_CANDIDATE_MAKER_RATE:.1%} | {_CANDIDATE_TAKER_RATE:.1%} | {candidate_pricing_tier} |
 
-The adopted schedule (`{CURRENT_SCHEDULE.schedule_id}`) is a measured,
-independently audited 4-reading cohort — see
-`docs/operations/fee_tier_2026-09-15.json`. The candidate tier is a single
-{candidate_observed_at} reading and is **not written into `pipeline/fees.py`**;
+The adopted schedule (`{CURRENT_SCHEDULE.schedule_id}`) is {audited_clause} —
+see `{evidence_relpath}`. The candidate tier is a single {candidate_observed_at}
+reading and is **not written into `pipeline/fees.py`**;
 `active_schedule()` still returns only the adopted schedule. Formal adoption
 waits for its own 4-reading cohort ({cohort_start} → {cohort_end}) before any
 `FeeSchedule` entry is added for it.
 
-Source: `pipeline/fees.py`, `docs/operations/fee_tier_2026-09-15.json`,
+Source: `pipeline/fees.py`, `{evidence_relpath}`,
 `backtesting/cost_sensitivity.py`.
 
 ## 3. Cost-sensitivity headline (trial `2026-09-cost-sensitivity.v1`)

@@ -71,10 +71,10 @@ inflated backtest P&L. **Do not change them to match today's account tier** —
 that would back-project a September 2026 measurement into historical windows.
 Whether they were ever accurate is an open, unstarted research question.
 
-**Prospective paper/shadow accounting (measured): maker 0.6%, taker 1.2%.**
-`pipeline/fees.py`, tier `Intro 1`, measured on the account and independently
-audited (evidence: `docs/operations/fee_tier_2026-09-15.json`). Dated
-2026-09-15 — a selected accounting-boundary timestamp on the schedule
+**Prospective paper/shadow accounting (measured): maker 0.5%, taker 0.9%.**
+`pipeline/fees.py` `CURRENT_SCHEDULE` (`coinbase-intro-2026-09-22`), tier
+`Intro`, evidence: `docs/operations/fee_tier_2026-09-22.json`. Dated
+2026-09-22 — a selected accounting-boundary timestamp on the schedule
 (`accounting_effective_from` in the evidence file), not a live cutover;
 `active_schedule()` does not consult it and always returns the current
 schedule the moment it runs. Actual operational adoption is the date this
@@ -82,19 +82,31 @@ change merges to main, not this timestamp — see commit/PR history for that
 date. These are current measured values for one account, not Coinbase
 constants — tiers move with trailing volume.
 
+**Superseded: maker 0.6%, taker 1.2%** (`coinbase-intro-1-2026-09`, tier
+`Intro 1`, adopted 2026-09-15, evidence: `docs/operations/fee_tier_2026-09-15.json`).
+No longer what `active_schedule()` returns, but still registered in
+`pipeline/fees.py`'s schedule table so trades stamped under it keep settling
+under it — the boundary below is per order, not per position, so a position
+opened under the old tier and closed under the new one is expected, not a bug.
+
 The boundary is **per order**, not per position: Coinbase prices each order at
 the tier in force when that order is placed. The entry schedule is stamped on
 the `PendingOrder` at placement and carried into the `Position`; the exit is a
 separate order priced when it is sent. A trade may settle its two legs under
 two schedules.
 
-The evidence comes from the Phase 7R-2 execution-cost probe's 14-day
-checkpoint (`backtesting/stf_cost_probe.py`, report digest recorded in
-`docs/operations/fee_tier_2026-09-15.json`): 4 measured fee-tier readings
-(2026-09-11 through 09-15, no tier change across them) plus separately
-reported quoted-book-impact percentiles per asset. Adopting this tier here is
-**operational fee accounting only** and touches neither of the following two
-separate, already-standing determinations:
+The evidence for the current schedule is 4 measured fee-tier readings
+(2026-09-17, 09-18, 09-19, 09-22, no tier change across them; 09-20 and 09-21
+were lost to the daily probe's scheduled-task WakeToRun failure). The adoption
+bar has always been four readings with no tier change between them, not four
+consecutive calendar days — the prior (superseded) cohort tolerated the same
+kind of one-day gap on 2026-09-13. Unlike that cohort, this one was reproduced
+from the local probe log (`backtesting/stf_cost_probe.py --report`, no
+network) rather than independently audited; see
+`docs/operations/fee_tier_2026-09-22.json` for the full evidence and that
+distinction. Adopting this tier here is **operational fee accounting only**
+and touches neither of the following two separate, already-standing
+determinations:
 
   - **7R3b is not run.** That decision stands on its own — its synthetic
     construction preserves net expectancy by design, so no run of it can

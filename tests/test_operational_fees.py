@@ -24,19 +24,28 @@ import pipeline.position_tracker as pt
 
 # ── The authority itself ─────────────────────────────────────────────────────
 
-def test_the_active_schedule_is_the_audited_measured_tier() -> None:
+def test_the_active_schedule_is_the_measured_tier() -> None:
     s = fees.active_schedule()
+    assert (s.maker_rate, s.taker_rate) == (0.005, 0.009)
+    assert s.tier_name == "Intro"
+    assert s.effective_from is not None
+    # Provenance must name the checkpoint, not just assert a number.
+    assert "stf_cost_report_2026-09-22.json" in s.source
+
+
+def test_the_superseded_schedule_is_still_registered() -> None:
+    """Orders stamped coinbase-intro-1-2026-09 must keep settling under it."""
+    s = fees.SCHEDULE_INTRO_1_2026_09
     assert (s.maker_rate, s.taker_rate) == (0.006, 0.012)
     assert s.tier_name == "Intro 1"
-    assert s.effective_from is not None
-    # Provenance must name the audited checkpoint, not just assert a number.
-    assert "stf_cost_report_2026-09-15.json" in s.source
+    assert fees.schedule_by_id("coinbase-intro-1-2026-09") is s
+    assert s is not fees.active_schedule()
 
 
 def test_roles_are_not_interchangeable() -> None:
     s = fees.active_schedule()
-    assert s.rate_for(fees.MAKER) == 0.006
-    assert s.rate_for(fees.TAKER) == 0.012
+    assert s.rate_for(fees.MAKER) == 0.005
+    assert s.rate_for(fees.TAKER) == 0.009
     assert s.rate_for(fees.TAKER) > s.rate_for(fees.MAKER)
 
 
@@ -213,8 +222,8 @@ def test_the_order_stamps_the_schedule_in_force_at_placement(monkeypatch) -> Non
     monkeypatch.setattr(lo, "ORDERS_FILE", lo.ROOT / "logs" / "nonexistent.json")
     order = lo.PendingOrder.create(asset="ZEC-USD", limit_price=30.0, atr=0.5,
                                    position_size_pct=0.02, reasoning="t")
-    assert order.fee_schedule_id == "coinbase-intro-1-2026-09"
-    assert order.maker_fee_rate == 0.006
+    assert order.fee_schedule_id == fees.CURRENT_SCHEDULE.schedule_id
+    assert order.maker_fee_rate == fees.CURRENT_SCHEDULE.maker_rate
 
 
 def test_the_position_carries_the_orders_entry_leg_only(paper_env) -> None:
@@ -236,11 +245,14 @@ def test_a_new_maker_entry_is_charged_at_point_six_percent(paper_env) -> None:
     assert record["entry_fee_usd"] == pytest.approx(NOTIONAL * 0.006, abs=1e-9)
 
 
-def test_a_new_taker_exit_is_charged_at_one_point_two_percent(paper_env) -> None:
+def test_a_new_taker_exit_is_charged_at_the_active_taker_rate(paper_env) -> None:
     pos = pt.open_position_from_order(_order(), fill_price=30.0)
     record = _close(pos, exit_price=30.0)
-    # Flat exit: proceeds equal notional, so the exit fee is 1.2% of it.
-    assert record["exit_fee_usd"] == pytest.approx(NOTIONAL * 0.012, abs=1e-9)
+    # Flat exit: proceeds equal notional, so the exit fee is the active
+    # schedule's taker rate on it — the entry leg stays stamped separately at
+    # whatever _order() gave it, unrelated to which schedule is current.
+    assert record["exit_fee_usd"] == pytest.approx(
+        NOTIONAL * fees.CURRENT_SCHEDULE.taker_rate, abs=1e-9)
 
 
 @pytest.mark.parametrize("reason", ["TAKE_PROFIT", "STOP_LOSS", "MAX_HOLD"])
@@ -253,17 +265,24 @@ def test_every_exit_path_is_charged_taker_because_every_exit_is_a_market_sell(
     """
     pos = pt.open_position_from_order(_order(), fill_price=30.0)
     record = _close(pos, exit_price=30.0, reason=reason)
-    assert record["exit_fee_usd"] == pytest.approx(NOTIONAL * 0.012, abs=1e-9)
+    assert record["exit_fee_usd"] == pytest.approx(
+        NOTIONAL * fees.CURRENT_SCHEDULE.taker_rate, abs=1e-9)
 
 
-def test_current_accounting_reflects_the_higher_tier(paper_env) -> None:
-    """A flat round trip now costs 1.8% of notional, where it used to cost 1.0%."""
+def test_current_accounting_reflects_the_measured_tier(paper_env) -> None:
+    """
+    The entry leg stays stamped at whatever `_order()` gives it (0.6% maker,
+    the superseded coinbase-intro-1-2026-09 schedule, unrelated to which
+    schedule is current); the exit leg is always priced at today's active
+    taker rate. Both cost more than the pre-2026-09-15 legacy model.
+    """
     pos = pt.open_position_from_order(_order(), fill_price=30.0)
     record = _close(pos, exit_price=30.0)
 
     legacy_cost = NOTIONAL * 0.004 + NOTIONAL * 0.006   # what the old schedule charged
     current_cost = -record["pnl_usd"]
-    assert current_cost == pytest.approx(NOTIONAL * 0.006 + NOTIONAL * 0.012, abs=1e-9)
+    assert current_cost == pytest.approx(
+        NOTIONAL * 0.006 + NOTIONAL * fees.CURRENT_SCHEDULE.taker_rate, abs=1e-9)
     assert current_cost > legacy_cost
 
 
@@ -328,7 +347,8 @@ def test_an_order_placed_under_the_old_tier_keeps_it_when_it_fills_later(
 
     record = _close(pos, exit_price=30.0)
     assert record["entry_fee_usd"] == pytest.approx(NOTIONAL * 0.004, abs=1e-9)
-    assert record["exit_fee_usd"] == pytest.approx(NOTIONAL * 0.012, abs=1e-9)
+    assert record["exit_fee_usd"] == pytest.approx(
+        NOTIONAL * fees.CURRENT_SCHEDULE.taker_rate, abs=1e-9)
 
 
 def test_the_two_legs_are_recorded_under_their_own_schedules(paper_env) -> None:
@@ -337,7 +357,7 @@ def test_the_two_legs_are_recorded_under_their_own_schedules(paper_env) -> None:
                    maker_fee_rate=0.004)
     record = _close(pt.open_position_from_order(stale, fill_price=30.0), 30.0)
     assert record["entry_fee_schedule_id"] == fees.LEGACY_SCHEDULE.schedule_id
-    assert record["exit_fee_schedule_id"] == "coinbase-intro-1-2026-09"
+    assert record["exit_fee_schedule_id"] == fees.CURRENT_SCHEDULE.schedule_id
 
 
 def test_the_trade_history_record_carries_its_own_fee_provenance(paper_env) -> None:
@@ -347,9 +367,12 @@ def test_the_trade_history_record_carries_its_own_fee_provenance(paper_env) -> N
 
     line = (paper_env / "trade_history.jsonl").read_text().strip().splitlines()[-1]
     rec = json.loads(line)
+    # Entry stays stamped at whatever _order() gave it (the superseded
+    # coinbase-intro-1-2026-09 schedule); the exit is always the active one.
     assert rec["entry_fee_schedule_id"] == "coinbase-intro-1-2026-09"
-    assert rec["exit_fee_schedule_id"] == "coinbase-intro-1-2026-09"
-    assert (rec["entry_fee_rate"], rec["exit_fee_rate"]) == (0.006, 0.012)
+    assert rec["exit_fee_schedule_id"] == fees.CURRENT_SCHEDULE.schedule_id
+    assert (rec["entry_fee_rate"], rec["exit_fee_rate"]) == (
+        0.006, fees.CURRENT_SCHEDULE.taker_rate)
 
 
 @pytest.mark.parametrize("corrupt", [
