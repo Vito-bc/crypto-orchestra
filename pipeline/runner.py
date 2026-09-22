@@ -61,6 +61,12 @@ from pipeline.position_tracker import (
     get_open_positions,
     open_position_from_order,
 )
+from pipeline.scanner_activity import (
+    IDEMPOTENCY_DUPLICATE,
+    NO_SIGNAL,
+    V3_ENFORCEMENT_BLOCK,
+    record_evaluation,
+)
 from pipeline.sizing         import live_balance_usd, trade_size_pct
 from schemas.signals         import AgentSignal, TradeAction, TradeDecision
 from tools.price_data        import get_daily_trend, get_raw_df, get_snapshot
@@ -146,6 +152,20 @@ def _log_order_event(asset: str, event_type: str, details: dict) -> None:
     }
     with DECISIONS_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def _tally_gate(asset: str, gate_reason: str | None = None) -> None:
+    """
+    Best-effort wrapper around `scanner_activity.record_evaluation()`.
+
+    Telemetry must never be allowed to break the pipeline it is watching —
+    same convention as `_settle_disposition()`'s own best-effort journal
+    write above. A failure here is swallowed, never re-raised.
+    """
+    try:
+        record_evaluation(asset, gate_reason)
+    except Exception:
+        pass
 
 
 # ── Idempotency (SQLite) ──────────────────────────────────────────────────────
@@ -954,6 +974,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
         _sig_id = _make_signal_id(asset, _scanner_signal["entry_time"])
         if not _claim_signal(_sig_id, asset, _scanner_signal["entry_time"]):
             print(f"[Scanner] Signal {_sig_id} already claimed/processed — skipping (idempotency)")
+            _tally_gate(asset, IDEMPOTENCY_DUPLICATE)
             return TradeDecision(
                 asset=asset, timestamp=datetime.now(timezone.utc),
                 action=TradeAction.HOLD, confidence=0.0,
@@ -980,6 +1001,7 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
             thr = _scanner_signal.get("v3_candidate_threshold", "?")
             print(f"[V3] Enforced block {asset}: ER-30={er:.3f} < {thr} — HOLD")
             _complete_signal(_sig_id)
+            _tally_gate(asset, V3_ENFORCEMENT_BLOCK)
             return TradeDecision(
                 asset=asset, timestamp=datetime.now(timezone.utc),
                 action=TradeAction.HOLD, confidence=0.0,
@@ -997,6 +1019,12 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
 
     if _scanner_signal is None:
         print(f"[Scanner] No signal for {asset} — HOLD (agents skipped)")
+        # Not a decision: no agent was ever called, so this must not land in
+        # agent_decisions.jsonl as one. It is tallied instead — see
+        # pipeline/scanner_activity.py — and still printed to the console for
+        # live operator visibility, which is a different audience from the
+        # vault-feeding decisions log.
+        _tally_gate(asset, NO_SIGNAL)
         _hold = TradeDecision(
             asset=asset, timestamp=datetime.now(timezone.utc),
             action=TradeAction.HOLD, confidence=0.0,
@@ -1005,9 +1033,13 @@ def run_pipeline(asset: str = "ETH-USD", *, _skip_exit_check: bool = False) -> T
             veto_triggered=False, veto_reason=None,
             position_size_pct=None, stop_loss_price=None, take_profit_price=None,
         )
-        _log_decision(asset, [], _hold, _data_providers)
         _print_decision(asset, [], _hold)
         return _hold
+
+    # Scanner fired: agents are about to be called for real, so this counts
+    # as one evaluated hour with no gate skip. Real decisions are logged by
+    # _log_decision() below, at whichever exit this pipeline takes.
+    _tally_gate(asset)
 
     print(f"[Scanner] SIGNAL — {asset} ${_scanner_signal['entry_price']:,.2f}  "
           f"candles_above={_scanner_signal['candles_above']}  "

@@ -100,6 +100,10 @@ def _run(tmp_path, monkeypatch, *, raw_df, daily, funding, raises=None):
         e(patch("pipeline.runner._get_circuit_breaker_state",
                 return_value=(False, "", 1.0)))
         e(patch("pipeline.runner._log_decision"))
+        # See the matching comment in test_disposition_integration.py's _run():
+        # unpatched, this falls through to the real scanner_activity state
+        # file, which conftest's real-logs guard exists to catch.
+        e(patch("pipeline.runner._tally_gate"))
         e(patch("pipeline.runner._log_order_event"))
         e(patch("pipeline.runner.send_telegram_message"))
         e(patch("notifications.telegram.send_telegram_message", return_value=True))
