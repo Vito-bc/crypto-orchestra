@@ -3,8 +3,48 @@
 This instrument records public funding snapshots for the two CFM perpetual
 products scoped in ``docs/research/2026-09-19-carry-scoping.md``.  It makes no
 trading or carry decision.  A missing observation is never filled or averaged
-through: the seven-day mean is available only when at least 20 distinct hourly
-funding observations exist in the most recent 24-hour window.
+through.
+
+TWO COVERAGE QUESTIONS, TWO CHECKS
+----------------------------------
+The reported statistic is a **trailing seven-day mean**, and the thresholds it
+is compared against (14.8%/yr BTC, 14.4%/yr ETH) were derived for a seven-day
+mean in the carry-scoping document.  A mean over whatever happens to exist is
+a different statistic wearing the same name.
+
+The monitor originally checked coverage over the last 24 hours only, and then
+averaged every observation inside the seven-day window however few there were.
+Three days after it was built that produced a "trailing 7-day mean" computed
+from 43 observations — 1.8 days — and compared it against a seven-day
+threshold.  BTC read "above threshold" on 24 consecutive records on that
+basis.  The 24-hour check had passed, because it answers a different
+question.
+
+So there are two independent requirements, and the mean is reported only when
+BOTH are met:
+
+  FRESHNESS   at least ``MIN_COVERAGE`` of the last 24 hourly slots.  Answers
+              "is this monitor currently running?"  A stale mean over a fully
+              covered week would otherwise pass silently.
+  DEPTH       at least ``MIN_TRAILING_COVERAGE`` of the 168 hourly slots in
+              the trailing seven days.  Answers "is this actually a seven-day
+              mean?"  A freshly started monitor would otherwise pass its
+              second day.
+
+Failing either yields ``trailing_7d_status = "UNAVAILABLE"`` and a ``None``
+mean — the same fail-closed contract the 24-hour check always used.  Every
+record carries both denominators so a reader never has to infer which check
+was the binding one.
+
+A CROSSING IS A NOTIFICATION, NOT THE CONDITION
+-----------------------------------------------
+CLAUDE.md records the condition that would reopen the carry line as funding
+"sustained above break-even for longer than a typical cycle" — the median
+cycle length from the carry document, 17.0 days (BTC) and 21.3 days (ETH).
+A single threshold crossing is nothing of the sort.  The condition is
+recorded, per product, on every record and in every alert so the distinction
+cannot be lost between here and the decision.  This module does not evaluate
+that condition, and it decides nothing either way.
 """
 
 from __future__ import annotations
@@ -13,7 +53,7 @@ import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from math import isfinite
+from math import ceil, isfinite
 from pathlib import Path
 from typing import Any
 
@@ -26,16 +66,22 @@ from notifications.telegram import send_telegram_message  # noqa: E402
 
 OBSERVATIONS = ROOT / "logs" / "cfm_funding.jsonl"
 
+# `typical_cycle_days` is the MEDIAN cycle length from
+# `docs/research/2026-09-19-carry-scoping.md` §5 (BTC 17.0 d against a mean of
+# 54.8; ETH 21.3 d against 66.5). It is carried here only to state the
+# recorded re-evaluation condition on every record; nothing computes with it.
 PRODUCTS = {
     "BIP-20DEC30-CDE": {
         "asset": "BTC",
         "realised_threshold": 0.148,
         "typical_cycle_threshold": 0.457,
+        "typical_cycle_days": 17.0,
     },
     "ETP-20DEC30-CDE": {
         "asset": "ETH",
         "realised_threshold": 0.144,
         "typical_cycle_threshold": 0.387,
+        "typical_cycle_days": 21.3,
     },
 }
 
@@ -43,7 +89,38 @@ SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60
 EXPECTED_FUNDING_INTERVAL_SECONDS = 3600.0
 TRAILING_WINDOW = timedelta(days=7)
 COVERAGE_WINDOW = timedelta(hours=24)
+
+# FRESHNESS — "is the monitor running now?"  20 of the last 24 hourly slots.
 MIN_COVERAGE = 20
+
+# DEPTH — "is this a seven-day mean?"  The trailing window holds 168 hourly
+# slots, and at least 80% of them must be present.
+#
+# Why 80%, and why declared rather than tuned: the figure is a convention, not
+# an estimate, and no alternative was evaluated. It tolerates a gap the size
+# of a Windows reboot plus a patch cycle (up to 33 missing hours spread across
+# the week) without pretending that a monitor which has run for two days has
+# produced a seven-day mean. Loosening it to admit the current 44-observation
+# state would defeat the point of the check; tightening it to 100% would make
+# one lost hour blind the monitor for a week, and the carry document is
+# explicit that lost hours are permanent — CFM has no funding-history
+# endpoint, so nothing can be backfilled.
+#
+# Consequence to expect, not a bug: from a cold start the mean is UNAVAILABLE
+# for the first ~5.6 days of continuous operation.
+TRAILING_SLOTS = 168
+TRAILING_COVERAGE_FRACTION = 0.80
+MIN_TRAILING_COVERAGE = ceil(TRAILING_SLOTS * TRAILING_COVERAGE_FRACTION)  # 135
+
+# The recorded condition for re-evaluating carry, from CLAUDE.md's "Research
+# program status" section. Stated on every record and in every alert so a
+# crossing is never read as the condition itself.
+REEVALUATION_CONDITION = (
+    "CFM funding sustained above the realised-rate break-even for longer than "
+    "a typical cycle (median cycle length, carry scoping §5). A threshold "
+    "crossing is a notification, not this condition. This monitor does not "
+    "evaluate it and decides nothing."
+)
 
 
 class FundingMonitorError(RuntimeError):
@@ -185,7 +262,15 @@ def _product_observations(observations: list[dict], product: str) -> list[dict]:
 def trailing_status(
     observations: list[dict], product: str, as_of: datetime
 ) -> dict[str, Any]:
-    """Compute coverage and, only when covered, the trailing seven-day mean."""
+    """
+    Compute both coverage checks and, only when both pass, the seven-day mean.
+
+    Freshness (24h) and depth (7d) answer different questions and neither
+    substitutes for the other — see the module docstring. A failure of either
+    reports ``UNAVAILABLE`` with a ``None`` mean and names itself in
+    ``unavailable_reasons``, so a reader never has to work out which check was
+    binding.
+    """
     if as_of.tzinfo is None:
         raise FundingMonitorError("as_of must include a timezone")
     as_of = as_of.astimezone(timezone.utc)
@@ -201,20 +286,60 @@ def trailing_status(
             trailing.append(row)
 
     coverage = len(recent_day)
-    available = coverage >= MIN_COVERAGE
+    depth = len(trailing)
+    fresh = coverage >= MIN_COVERAGE
+    deep = depth >= MIN_TRAILING_COVERAGE
+
+    reasons = []
+    if not fresh:
+        reasons.append(
+            f"freshness: {coverage}/{TRAILING_SLOTS // 7} hourly observations "
+            f"in the last 24h, minimum {MIN_COVERAGE}")
+    if not deep:
+        reasons.append(
+            f"depth: {depth}/{TRAILING_SLOTS} hourly observations in the "
+            f"trailing 7 days, minimum {MIN_TRAILING_COVERAGE} "
+            f"({TRAILING_COVERAGE_FRACTION:.0%}) — a mean over less than that "
+            "is not a seven-day mean and is not comparable to a seven-day "
+            "threshold")
+
+    available = fresh and deep
     mean = None
     if available:
+        # `trailing` is non-empty whenever `deep` holds; MIN_TRAILING_COVERAGE
+        # is far above zero, so this cannot divide by zero.
         mean = round(
-            sum(float(row["annualized_rate"]) for row in trailing) / len(trailing),
-            12,
-        )
+            sum(float(row["annualized_rate"]) for row in trailing) / depth, 12)
+
     return {
         "status": "AVAILABLE" if available else "UNAVAILABLE",
         "coverage_last_24h": coverage,
         "coverage_required": MIN_COVERAGE,
-        "observations_in_trailing_7d": len(trailing),
+        "freshness_24h_status": "OK" if fresh else "INSUFFICIENT",
+        "observations_in_trailing_7d": depth,
+        "trailing_7d_slots": TRAILING_SLOTS,
+        "trailing_7d_coverage_required": MIN_TRAILING_COVERAGE,
+        "trailing_7d_coverage_status": "OK" if deep else "INSUFFICIENT",
+        "unavailable_reasons": reasons,
         "mean_annualized_rate": mean,
     }
+
+
+def _coverage_line(status: dict) -> str:
+    """Both denominators, always — either one of them can be the binding check."""
+    return (f"Coverage: {status['coverage_last_24h']}/24 in the last 24h "
+            f"(minimum {MIN_COVERAGE}), "
+            f"{status['observations_in_trailing_7d']}/{TRAILING_SLOTS} in the "
+            f"trailing 7 days (minimum {MIN_TRAILING_COVERAGE}).")
+
+
+def _condition_line(product: str) -> str:
+    """The recorded re-evaluation condition, restated wherever a level is."""
+    days = PRODUCTS[product]["typical_cycle_days"]
+    return (f"Recorded re-evaluation condition: sustained above break-even for "
+            f"longer than a typical cycle ({days:.1f} days, median "
+            f"{PRODUCTS[product]['asset']} cycle). A crossing is a "
+            f"notification, not that condition.")
 
 
 def _threshold_alerts(product: str, previous: dict, current: dict) -> list[str]:
@@ -224,15 +349,16 @@ def _threshold_alerts(product: str, previous: dict, current: dict) -> list[str]:
     messages = []
 
     if current["status"] == "UNAVAILABLE" and previous["status"] != "UNAVAILABLE":
+        reasons = "; ".join(current.get("unavailable_reasons") or ["unknown"])
         messages.append(
             f"CFM funding monitor coverage alarm — {asset} ({product})\n"
-            f"Trailing 7-day mean: UNAVAILABLE\n"
-            f"Coverage: {current['coverage_last_24h']}/24 hourly observations "
-            f"(minimum {MIN_COVERAGE}).\nThis monitor decides nothing itself.")
+            f"Trailing 7-day mean: UNAVAILABLE ({reasons})\n"
+            f"{_coverage_line(current)}\n"
+            "This monitor decides nothing itself.")
     elif current["status"] == "AVAILABLE" and previous["status"] == "UNAVAILABLE":
         messages.append(
             f"CFM funding monitor coverage restored — {asset} ({product})\n"
-            f"Coverage: {current['coverage_last_24h']}/24 hourly observations.\n"
+            f"{_coverage_line(current)}\n"
             f"Trailing 7-day mean: {current_mean * 100:.2f}%/yr.\n"
             "This monitor decides nothing itself.")
 
@@ -252,8 +378,8 @@ def _threshold_alerts(product: str, previous: dict, current: dict) -> list[str]:
                 f"CFM funding monitor threshold crossing — {asset} ({product})\n"
                 f"Trailing 7-day mean: {current_mean * 100:.2f}%/yr, {direction} "
                 f"the {label} threshold ({threshold * 100:.1f}%/yr).\n"
-                f"Coverage: {current['coverage_last_24h']}/24 hourly observations.\n"
-                "This is a recorded condition for re-evaluating carry, not a decision.")
+                f"{_coverage_line(current)}\n"
+                f"{_condition_line(product)}")
     return messages
 
 
@@ -301,17 +427,42 @@ def poll(client: Any | None = None) -> list[dict]:
                 "status": "NOT_YET_OBSERVED",
                 "coverage_last_24h": 0,
                 "coverage_required": MIN_COVERAGE,
+                "freshness_24h_status": "INSUFFICIENT",
                 "observations_in_trailing_7d": 0,
+                "trailing_7d_slots": TRAILING_SLOTS,
+                "trailing_7d_coverage_required": MIN_TRAILING_COVERAGE,
+                "trailing_7d_coverage_status": "INSUFFICIENT",
+                "unavailable_reasons": ["no observation recorded yet"],
                 "mean_annualized_rate": None,
             }
 
+        # Both denominators and both verdicts go on the record. A reader of
+        # one line must be able to tell a covered mean from an uncovered one
+        # without re-deriving either window, and must be able to tell WHICH
+        # check was binding.
         observation["trailing_7d_status"] = current["status"]
         observation["coverage_last_24h"] = current["coverage_last_24h"]
         observation["coverage_required"] = current["coverage_required"]
+        observation["freshness_24h_status"] = current["freshness_24h_status"]
         observation["observations_in_trailing_7d"] = current[
             "observations_in_trailing_7d"
         ]
+        observation["trailing_7d_slots"] = current["trailing_7d_slots"]
+        observation["trailing_7d_coverage_required"] = current[
+            "trailing_7d_coverage_required"
+        ]
+        observation["trailing_7d_coverage_status"] = current[
+            "trailing_7d_coverage_status"
+        ]
+        observation["trailing_7d_unavailable_reasons"] = current[
+            "unavailable_reasons"
+        ]
         observation["trailing_7d_mean_annualized"] = current["mean_annualized_rate"]
+        # Declared, not computed: the condition a level crossing does not meet.
+        observation["reevaluation_condition"] = REEVALUATION_CONDITION
+        observation["reevaluation_sustain_days"] = PRODUCTS[
+            observation["product"]
+        ]["typical_cycle_days"]
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("a", encoding="utf-8") as handle:
@@ -335,7 +486,9 @@ def _display(observation: dict) -> str:
         f"rate={observation['funding_rate']:.8g} "
         f"annualized={observation['annualized_rate'] * 100:.2f}%/yr "
         f"trailing_7d={trailing} "
-        f"coverage={observation['coverage_last_24h']}/24"
+        f"coverage_24h={observation['coverage_last_24h']}/24 "
+        f"coverage_7d={observation['observations_in_trailing_7d']}"
+        f"/{observation['trailing_7d_slots']}"
     )
 
 
