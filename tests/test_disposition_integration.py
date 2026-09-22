@@ -150,6 +150,11 @@ def _run(tmp_path, monkeypatch, *, dry_run: bool, outbox_result=None,
         e(patch("pipeline.runner._get_circuit_breaker_state", return_value=cb_state))
         e(patch("pipeline.runner._check_entry_filters", return_value=(True, "", 1.0)))
         e(patch("pipeline.runner._log_decision"))
+        # Real run_pipeline() always calls this once the scanner gate has an
+        # opinion (signal or no signal); left unpatched it would fall through
+        # to pipeline.scanner_activity's real logs/-relative state file, which
+        # the repo-wide real-logs guard in conftest.py exists to catch.
+        e(patch("pipeline.runner._tally_gate"))
         e(patch("pipeline.runner._log_order_event"))
         # Intentional notifications only. The transport stays guarded by the
         # conftest fixture, which must remain able to fail this test.

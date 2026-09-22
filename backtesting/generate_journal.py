@@ -2,10 +2,31 @@
 Obsidian Journal Generator for CryptoOrchestra.
 
 Converts all system data into Obsidian-compatible Markdown notes:
-  - logs/trade_history.jsonl       → TradeJournal/
-  - logs/agent_decisions.jsonl     → AgentOutputs/
+  - logs/trade_history.jsonl              → TradeJournal/
+  - logs/agent_decisions.jsonl             → AgentOutputs/ (real decisions,
+    one note each) + AgentOutputs/Scanner Activity.md (silent/blocked hours,
+    one rolling note)
+  - logs/scanner_activity.jsonl / _state.json → folded into the same
+    Scanner Activity note
+  - logs/agent_shadow.jsonl                → AgentShadow/
   - backtesting/monte_carlo_per_asset.json → Backtests/
-  - Hardcoded strategy history     → Strategies/ and ErrorsAndFixes/
+  - Hardcoded strategy history             → Strategies/ and ErrorsAndFixes/
+
+VAULT OWNERSHIP AND PRUNING
+----------------------------
+This generator OWNS every note under `_OWNED_FOLDERS` plus README.md: each
+run is a full rebuild, not an append. `_write()` tags every note it produces
+with a trailing `_MARKER` comment (invisible to Obsidian's renderer). At the
+end of `main()`, `_prune_stale_notes()` deletes any marker-tagged note inside
+an owned folder that this run did NOT rewrite — a note that stops being
+produced (the old one-file-per-calendar-day AgentOutputs notes this run
+replaced with one-file-per-decision, for instance) is gone by the next run
+instead of sitting there forever.
+
+A file WITHOUT the marker is never touched, in an owned folder or not — most
+plausibly a `_Templates/` note a human copied in and filled by hand, per that
+folder's own stated purpose. Ownership is proven positively (the marker), not
+inferred from location, so pruning can never surprise a human-authored file.
 
 Usage:
     python backtesting/generate_journal.py
@@ -26,6 +47,56 @@ VAULT = ROOT / "obsidian_vault"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Monkeypatchable independently of ROOT/VAULT: a test that redirects the
+# decisions log to a scratch tmp_path must not also lose the real,
+# committed agents/orchestrator.py that _orchestrator_action_threshold()
+# parses — the two are unrelated inputs and vary independently in tests.
+DECISIONS_LOG_PATH  = ROOT / "logs" / "agent_decisions.jsonl"
+ORCHESTRATOR_PY_PATH = ROOT / "agents" / "orchestrator.py"
+
+# ── Vault ownership & pruning ────────────────────────────────────────────────
+
+_MARKER = "<!-- generated-by: crypto-orchestra-journal -->"
+
+_OWNED_FOLDERS = (
+    "TradeJournal", "AgentOutputs", "Backtests", "Strategies",
+    "ErrorsAndFixes", "Research", "AgentShadow", "_Templates",
+)
+
+# Reset at the top of main() (or by a test that calls the generate_* functions
+# directly) so a stale entry from an earlier run/test can never suppress a
+# deletion in this one.
+_written_paths: set[Path] = set()
+
+
+def _prune_stale_notes() -> int:
+    """
+    Delete every marker-tagged note this generator owns but did not write
+    this run. See the module docstring for the ownership rule.
+    """
+    removed = 0
+    candidates = [VAULT / name for name in _OWNED_FOLDERS] + [VAULT / "README.md"]
+    for root in candidates:
+        if root.is_file():
+            paths = [root]
+        elif root.is_dir():
+            paths = [p for p in root.rglob("*") if p.is_file()]
+        else:
+            continue
+        for path in paths:
+            if path.resolve() in _written_paths:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if _MARKER not in text:
+                continue  # not ours — leave it alone, marker or no folder
+            path.unlink()
+            removed += 1
+    return removed
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _ensure(path: Path) -> Path:
@@ -34,7 +105,11 @@ def _ensure(path: Path) -> Path:
 
 
 def _write(path: Path, content: str) -> None:
+    if not content.endswith("\n"):
+        content += "\n"
+    content += _MARKER + "\n"
     path.write_text(content, encoding="utf-8")
+    _written_paths.add(path.resolve())
     print(f"  ✓  {path.relative_to(VAULT)}")
 
 
@@ -149,44 +224,754 @@ tags: [{", ".join(tags)}]
 
 
 # ── Agent Outputs ─────────────────────────────────────────────────────────────
+#
+# AgentOutputs/ shows decisions, not silence — and, as of 2026-09-22, not
+# every decision either: a HOLD with routine confidence and no trade behind
+# it is not information-dense enough to earn its own note among nearly two
+# thousand of them. Three populations, each rendered differently:
+#
+#   1. SCANNER-GATE SKIPS — no agent was ever called. Structural test:
+#      empty `votes` AND empty `agent_signals` (`_is_gate_skip_record`), not
+#      a string match on `reasoning`. NEW records (2026-09-22 onward) are
+#      never written this way at all — see pipeline/scanner_activity.py.
+#      OLD records (~2,235 of them) still carry this shape and are excluded
+#      at RENDER time, since the log itself is never rewritten. Folded into
+#      Scanner Activity.md's "legacy silent hours" table.
+#
+#   2. REAL DECISIONS, NOT INDIVIDUALLY WORTHY — agents voted, but the
+#      decision was HOLD, below the orchestrator's own documented
+#      action-confidence threshold, and not tied to a placed order
+#      (`_is_individual_worthy` below). The large majority of the ~1,995
+#      real (agent-called) decisions in this log fall here. Folded into
+#      Scanner Activity.md's "Agent-era decisions" section as a
+#      distribution — per-day/asset counts, a confidence histogram, a
+#      veto-reason breakdown — not one note per instance.
+#
+#   3. REAL DECISIONS, INDIVIDUALLY WORTHY — action != HOLD, or confidence
+#      clears the threshold, or the decision is tied to an order/position
+#      lifecycle event (see `_is_individual_worthy`). These get one note
+#      each, with full agent-by-agent detail.
+#
+# Order-lifecycle events (LIMIT_ORDER_PLACED, POSITION_OPENED, ...) live in
+# this same JSONL file but have no "action" field at all — a different
+# record shape, already covered by TradeJournal/ via logs/trade_history.jsonl,
+# excluded here rather than rendered as a malformed decision.
+
+_LEGACY_AGENT_OUTPUTS_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}_decisions\.md$")
+
+
+def _migrate_legacy_agent_outputs(folder: Path) -> int:
+    """
+    One-time cleanup (2026-09-22) of the OLD one-note-per-calendar-day
+    AgentOutputs files, superseded by one note per real decision plus the
+    single rolling Scanner Activity note.
+
+    These predate `_MARKER`, so ordinary pruning (`_prune_stale_notes`)
+    cannot identify them. They are identified here instead by BOTH their
+    exact legacy filename shape (`YYYY-MM-DD_decisions.md`, which only the
+    old `generate_agent_notes()` ever produced) AND their legacy heading
+    (`# Agent Decisions — `) — a file that merely happens to share the name
+    but was not actually written by this generator is left alone. Expected
+    to become a no-op after it has run once against a given vault.
+    """
+    if not folder.is_dir():
+        return 0
+    removed = 0
+    for path in folder.glob("*.md"):
+        if not _LEGACY_AGENT_OUTPUTS_NAME.match(path.name):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not text.lstrip().startswith("# Agent Decisions"):
+            continue
+        path.unlink()
+        removed += 1
+    return removed
+
+
+def _is_gate_skip_record(record: dict) -> bool:
+    """
+    True for a HOLD record where the scanner gate skipped every agent.
+
+    A structural test — empty `votes` AND empty `agent_signals` — not a text
+    match on `reasoning`. That is the actual invariant ("no agent was ever
+    called"), it is what every historical gate-skip record shares regardless
+    of which of the three gate reasons produced it, and it needs no updating
+    if runner.py's message text ever changes.
+    """
+    return not record.get("votes") and not record.get("agent_signals")
+
+
+_ORDER_TIE_PREFIX = re.compile(r"^\[Limit\] Order #")
+
+
+def _orchestrator_action_threshold() -> float:
+    """
+    The confidence floor above which a real decision counts as "actionable or
+    nearly so" — see `_is_individual_worthy` below. Parsed from
+    `agents/orchestrator.py`'s own module docstring ("Confidence < X always
+    produces HOLD"), `_require()`-style, rather than hardcoded: the standing
+    convention this generator uses everywhere else in this file (see
+    `generate_research_notes`) is to derive a governing number from its
+    source rather than retype it, so a change there is caught here (raise)
+    instead of silently drifting.
+
+    WHY THE DOCSTRING AND NOT A NUMERIC CONSTANT — documented here because it
+    is not obvious: `agents/orchestrator.py` has exactly two ENFORCED
+    thresholds, `_BUY_THRESHOLD` (0.45) and `_SELL_THRESHOLD` (-0.35), both
+    applied to `composite_score` — a Python-local quantity computed inside
+    `decide()` and never written to `agent_decisions.jsonl`. The only field
+    the log actually persists is `confidence`, the LLM's own self-reported
+    figure, which as of this writing is gated by no enforced code path at
+    all. The docstring's "0.55" is the sole number in the module stated
+    against `confidence` specifically — this generator trusts it as the
+    intended selection threshold for that reason, not because it is
+    currently enforced in code. If `_BUY_THRESHOLD` and this docstring line
+    are ever reconciled to agree, this function keeps working unchanged.
+    """
+    text = ORCHESTRATOR_PY_PATH.read_text(encoding="utf-8")
+    m = _require(r"Confidence < ([\d.]+) always produces HOLD", text,
+                 ORCHESTRATOR_PY_PATH,
+                 "the orchestrator's documented confidence-for-HOLD threshold")
+    return float(m.group(1))
+
+
+def _is_individual_worthy(record: dict, threshold: float) -> bool:
+    """
+    An individual AgentOutputs note only when the decision is actionable or
+    nearly so:
+
+      - `action != "HOLD"`, or
+      - `confidence >= threshold` (the orchestrator's documented action
+        threshold — see `_orchestrator_action_threshold`), or
+      - the decision is tied to an order/position lifecycle event: runner.py
+        stamps `"[Limit] Order #<id> placed..."` onto a HOLD record's
+        `reasoning` the moment a BUY becomes a resting limit order (the LIVE
+        action is the order, not the persisted HOLD label). Without this
+        branch every one of this log's 7 real trades would be invisible as
+        an individual note — 2 of the 7 carry confidence below even this
+        threshold.
+
+    Everything else — a routine-confidence HOLD with no trade behind it, the
+    large majority of this log — folds into the rolling aggregate instead;
+    the distribution is the information there, not each instance.
+    """
+    if record.get("action") != "HOLD":
+        return True
+    if (record.get("confidence") or 0.0) >= threshold:
+        return True
+    return bool(_ORDER_TIE_PREFIX.match(record.get("reasoning") or ""))
+
+
+def _decision_slug(record: dict) -> str:
+    """Filesystem-safe `{timestamp}_{asset}` — unique, sorts chronologically."""
+    ts = record.get("logged_at_utc") or "unknown-time"
+    safe_ts = ts.split("+")[0].replace(":", "-")
+    if not safe_ts.endswith("Z"):
+        safe_ts += "Z"
+    asset = record.get("asset", "UNKNOWN")
+    return f"{safe_ts}_{asset}"
+
+
+def _render_decision_note(record: dict) -> str:
+    """One note for one real ensemble decision — every agent's vote, the
+    orchestrator's combination, and whatever the record shows of what the
+    scanner gate saw."""
+    asset      = record.get("asset", "UNKNOWN")
+    action     = record.get("action", "?")
+    conf       = record.get("confidence") or 0.0
+    ts         = record.get("logged_at_utc", "")
+    reasoning  = record.get("reasoning", "")
+    veto       = record.get("veto_triggered", False)
+    veto_reason = record.get("veto_reason")
+    overrides  = record.get("overrides") or []
+    votes      = record.get("votes") or []
+    signals    = record.get("agent_signals") or []
+    providers  = record.get("data_providers") or {}
+
+    icon = {"BUY": "🟢", "SELL": "🔴"}.get(action, "⚪")
+
+    if votes:
+        vote_rows = "\n".join(
+            f"| {v.get('agent', '?')} | {v.get('signal', '?')} | "
+            f"{v.get('confidence', 0):.0%} | {v.get('weight_applied', 0):.2f} |"
+            for v in votes
+        )
+        vote_table = f"| Agent | Vote | Confidence | Weight |\n|---|---|---:|---:|\n{vote_rows}"
+    elif signals:
+        # Checked against this log, not assumed: empty `votes` alongside
+        # non-empty `agent_signals` is NOT the general shape of the
+        # pre-scanner-gate era — 1982 of that era's 1995 real records DO
+        # carry per-agent votes. It is specific to the orchestrator's
+        # NewsVeto pre-check (agents/orchestrator.py): a critical-news veto
+        # returns before per-agent votes are ever built, so `votes=[]`
+        # while `agent_signals` (collected earlier, from the sub-agents
+        # themselves) is still fully populated. Stated plainly, as a fact
+        # about THIS record, not papered over as a generic gap.
+        vote_table = (
+            "*Per-agent vote weights were not persisted on this specific "
+            "record — `votes` is empty. This orchestrator path (a critical "
+            "news veto short-circuits before votes are built) always skips "
+            "them; it is not a general gap in this era. See per-agent "
+            "signals below instead, which were recorded in full.*"
+        )
+    else:
+        vote_table = "*No per-agent vote weights or signals recorded on this record.*"
+
+    if signals:
+        signal_block = "\n\n".join(
+            f"### {s.get('agent', '?')} — {s.get('signal', '?')} "
+            f"({s.get('confidence', 0):.0%})\n\n"
+            f"{s.get('reasoning') or '*no reasoning recorded*'}"
+            for s in signals
+        )
+    else:
+        signal_block = "*No per-agent signal detail recorded on this record.*"
+
+    scanner_mentions = [
+        text for text in ([reasoning] + list(overrides))
+        if text and ("[Scanner]" in text or "Scanner gate" in text
+                      or "Scanner override" in text)
+    ]
+    if scanner_mentions:
+        scanner_block = "\n\n".join(f"> {m}" for m in scanner_mentions)
+    else:
+        scanner_block = (
+            "*No scanner-gate detail is recorded on this decision — either "
+            "it predates the scanner-gate architecture (records before "
+            "2026-07-11 ran every agent every tick, with no gate at all), "
+            "or the scanner fired without the orchestrator's reasoning "
+            "mentioning it. `agent_decisions.jsonl` does not carry the raw "
+            "scanner signal as its own field, so nothing further can be "
+            "recovered here.*"
+        )
+
+    overrides_block = "\n".join(f"- {o}" for o in overrides) if overrides else "*none*"
+    providers_block = (
+        ", ".join(f"{k}={v}" for k, v in providers.items())
+        if providers else "*not recorded*"
+    )
+    veto_line = f"{veto}" + (f" ({veto_reason})" if veto_reason else "")
+
+    return f"""---
+date: {ts[:10] if ts else "unknown"}
+asset: {asset}
+type: agent-decision
+action: {action}
+confidence: {conf:.2f}
+veto_triggered: {veto}
+tags: [agent-decision, {asset.lower().replace('-', '')}, {action.lower()}]
+---
+
+# {icon} {asset} → {action} ({conf:.0%}) — {ts or "unknown time"}
+
+**Real ensemble decision** — every sub-agent ran; the orchestrator combined
+their votes into this decision.
+
+## Orchestrator's combined decision
+
+- **Action:** {action}
+- **Confidence:** {conf:.0%}
+- **Veto triggered:** {veto_line}
+- **Reasoning:** {reasoning or "*none recorded*"}
+
+**Overrides applied:**
+{overrides_block}
+
+## Per-agent votes (as scored by the orchestrator)
+
+{vote_table}
+
+## Per-agent signals (raw sub-agent output)
+
+{signal_block}
+
+## What the scanner gate saw
+
+{scanner_block}
+
+## Data provenance
+
+{providers_block}
+"""
+
+
+def _date_asset_table(records: list[dict], header: str) -> tuple[str, int]:
+    """A `| Date | Asset | count |` table grouped from `logged_at_utc`/`asset`."""
+    by_key: dict[tuple[str, str], int] = {}
+    for r in records:
+        date = (r.get("logged_at_utc") or "")[:10] or "unknown"
+        key = (date, r.get("asset", "UNKNOWN"))
+        by_key[key] = by_key.get(key, 0) + 1
+    total = sum(by_key.values())
+    if not by_key:
+        return "*None on record.*", 0
+    rows = "\n".join(f"| {date} | {asset} | {count} |"
+                      for (date, asset), count in sorted(by_key.items()))
+    return f"| Date | Asset | {header} |\n|---|---|---:|\n{rows}", total
+
+
+def _confidence_bucket(confidence: float) -> str:
+    clamped = max(0.0, min(confidence, 1.0))
+    lo = min(int(clamped * 10), 9) / 10
+    return f"{lo:.1f}–{lo + 0.1:.1f}"
+
+
+def _confidence_histogram(records: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for r in records:
+        bucket = _confidence_bucket(r.get("confidence") or 0.0)
+        counts[bucket] = counts.get(bucket, 0) + 1
+    if not counts:
+        return "*None on record.*"
+    ordered = sorted(counts.items(), key=lambda kv: kv[0])
+    rows = "\n".join(f"| {bucket} | {count} |" for bucket, count in ordered)
+    return f"| Confidence | Count |\n|---|---:|\n{rows}"
+
+
+def _veto_category(record: dict) -> str:
+    """
+    A small, fixed set of veto CATEGORIES, not raw `veto_reason` text.
+
+    `veto_reason`/`reasoning` on a vetoed decision is free-form LLM prose —
+    on this log, 653 of 911 vetoed records have a distinct `veto_reason`
+    string, so grouping on it verbatim would produce a table with almost as
+    many rows as instances, defeating the entire point of an aggregate
+    ("the distribution is the information, not each instance"). This buckets
+    by the reliable structural signals actually present instead: the two
+    hardcoded pre-check paths in `agents/orchestrator.py` stamp a
+    `[NewsVeto]`/`[RiskVeto]` prefix onto `reasoning`, `pipeline/runner.py`'s
+    circuit breaker stamps `[CircuitBreaker]`, and the free-text LLM vetoes
+    overwhelmingly (880 of 911 here) mention "BEAR" (macro regime BEAR or
+    FULL_BEAR) or "ok_to_trade"/"ATR volatility" (a risk-agent flag the LLM
+    incorporated into its own veto, distinct from the hardcoded RiskVeto
+    pre-check). Verified against this log: zero records fall through to
+    "other veto (uncategorised)" — that bucket exists as an honest catch-all
+    for whatever a future run's free text does not match, not because it is
+    currently populated.
+    """
+    if not record.get("veto_triggered"):
+        return "(no veto)"
+    reasoning = record.get("reasoning") or ""
+    if reasoning.startswith("[NewsVeto]"):
+        return "NewsVeto (critical news)"
+    if reasoning.startswith("[RiskVeto]"):
+        return "RiskVeto (agent absent / ok_to_trade=false, hard pre-check)"
+    if reasoning.startswith("[CircuitBreaker]"):
+        return "CircuitBreaker (portfolio drawdown halt)"
+    if "BEAR" in reasoning.upper():
+        return "Macro regime veto (BEAR / FULL_BEAR)"
+    if "ok_to_trade" in reasoning or "ATR volatility" in reasoning:
+        return "Risk veto (ok_to_trade / ATR volatility, in LLM reasoning)"
+    return "other veto (uncategorised)"
+
+
+def _veto_reason_breakdown(records: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for r in records:
+        key = _veto_category(r)
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "*None on record.*"
+    rows = "\n".join(f"| {reason} | {count} |"
+                      for reason, count in sorted(counts.items(), key=lambda kv: -kv[1]))
+    return f"| Veto category | Count |\n|---|---:|\n{rows}"
+
+
+def _scanner_activity_note(
+    current_activity: list[dict],
+    legacy_skips: list[dict],
+    agent_era_aggregate: list[dict],
+    threshold: float,
+) -> str:
+    """
+    The single rolling note for everything AgentOutputs/ does NOT render as
+    an individual note: scanner-gate silence (current tally + legacy
+    gate-skip records) and, separately, the real-but-routine agent-era
+    decisions `_is_individual_worthy` excluded. Distribution, not instances —
+    see the module header comment above `generate_agent_notes` for the full
+    three-population split this note and AgentOutputs/ together cover.
+    """
+    legacy_table, legacy_total = _date_asset_table(legacy_skips, "Silent hours (legacy)")
+
+    if current_activity:
+        current_rows = "\n".join(
+            f"| {row.get('date', '?')} | {row.get('asset', '?')} | "
+            f"{row.get('hours_evaluated', 0)} | {row.get('hours_scanner_silent', 0)} | "
+            + (", ".join(f"{k}={v}" for k, v in sorted((row.get('hours_blocked') or {}).items())) or "none")
+            + " |"
+            for row in current_activity
+        )
+        current_table = (
+            "| Date | Asset | Hours evaluated | Hours silent | Hours blocked (by reason) |\n"
+            "|---|---|---:|---:|---|\n" + current_rows
+        )
+    else:
+        current_table = (
+            "*No tallied activity yet. The pipeline has been disabled since "
+            "2026-07-17; pipeline/scanner_activity.py has not recorded an "
+            "hour of any kind since it was added.*"
+        )
+
+    era_table, era_total = _date_asset_table(agent_era_aggregate, "HOLDs")
+    era_histogram = _confidence_histogram(agent_era_aggregate)
+    era_vetoes = _veto_reason_breakdown(agent_era_aggregate)
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"""---
+date: {today}
+type: scanner-activity
+tags: [scanner-activity, derived, rolling]
+---
+
+# Scanner activity — rolling
+
+> One note, not one per day. Rebuilt every run from
+> `logs/scanner_activity.jsonl` / `logs/scanner_activity_state.json` (the
+> per-day tally, in place since 2026-09-22 — see
+> `pipeline/scanner_activity.py`), aggregated directly from
+> `logs/agent_decisions.jsonl`'s legacy scanner-gate-silent records, and
+> (below) from every real agent-era decision that did not clear
+> `_is_individual_worthy` — see `docs/operations/agent_outputs_selection.md`.
+
+This is **not** a decision log. Everything on this page is a distribution,
+not a record of any one event. Individually worthy decisions — action !=
+HOLD, confidence at or above the orchestrator's documented threshold
+({threshold:.2f}), or tied to a placed order — are one note each, elsewhere
+in this folder.
+
+## Current tally (2026-09-22 onward)
+
+{current_table}
+
+## Legacy silent hours (pre-tally, from agent_decisions.jsonl)
+
+{legacy_total} scanner-gate-silent record(s) were written before this tally
+existed, every one with the identical reasoning "Scanner gate: no breakout
+signal on last closed candle." and no agent ever called. `logs/` itself is
+never rewritten — this table is derived at render time, on every run, and is
+their only trace in the vault.
+
+{legacy_table}
+
+## Agent-era decisions (aggregate)
+
+{era_total} real decision(s) — agents voted, the orchestrator decided — that
+did not clear the individual-note bar: HOLD, below {threshold:.2f}
+confidence, and not tied to a placed order. All predate the scanner-gate
+architecture (2026-04-15 → 2026-07-11). The distribution is the information
+here, not each instance.
+
+**HOLDs per day/asset:**
+
+{era_table}
+
+**Confidence histogram:**
+
+{era_histogram}
+
+**Veto-reason breakdown:**
+
+{era_vetoes}
+"""
+
 
 def generate_agent_notes() -> None:
     folder = _ensure(VAULT / "AgentOutputs")
-    path   = ROOT / "logs" / "agent_decisions.jsonl"
-    if not path.exists():
-        print("  No agent_decisions.jsonl — skipping")
+    _migrate_legacy_agent_outputs(folder)
+
+    from pipeline.scanner_activity import read_activity
+
+    path = DECISIONS_LOG_PATH
+    records: list[dict] = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    else:
+        print("  No agent_decisions.jsonl — writing placeholder Scanner Activity.md only")
+
+    # Order-lifecycle events have no "action" field — a different record
+    # shape, already covered by TradeJournal/ via trade_history.jsonl.
+    decisions = [d for d in records if "action" in d]
+    real = [d for d in decisions if not _is_gate_skip_record(d)]
+    legacy_skips = [d for d in decisions if _is_gate_skip_record(d)]
+
+    threshold = _orchestrator_action_threshold()
+    individual = [r for r in real if _is_individual_worthy(r, threshold)]
+    aggregate = [r for r in real if not _is_individual_worthy(r, threshold)]
+
+    for record in individual:
+        _write(folder / f"{_decision_slug(record)}.md", _render_decision_note(record))
+
+    _write(folder / "Scanner Activity.md",
+           _scanner_activity_note(read_activity(), legacy_skips, aggregate, threshold))
+
+    print(f"  → {len(individual)} individual decision note(s), "
+          f"{len(aggregate)} agent-era decision(s) + {len(legacy_skips)} "
+          "legacy gate-skip record(s) folded into Scanner Activity.md")
+
+
+# ── Agent Shadow ─────────────────────────────────────────────────────────────
+#
+# logs/agent_shadow.jsonl (schema: docs/operations/agent_shadow.md) is an
+# engineering observation stream, wired 2026-09-20, currently EMPTY — no WIDE
+# candidate has occurred since the hourly task was registered on 2026-09-21.
+# It decides nothing, places nothing, and sits outside pipeline/, off every
+# trading path. Every note below says so prominently and quotes the reading
+# rule declared before the stream's first run: a candidate stream counts as a
+# RESULT only if, over a stated period, its one-sided 95% bound clears zero
+# AND its annualised Sharpe exceeds 1.645/√years — anything short of both is
+# OBSERVATION, and selecting a subset for its observed outcome and moving it
+# onto the trading gate is forbidden without a new pre-registered trial.
+
+_SHADOW_OBSERVATION_NOTICE = (
+    "**OBSERVATION ONLY — no trade resulted.** This is an engineering "
+    "observation stream (`docs/operations/agent_shadow.md`), outside "
+    "`pipeline/` and off every trading path. The declared reading rule "
+    "applies: a candidate stream counts as a RESULT only if, over a stated "
+    "period, its one-sided 95% bound clears zero AND its annualised Sharpe "
+    "exceeds 1.645/√years. Anything short of both is OBSERVATION. Selecting "
+    "a subset for its observed outcome and moving it onto the trading gate "
+    "is forbidden without a new pre-registered trial."
+)
+
+
+def _shadow_slug(candle_time: object, asset: str, candidate_id: str) -> str:
+    """Filesystem-safe, unique even if two variants share a candle+asset."""
+    safe_ts = str(candle_time).split("+")[0].replace(":", "-").replace(" ", "T")
+    if not safe_ts.endswith("Z"):
+        safe_ts += "Z"
+    return f"{safe_ts}_{asset}_{candidate_id}"
+
+
+def _shadow_call_footer(record: dict) -> str:
+    cost = record.get("cost_usd")
+    cost_str = f"${cost:.6f}" if cost is not None else "not recorded"
+    return (
+        f"*model={record.get('model_id', '?')}  "
+        f"latency={record.get('latency_ms', '?')}ms  "
+        f"api_calls={record.get('api_calls', '?')}  cost={cost_str}*"
+    )
+
+
+def _render_shadow_note(
+    candidate_id: str,
+    votes: list[dict],
+    decision: dict | None,
+    attachment: dict | None,
+) -> str:
+    """One note per shadow decision — every agent's vote and reasoning, the
+    orchestrator's combination, the variant id, n_met, and — once attached —
+    the subsequent price path."""
+    base = decision or (votes[0] if votes else {})
+    asset        = base.get("asset", "UNKNOWN")
+    variant_id   = base.get("variant_id", "?")
+    candle_time  = base.get("candle_time", "?")
+    n_met        = base.get("n_met")
+    entry_price  = base.get("entry_price")
+    atr          = base.get("atr")
+    atr_stop     = base.get("atr_stop")
+    atr_target   = base.get("atr_target")
+    max_hold     = base.get("max_hold_hours")
+
+    if votes:
+        vote_sections = []
+        for v in sorted(votes, key=lambda r: r.get("agent_name", "")):
+            err = f" — **error:** {v['error']}" if v.get("error") else ""
+            vote_sections.append(
+                f"### {v.get('agent_name', '?')} — {v.get('direction', '?')} "
+                f"({v.get('confidence', 0):.0%}){err}\n\n"
+                f"{v.get('reasoning') or '*no reasoning recorded*'}\n\n"
+                f"{_shadow_call_footer(v)}"
+            )
+        vote_block = "\n\n".join(vote_sections)
+    else:
+        vote_block = "*No agent votes recorded yet for this candidate.*"
+
+    if decision:
+        err = f" — **error:** {decision['error']}" if decision.get("error") else ""
+        decision_block = (
+            f"**Direction:** {decision.get('direction', '?')}  "
+            f"**Confidence:** {decision.get('confidence', 0):.0%}{err}\n\n"
+            f"{decision.get('reasoning') or '*no reasoning recorded*'}\n\n"
+            f"{_shadow_call_footer(decision)}"
+        )
+    else:
+        decision_block = "*Orchestrator decision not yet recorded for this candidate.*"
+
+    if attachment:
+        path_rows = "\n".join(
+            f"| {label} | {vals.get('close')} | {vals.get('return', 0):+.3%} |"
+            for label, vals in sorted((attachment.get("price_path") or {}).items())
+        )
+        bracket = attachment.get("atr_bracket") or {}
+        attachment_block = (
+            f"| Horizon | Close | Return |\n|---|---:|---:|\n{path_rows}\n\n"
+            f"**ATR bracket outcome:** {bracket.get('outcome', '?')} at "
+            f"{bracket.get('hours', '?')}h — price {bracket.get('price', '?')} "
+            f"(stop {bracket.get('stop_price', '?')}, target {bracket.get('target_price', '?')})"
+        )
+    else:
+        attachment_block = (
+            "*Not yet attached — price paths are added once the full "
+            "seven-day window exists (`agent_shadow.attachments`).*"
+        )
+
+    return f"""---
+date: {str(candle_time)[:10]}
+asset: {asset}
+type: agent-shadow
+variant_id: {variant_id}
+candidate_id: {candidate_id}
+n_met: {n_met}
+tags: [agent-shadow, observation-only, {asset.lower().replace('-', '')}]
+---
+
+# Agent shadow — {asset} — {candle_time}
+
+> {_SHADOW_OBSERVATION_NOTICE}
+
+## Candidate
+
+- **Variant:** {variant_id}
+- **Candle time:** {candle_time}
+- **n_met:** {n_met}
+- **Entry price:** {entry_price}
+- **ATR:** {atr}  (stop {atr_stop}x / target {atr_target}x / max hold {max_hold}h)
+
+## Agent votes
+
+{vote_block}
+
+## Orchestrator's combined decision
+
+{decision_block}
+
+## Subsequent price path
+
+{attachment_block}
+"""
+
+
+def _render_shadow_index(entries: list[tuple[str, dict]]) -> str:
+    """`entries`: (candidate_id, base_record), already ordered newest-first."""
+    if entries:
+        rows = "\n".join(
+            f"| [[{_shadow_slug(base.get('candle_time', '?'), base.get('asset', 'UNKNOWN'), cid)}"
+            f"|{base.get('candle_time', '?')}]] | {base.get('asset', '?')} | "
+            f"{base.get('variant_id', '?')} | {base.get('n_met', '?')} |"
+            for cid, base in entries
+        )
+    else:
+        rows = "*none yet*"
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"""---
+date: {today}
+type: agent-shadow-index
+tags: [agent-shadow, index, observation-only]
+---
+
+# Agent shadow — index
+
+> {_SHADOW_OBSERVATION_NOTICE}
+
+Newest first.
+
+| Candle time | Asset | Variant | n_met |
+|---|---|---|---:|
+{rows}
+"""
+
+
+def _render_shadow_placeholder() -> str:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return f"""---
+date: {today}
+type: agent-shadow-index
+tags: [agent-shadow, index, observation-only, placeholder]
+---
+
+# Agent shadow — index
+
+> {_SHADOW_OBSERVATION_NOTICE}
+
+**Awaiting first candidate.** `logs/agent_shadow.jsonl` does not exist yet, or
+exists but is empty — no WIDE candidate has occurred since the hourly task
+was registered on 2026-09-21 (`docs/operations/agent_shadow.md`). This is
+expected, not an error: a successful no-event poll prints zero candidates and
+costs nothing. This page lists decisions from the moment the first one is
+recorded.
+"""
+
+
+def generate_agent_shadow_notes() -> None:
+    folder = _ensure(VAULT / "AgentShadow")
+    path = ROOT / "logs" / "agent_shadow.jsonl"
+
+    records: list[dict] = []
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+    if not records:
+        _write(folder / "Index.md", _render_shadow_placeholder())
+        print("  → 0 shadow notes (log empty or missing) — placeholder written")
         return
 
-    decisions: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                decisions.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
+    votes_by_candidate: dict[str, list[dict]] = {}
+    decision_by_candidate: dict[str, dict] = {}
+    attachment_by_candidate: dict[str, dict] = {}
+    for r in records:
+        cid = r.get("candidate_id")
+        if cid is None:
+            continue
+        record_type = r.get("record_type")
+        if record_type == "agent_vote":
+            votes_by_candidate.setdefault(cid, []).append(r)
+        elif record_type == "orchestrator_decision":
+            decision_by_candidate[cid] = r
+        elif record_type == "price_attachment":
+            attachment_by_candidate[cid] = r
 
-    # Group by date
-    by_date: dict[str, list[dict]] = {}
-    for d in decisions:
-        ts   = d.get("logged_at_utc", "")
-        date = ts[:10] if ts else "unknown"
-        by_date.setdefault(date, []).append(d)
+    # Oldest first for a stable, deterministic write order; the index is
+    # built from a reversed copy so IT reads newest first, as required.
+    candidate_ids = sorted(
+        set(votes_by_candidate) | set(decision_by_candidate),
+        key=lambda cid: (
+            decision_by_candidate.get(cid)
+            or (votes_by_candidate.get(cid) or [{}])[0]
+        ).get("candle_time", ""),
+    )
 
-    for date, items in sorted(by_date.items()):
-        lines = [f"# Agent Decisions — {date}\n"]
-        for d in items:
-            action     = d.get("action", "?")
-            asset      = d.get("asset", "?")
-            conf       = d.get("confidence", 0.0)
-            reasoning  = d.get("reasoning", "")[:400]
-            icon       = "🟢" if action == "BUY" else ("🔴" if action == "SELL" else "⚪")
-            lines.append(f"## {icon} {asset} → {action}  (conf: {conf:.0%})\n")
-            lines.append(f"{reasoning}...\n\n")
+    index_entries: list[tuple[str, dict]] = []
+    for cid in candidate_ids:
+        votes = votes_by_candidate.get(cid, [])
+        decision = decision_by_candidate.get(cid)
+        attachment = attachment_by_candidate.get(cid)
+        base = decision or (votes[0] if votes else {})
+        slug = _shadow_slug(base.get("candle_time", "unknown"),
+                             base.get("asset", "UNKNOWN"), cid)
+        _write(folder / f"{slug}.md",
+               _render_shadow_note(cid, votes, decision, attachment))
+        index_entries.append((cid, base))
 
-        _write(folder / f"{date}_decisions.md", "\n".join(lines))
+    index_entries.reverse()
+    _write(folder / "Index.md", _render_shadow_index(index_entries))
 
-    print(f"  → {len(by_date)} agent-output notes written")
+    print(f"  → {len(candidate_ids)} shadow decision note(s) + index written")
 
 
 # ── Backtest Results ──────────────────────────────────────────────────────────
@@ -407,9 +1192,18 @@ def _require(pattern: str, text: str, source: Path, what: str) -> "re.Match[str]
     """
     m = re.search(pattern, text, re.DOTALL)
     if not m:
+        try:
+            shown = source.relative_to(ROOT)
+        except ValueError:
+            # `source` is not under the current ROOT — a test pointing this
+            # parser at a scratch file is the normal way that happens, and
+            # the fail-loud error below must report the path it actually
+            # tried, not crash on its own formatting with a different,
+            # more confusing exception.
+            shown = source
         raise RuntimeError(
             f"generate_journal.py Research page: could not find {what} in "
-            f"{source.relative_to(ROOT)}. The source format changed — fix the "
+            f"{shown}. The source format changed — fix the "
             "parser rather than emit a page with a blank or a stale number."
         )
     return m
@@ -667,7 +1461,8 @@ It grows automatically: every trade, backtest, and agent decision is logged here
 | [[Research/]] | Validation status, fee schedule, and cost-sensitivity headline — derived from committed docs, regenerated each run |
 | [[Strategies/]] | Parameters, changelog, approach decisions |
 | [[ErrorsAndFixes/]] | Documented mistakes and how they were fixed |
-| [[AgentOutputs/]] | Daily agent decision logs |
+| [[AgentOutputs/]] | One note per REAL ensemble decision, plus one rolling Scanner Activity note for silent/blocked hours |
+| [[AgentShadow/]] | One note per shadow-mode decision (observation only — no trade resulted) |
 | [[MarketNotes/]] | Market regime observations |
 | [[_Templates/]] | Note templates for manual additions |
 
@@ -764,6 +1559,8 @@ def main() -> None:
         idx  = sys.argv.index("--vault")
         VAULT = Path(sys.argv[idx + 1])
 
+    _written_paths.clear()
+
     print(f"\nGenerating Obsidian vault at: {VAULT}\n")
 
     print("TradeJournal/")
@@ -771,6 +1568,9 @@ def main() -> None:
 
     print("\nAgentOutputs/")
     generate_agent_notes()
+
+    print("\nAgentShadow/")
+    generate_agent_shadow_notes()
 
     print("\nBacktests/")
     generate_backtest_notes()
@@ -789,6 +1589,10 @@ def main() -> None:
 
     print("\nREADME.md")
     generate_readme()
+
+    removed = _prune_stale_notes()
+    print(f"\nPruned {removed} stale note(s) this generator previously wrote "
+          "but did not produce this run.")
 
     print(f"\nDone. Open {VAULT} as an Obsidian vault.")
     print("Install Obsidian from https://obsidian.md (free) and open this folder.")

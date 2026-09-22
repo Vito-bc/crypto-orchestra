@@ -1259,6 +1259,10 @@ def test_run_pipeline_skip_exit_check_does_not_call_check_open_positions() -> No
         patch("pipeline.runner.scan_latest", return_value=None),
         patch("pipeline.runner._log_decision"),
         patch("pipeline.runner._print_decision"),
+        # scan_latest returns None here, so run_pipeline hits the scanner-gate
+        # tally; unpatched it would fall through to the real scanner_activity
+        # state file, which conftest's real-logs guard exists to catch.
+        patch("pipeline.runner._tally_gate"),
     ):
         run_pipeline(_ASSET, _skip_exit_check=True)
 
