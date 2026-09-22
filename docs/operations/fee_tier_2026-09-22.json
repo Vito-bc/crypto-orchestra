@@ -1,0 +1,42 @@
+{
+  "_what_this_is": "Tracked, sanitized evidence for the fee tier that pipeline/fees.py CURRENT_SCHEDULE encodes. The probe's own report lives at logs/stf_cost_report_2026-09-22.json, which .gitignore excludes, so a fresh checkout could not otherwise inspect the evidence behind an operational money constant.",
+  "_scope": "OPERATIONAL ONLY. This is a current-account measurement adopted for prospective paper/shadow accounting. It is not a research artifact, it is not in any registered code-path list, and it says nothing about what any account paid during the 2020-2026 research periods.",
+  "_supersedes": "docs/operations/fee_tier_2026-09-15.json (schedule_id coinbase-intro-1-2026-09, Intro 1, 0.6%/1.2%). That schedule stays registered in pipeline/fees.py so trades opened under it keep reconciling under it; it is no longer what active_schedule() returns.",
+  "schedule_id": "coinbase-intro-2026-09-22",
+  "accounting_effective_from": "2026-09-22T00:00:00+00:00",
+  "accounting_effective_from_note": "A SELECTED accounting-boundary timestamp (00:00 UTC on the day the 4-reading cohort completed), not the instant this schedule went operationally live and not consulted by pipeline/fees.py:active_schedule() at rate-resolution time. It precedes the last supporting reading (2026-09-22T00:05:02Z) by five minutes because it marks the day of confirmation, not a to-the-minute cutover. Actual operational adoption is the date this change merged to main -- see the repository's commit/PR history for that date, not this field.",
+  "source_report": {
+    "path": "logs/stf_cost_report_2026-09-22.json",
+    "sha256": "9be3873301e456626f6b07eea6ec15dce0f70de527e66c2fd4641de39fe39158",
+    "tracked": false,
+    "why_untracked": "logs/ is excluded by .gitignore line 30; the digest and the facts below are what survives a checkout"
+  },
+  "measured_tier": {
+    "pricing_tier": "Intro",
+    "maker_fee_rate": 0.005,
+    "taker_fee_rate": 0.009,
+    "round_trip_taker_pct": 1.8,
+    "rates_are_decimal_fractions": "0.005 means 0.5%"
+  },
+  "evidence": {
+    "fee_observations_measured": 4,
+    "reading_dates": ["2026-09-17", "2026-09-18", "2026-09-19", "2026-09-22"],
+    "first_seen": "2026-09-17",
+    "last_seen": "2026-09-22",
+    "tier_changed_during_the_cohort": false,
+    "gap": {
+      "missing_dates": ["2026-09-20", "2026-09-21"],
+      "reason": "the daily probe's scheduled task failed to wake the machine (WakeToRun) on both dates; no observation was recorded for either day, and none was fabricated or interpolated to fill the gap",
+      "precedent": "the prior cohort (2026-09-11..09-15) also had a one-day gap on 2026-09-13. The adoption criterion has always been four readings with no tier change between them, not four consecutive calendar days -- a gap does not reset the count as long as every reading actually collected agrees"
+    },
+    "credential": "view-only key, permissions re-verified against the exchange per reading (can_view true, can_trade false, can_transfer false)",
+    "independently_audited": false,
+    "how_confirmed": "backtesting/stf_cost_probe.py --report, run against the tracked logs/stf_cost_probe.jsonl (local, no network) on 2026-09-22; fee_tier.observed_tiers shows exactly one 'Intro' entry (4 observations, first_seen 2026-09-17T00:05:04Z, last_seen 2026-09-22T00:05:02Z) and tier_changed_during_the_probe reflects the full observation history, which still includes the superseded Intro 1 readings from 2026-09-11..09-16 -- it is not evidence of a change within this cohort"
+  },
+  "how_to_reverify": [
+    "venv\\Scripts\\python.exe backtesting/stf_cost_probe.py --report",
+    "compare fee_tier.observed_tiers[-1] with measured_tier above",
+    "a different tier means the account moved: add a NEW schedule with a new id and effective date in pipeline/fees.py, and leave this one in place so trades placed under it keep settling under it"
+  ],
+  "not_permanent": "Coinbase tiers move with trailing volume. These are current measured values for one account in September 2026, not Coinbase constants."
+}

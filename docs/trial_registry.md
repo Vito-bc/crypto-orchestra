@@ -755,6 +755,21 @@ rests on the 4-reading cohort (2026-09-17 → 2026-09-20) per
 `fee-tier-change-2026-09-16`, independent of this trial's conclusion.
 **LIVE NO-GO stands.**
 
+**Update (2026-09-22): the candidate tier above was formally adopted.** The
+cohort this trial deferred to (2026-09-17 → 2026-09-20) tolerated a two-day
+gap (09-20/09-21 lost to a scheduled-task WakeToRun failure) and closed on
+2026-09-22 instead, still four readings with no tier change between them.
+`pipeline/fees.py` `CURRENT_SCHEDULE` is now `coinbase-intro-2026-09-22`
+(0.5%/0.9%) — the exact rates this trial calls CANDIDATE throughout. The
+superseded 0.6%/1.2% schedule (`coinbase-intro-1-2026-09`, called ADOPTED
+throughout this trial) stays registered so trades opened under it keep
+settling under it; see CLAUDE.md's "Fees" section and
+`docs/operations/fee_tier_2026-09-22.json`. This trial's own numbers are not
+recomputed — its ADOPTED/CANDIDATE columns above are frozen to what those
+labels meant on 2026-09-17, and the CANDIDATE column is now the operative
+one. The conclusion is unaffected either way: both schedules were clearly
+negative.
+
 ---
 
 ## Standing policy — evidence requirements for every trial registered after this commit (2026-09-18)
@@ -1253,3 +1268,30 @@ the CFM wallet. It does not evaluate whether the Binance proxy history
 transfers to CFM's own (undocumented) funding levels. It changes nothing
 operational: `DRY_RUN=true`, **LIVE NO-GO**, `LIVE_BALANCE_USD`,
 `ASSET_CONFIG` and every closure above are untouched.
+
+### Fee schedule note (2026-09-22) — these numbers are now conservative
+
+`pipeline/fees.py` `CURRENT_SCHEDULE` moved to 0.5% maker / 0.9% taker on
+2026-09-22 (`coinbase-intro-2026-09-22`; see CLAUDE.md's "Fees" section and
+`docs/operations/fee_tier_2026-09-22.json`). Every spot-fee-derived number
+above — the 1.80% spot round trip, the 14.78%/14.39%/yr realised-rate
+break-evens, the 38-46%/yr typical-cycle break-evens, and the equivalent
+figures in
+[`../research/2026-09-19-carry-scoping.md`](../research/2026-09-19-carry-scoping.md)
+and [`../research/2026-09-20-venue-scoping.md`](../research/2026-09-20-venue-scoping.md)
+— was computed at the superseded 0.6% maker / 1.2% taker schedule
+(`coinbase-intro-1-2026-09`). At the lower current rate the spot leg costs
+less, so the true break-even is somewhat below what is written above: this
+makes every stated break-even here **conservative** (a harder bar than carry
+actually has to clear today), not wrong in the direction that would matter for
+the NOT STARTED verdict. **These figures are not recomputed in this PR** —
+the exact revised break-even is not computed here, only its direction (down)
+and sign (still far above 2026's readings). The carry-scoping and
+venue-scoping documents are read-only pricing snapshots, not registered
+trials, and recomputing them is out of scope here; a future re-pricing is
+free to use the current schedule and should say so explicitly when it does.
+This note does not change the verdict above: the spot leg's fee dropped by
+about a fifth of its prior rate (0.4 of 1.8 percentage points of round-trip
+cost), while 2026's trailing funding (3.0%/yr BTC, 1.9%/yr ETH) sits roughly
+a fifth of the ~15%/yr break-even to begin with — a gap of that shape is not
+plausibly closed by a cost change of this size.

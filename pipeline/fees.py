@@ -66,6 +66,18 @@ Re-measuring is a deliberate act: run the probe, audit the reading, add a new
 schedule with a new id and effective date, and point `CURRENT_SCHEDULE` at it.
 The old schedule stays in the registry so trades opened under it keep
 reconciling.
+
+SCHEDULE HISTORY
+-----------------
+Each tier change gets its own dated, named constant, in adoption order:
+
+  LEGACY_SCHEDULE          modeled, pre-2026-09-15, never verified
+  SCHEDULE_INTRO_1_2026_09 measured, Intro 1, 0.6%/1.2% -- adopted 2026-09-15,
+                            superseded 2026-09-22
+  CURRENT_SCHEDULE          measured, Intro, 0.5%/0.9% -- adopted 2026-09-22
+
+Every one of them stays in `_SCHEDULES` forever. `CURRENT_SCHEDULE` is a name
+that moves; a `schedule_id` never does.
 """
 
 from __future__ import annotations
@@ -141,10 +153,13 @@ class FeeSchedule:
             f"unknown execution role {role!r} — expected {MAKER!r} or {TAKER!r}")
 
 
-# The audited September 2026 reading. Tier "Intro 1", observed with the same
-# rates on four separate dates (2026-09-11, 09-12, 09-14, 09-15) through a
-# key-verified view-only credential, with no tier change across the cohort.
-CURRENT_SCHEDULE = FeeSchedule(
+# The September 2026 reading, superseded 2026-09-22. Tier "Intro 1", observed
+# with the same rates on four separate dates (2026-09-11, 09-12, 09-14, 09-15)
+# through a key-verified view-only credential, with no tier change across the
+# cohort, and independently audited (docs/operations/fee_tier_2026-09-15.json).
+# No longer what active_schedule() returns — kept so trades stamped under it
+# keep reconciling under it.
+SCHEDULE_INTRO_1_2026_09 = FeeSchedule(
     schedule_id="coinbase-intro-1-2026-09",
     tier_name="Intro 1",
     maker_rate=0.006,
@@ -155,7 +170,7 @@ CURRENT_SCHEDULE = FeeSchedule(
     # the field comment on FeeSchedule). It even precedes the last supporting
     # reading, 2026-09-15T00:05:01Z, by five minutes: it marks the day the
     # tier was confirmed, not a to-the-minute cutover. Actual operational
-    # adoption is the date this change merges to main — see the PR/commit
+    # adoption is the date this change merged to main — see the PR/commit
     # history for that date, not this field.
     effective_from="2026-09-15T00:00:00+00:00",
     # Points at the TRACKED evidence file. The probe's own report lives under
@@ -169,7 +184,37 @@ CURRENT_SCHEDULE = FeeSchedule(
             "7d7f203a2aae767fd2535ae4959d30df8daa2688bf343a7b1e1a905eb7020b02"),
 )
 
-# What the operational paths charged BEFORE the schedule above was adopted.
+# The September 2026 reading, adopted 2026-09-22. Tier "Intro", observed with
+# the same rates on four dates (2026-09-17, 09-18, 09-19, 09-22) through the
+# same key-verified view-only credential. 09-20 and 09-21 have no reading —
+# lost to the daily probe's scheduled-task WakeToRun failure on both dates —
+# but the adoption bar has always been four readings with no tier change
+# between them, not four consecutive calendar days: the prior cohort above
+# tolerated the same kind of gap on 2026-09-13. See
+# docs/operations/fee_tier_2026-09-22.json for the full evidence, including
+# why this cohort (unlike the one above) was not independently audited.
+CURRENT_SCHEDULE = FeeSchedule(
+    schedule_id="coinbase-intro-2026-09-22",
+    tier_name="Intro",
+    maker_rate=0.005,
+    taker_rate=0.009,
+    # Same convention as SCHEDULE_INTRO_1_2026_09.effective_from above: a
+    # SELECTED accounting-boundary timestamp (00:00 UTC on the day the
+    # cohort completed), not a live cutover and not consulted by
+    # active_schedule(). It precedes the last supporting reading,
+    # 2026-09-22T00:05:02Z, by five minutes. Actual operational adoption is
+    # the date this change merges to main — see the PR/commit history for
+    # that date, not this field.
+    effective_from="2026-09-22T00:00:00+00:00",
+    source=("docs/operations/fee_tier_2026-09-22.json — measured account tier, "
+            "4 key-verified readings 2026-09-17, 09-18, 09-19, 09-22 "
+            "(09-20/09-21 lost to a scheduled-task WakeToRun failure), "
+            "tier_changed_during_the_cohort=false; source report "
+            "logs/stf_cost_report_2026-09-22.json sha256 "
+            "9be3873301e456626f6b07eea6ec15dce0f70de527e66c2fd4641de39fe39158"),
+)
+
+# What the operational paths charged BEFORE any measured schedule was adopted.
 # It is kept so that trades opened under it keep reconciling under it. It is a
 # historical operational assumption, not a measurement, and not a claim about
 # what Coinbase actually charged at the time.
@@ -183,7 +228,8 @@ LEGACY_SCHEDULE = FeeSchedule(
             "2026-09-15; never verified against the account"),
 )
 
-_SCHEDULES = {s.schedule_id: s for s in (CURRENT_SCHEDULE, LEGACY_SCHEDULE)}
+_SCHEDULES = {s.schedule_id: s for s in
+              (CURRENT_SCHEDULE, SCHEDULE_INTRO_1_2026_09, LEGACY_SCHEDULE)}
 
 
 def active_schedule() -> FeeSchedule:
