@@ -219,3 +219,77 @@ def test_malformed_lines_are_skipped_not_fatal(vault, tmp_path) -> None:
 
     notes = [p for p in (vault / "AgentShadow").glob("*.md") if p.name != "Index.md"]
     assert len(notes) == 1
+
+
+# ── LIVE / BACKFILL labelling (schema 2) ─────────────────────────────────────
+
+def _timed(record: dict, timing: str, lag: float, decided_at: str) -> dict:
+    return {**record, "timing": timing, "lag_hours_after_bar_close": lag,
+            "decided_at": decided_at,
+            "bar_close_time": "2026-09-21T15:00:00+00:00"}
+
+
+def test_note_renders_the_flag_and_the_lag(vault, tmp_path) -> None:
+    cid = "cand-live"
+    _shadow_log(tmp_path, [
+        _timed(_vote(cid, "technical"), "BACKFILL", 5.1, "2026-09-21T20:06:00+00:00"),
+        _timed(_decision(cid, earliest_vote_at="2026-09-21T20:06:00+00:00",
+                         latest_vote_at="2026-09-21T20:06:00+00:00"),
+               "BACKFILL", 5.12, "2026-09-21T20:07:00+00:00"),
+    ])
+
+    gj.generate_agent_shadow_notes()
+
+    [note] = [p for p in (vault / "AgentShadow").glob("*.md") if p.name != "Index.md"]
+    text = note.read_text(encoding="utf-8")
+    assert "timing: BACKFILL" in text
+    assert "lag_hours_after_bar_close: 5.12" in text
+    assert "**BACKFILL** — decided 5.12h after the bar closed" in text
+    assert "timing=BACKFILL  lag=5.10h after bar close" in text  # the vote's own
+
+
+def test_index_shows_timing_per_row_and_the_population_split(vault, tmp_path) -> None:
+    live, back = "cand-a", "cand-b"
+    _shadow_log(tmp_path, [
+        _timed(_decision(live, candle_time="2026-09-21T18:00:00+00:00"),
+               "LIVE", 0.1, "2026-09-21T19:06:00+00:00"),
+        _timed(_decision(back, candle_time="2026-09-21T10:00:00+00:00"),
+               "BACKFILL", 8.1, "2026-09-21T19:06:00+00:00"),
+    ])
+
+    gj.generate_agent_shadow_notes()
+
+    index = (vault / "AgentShadow" / "Index.md").read_text(encoding="utf-8")
+    assert "Populations: BACKFILL 1, LIVE 1" in index
+    assert "| LIVE | 0.10 |" in index
+    assert "| BACKFILL | 8.10 |" in index
+    assert "applies to each on its own" in index
+
+
+def test_a_record_without_timing_says_so(vault, tmp_path) -> None:
+    """Schema-1 records predate the flag; never guess one for them."""
+    cid = "cand-old"
+    _shadow_log(tmp_path, [_vote(cid, "technical"), _decision(cid)])
+
+    gj.generate_agent_shadow_notes()
+
+    [note] = [p for p in (vault / "AgentShadow").glob("*.md") if p.name != "Index.md"]
+    assert "timing: NOT RECORDED" in note.read_text(encoding="utf-8")
+
+
+def test_a_log_of_only_checkpoints_is_still_awaiting_first_candidate(
+    vault, tmp_path
+) -> None:
+    _shadow_log(tmp_path, [{
+        "record_type": "scan_checkpoint", "variant_id": "agent-shadow-wide-v1",
+        "run_at": "2026-09-23T10:05:00+00:00",
+        "examined_through": {"ZEC-USD": "2026-09-23T09:00:00+00:00"},
+    }])
+
+    gj.generate_agent_shadow_notes()
+
+    notes = list((vault / "AgentShadow").glob("*.md"))
+    assert [n.name for n in notes] == ["Index.md"]
+    text = notes[0].read_text(encoding="utf-8")
+    assert "Awaiting first candidate" in text
+    assert "ZEC-USD 2026-09-23T09:00:00+00:00" in text

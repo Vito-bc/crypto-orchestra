@@ -33,12 +33,34 @@ $start = Get-Date -Year $now.Year -Month $now.Month -Day $now.Day `
                   -Hour $now.Hour -Minute 5 -Second 0
 if ($start -le $now) { $start = $start.AddHours(1) }
 
+# Execution limit: 40 minutes, derived from the worst case the DEFAULT
+# candidate cap allows (10 candidates in one catch-up run), not a round guess.
+#
+#   Per candidate the shadow calls 6 agents SEQUENTIALLY, then the
+#   orchestrator. Measured on 1,540 live-pipeline runs in logs\scheduler.log
+#   (agents there ran concurrently, so each agent's time is bounded by the
+#   whole concurrent stage A; orchestrator time by total T minus A):
+#       per-candidate bound  T + 5A:  median 78 s, p99 200 s, max 441 s
+#   Frame build for all four assets, measured 2026-09-23 on this host:
+#       9.3 s after an hour's gap, 1.4 s warm (~10 s more for attachments).
+#
+#   10 candidates x 200 s (p99)                    = 2000 s
+#   frames + attachments, 6x the measured ~20 s    =  120 s
+#   total                                          = 2120 s = 35.3 min
+#   one candidate at the observed max + 9 at p99:
+#       441 + 9 x 200 + 120                        = 2361 s = 39.4 min
+#   -> PT40M.
+#
+# Exceeding it is safe, not silent: a killed run keeps every decision it
+# wrote, and the next run resumes from the shadow log. With IgnoreNew, a run
+# still going at the next :05 simply absorbs that slot; the following run's
+# resume point covers it.
 $action = New-ScheduledTaskAction -Execute $runner -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -Once -At $start `
     -RepetitionInterval (New-TimeSpan -Hours 1)
 $settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 20) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 40) `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -WakeToRun `
@@ -46,10 +68,11 @@ $settings = New-ScheduledTaskSettingsSet `
 $settings.StartWhenAvailable = $true
 
 $description = @"
-Log-only event-triggered agent shadow. Polls the latest closed hourly candle at
-minute :05 and calls models only for a new WIDE candidate. Writes observations
+Log-only event-triggered agent shadow. At minute :05 examines every closed
+hourly candle since the last one it recorded (72h look-back cap) and calls
+models only for a new WIDE candidate. Writes observations
 to logs\agent_shadow.jsonl; it has no order path. Wake and battery runs are
-enabled; each invocation is limited to twenty minutes.
+enabled; each invocation is limited to forty minutes.
 "@
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
@@ -74,7 +97,7 @@ if ($registered.Settings.DisallowStartIfOnBatteries) {
 if ($registered.Settings.StopIfGoingOnBatteries) {
     throw "task would stop when switching to battery"
 }
-if ($limit -ne "PT20M") { throw "execution limit is $limit, not PT20M" }
+if ($limit -ne "PT40M") { throw "execution limit is $limit, not PT40M" }
 
 Write-Output ("Task: {0}" -f $TaskName)
 Write-Output ("Primary checkout: {0}" -f $root)
