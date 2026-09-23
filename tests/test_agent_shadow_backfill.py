@@ -175,7 +175,7 @@ def test_rerunning_immediately_writes_nothing_new(env, capsys) -> None:
 def test_dedup_holds_when_the_checkpoint_was_lost(env, capsys) -> None:
     """
     A run killed after writing decisions but before its checkpoint (the task
-    has a 20-minute limit) resumes at the newest DECIDED bar, inclusive, and
+    has a 40-minute limit) resumes at the newest DECIDED bar, inclusive, and
     re-finds it. It is skipped — never decided twice.
     """
     env.seed_checkpoint("2026-09-22T05:00")

@@ -108,7 +108,7 @@ at the later of:
   decided;
 - the newest decided candidate's `candle_time` for this `variant_id`,
   inclusive — which covers a run killed after deciding but before writing its
-  checkpoint (the task has a 20-minute limit). The overlap is free: dedup
+  checkpoint (the task has a 40-minute limit). The overlap is free: dedup
   skips it.
 
 It then examines every closed bar from there to the newest closed bar.
@@ -227,5 +227,6 @@ battery restrictions. The batch file sets `PYTHONIOENCODING=utf-8`. Task
 Scheduler ignores overlapping runs. A successful no-event invocation prints
 zero candidates; that is expected and incurs no model cost. A catch-up run
 deciding the full default cap of 10 candidates makes 70 model calls and can
-approach the task's 20-minute limit; if it is killed, what it decided stays
+approach the task's 40-minute limit (the script states the arithmetic:
+10 candidates at the measured p99 is about 35 minutes); if it is killed, what it decided stays
 decided, and the next run resumes from the log.

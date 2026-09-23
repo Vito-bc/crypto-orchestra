@@ -41,16 +41,14 @@ closure, on `DRY_RUN`, or on `LIVE_BALANCE_USD`.
   call, so this has never been exercised in paper/shadow mode. Pre-existing;
   not introduced by any change in this PR.
 
-- **(d) The fee-tier adoption PR is due after the 2026-09-21 reading
-  completes the Intro cohort.** The account's fee tier changed to "Intro"
-  (maker 0.5% / taker 0.9%) on 2026-09-16, one reading after
-  `pipeline/fees.py` `CURRENT_SCHEDULE` was adopted from the prior "Intro 1"
-  cohort (see `docs/operations/fee_tier_2026-09-15.json`). The same bar
-  applies before adopting the new tier: four consecutive daily readings with
-  no tier change. The cohort is **2026-09-17, 09-18, 09-19, 09-21** — not
-  09-20, which (a) above lost — so the follow-up PR adding a new
-  `FeeSchedule` (new id, old one kept in the registry) is due once the
-  09-21 reading lands in `logs/stf_cost_probe.jsonl`, not before.
+- **(d) RESOLVED — the "Intro" fee tier was adopted in PR #35 on the
+  2026-09-22 cohort.** The account's tier changed to "Intro" (maker 0.5% /
+  taker 0.9%) on 2026-09-16. The cohort that cleared the four-readings bar is
+  **2026-09-17, 09-18, 09-19, 09-22** — not 09-21 as first expected here:
+  both 09-20 ((a) above) and 09-21 were lost readings ((e) below). The
+  adoption added `pipeline/fees.py` `CURRENT_SCHEDULE` =
+  `coinbase-intro-2026-09-22` and kept `coinbase-intro-1-2026-09` registered;
+  evidence in `docs/operations/fee_tier_2026-09-22.json`.
 
 - **(e) The STF cost probe loses a missed day rather than delaying it — the
   same class of problem the agent shadow had, for a different reason.**
