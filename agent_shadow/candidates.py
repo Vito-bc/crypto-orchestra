@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Mapping
 
@@ -64,6 +64,27 @@ class ScanResult:
 def _event_id(asset: str, candle_time: str) -> str:
     raw = f"wide-v1|{asset}|{candle_time}".encode()
     return hashlib.sha256(raw).hexdigest()[:24]
+
+
+def _cross_event_id(asset: str, frame: pd.DataFrame, position: int) -> str:
+    """Key an event to the scanner's EMA50 cross, not its later eligible bars.
+
+    The scanner calls the consecutive above-EMA count ``candles_above`` and
+    reads its cross row at ``position - candles_above + 1``. Only call this
+    after that scanner has accepted a WIDE candidate, so its 1..4-bar trigger
+    and every hard gate have already been checked.
+    """
+    close = frame["close"].to_numpy()
+    ema50 = frame["ema50"].to_numpy()
+    candles_above = 0
+    for index in range(position, position - scanner._MAX_CANDLES_SINCE, -1):
+        if index < 0 or not close[index] > ema50[index]:
+            break
+        candles_above += 1
+    if candles_above == 0:
+        raise ValueError("scanner candidate has no EMA50 cross")
+    cross_time = pd.Timestamp(frame.index[position - candles_above + 1]).isoformat()
+    return hashlib.sha256(f"event-v1|{asset}|{cross_time}".encode()).hexdigest()[:24]
 
 
 def _btc_regime_applicable(asset: str, cfg: dict) -> bool:
@@ -198,6 +219,7 @@ def scan_since(
     *,
     now: datetime | None = None,
     lookback_hours: int = DEFAULT_LOOKBACK_HOURS,
+    per_event: bool = False,
 ) -> ScanResult:
     """
     Examine every closed bar from each asset's resume point to the newest
@@ -227,6 +249,7 @@ def scan_since(
     bars_examined: dict[str, int] = {}
     cold_start: list[str] = []
     truncated: dict[str, dict] = {}
+    seen_events: set[str] = set()
 
     for asset in assets:
         frame, cfg, providers, btc_applicable = _asset_frame(asset, start_ts, end_ts, True)
@@ -265,6 +288,13 @@ def scan_since(
         for candle_time in bars:
             candidate = _candidate_at(frame, candle_time, asset, cfg, btc_applicable, providers)
             if candidate is not None:
+                if per_event:
+                    position = frame.index.get_loc(candle_time)
+                    event_id = _cross_event_id(asset, frame, position)
+                    if event_id in seen_events:
+                        continue
+                    candidate = replace(candidate, event_id=event_id)
+                    seen_events.add(event_id)
                 found.append(candidate)
 
     found.sort(key=lambda item: (item.candle_time, item.asset))

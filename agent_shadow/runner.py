@@ -465,7 +465,10 @@ def main(argv: list[str] | None = None) -> int:
     log = ShadowLog(args.log)
     run_at = _utc_now()
     resume = resume_points(log.records(), variant["variant_id"], variant["assets"])
-    scan = scan_since(variant["assets"], resume, now=run_at, lookback_hours=lookback)
+    scan = scan_since(
+        variant["assets"], resume, now=run_at, lookback_hours=lookback,
+        per_event=variant["candidate_definition"].get("unit") == "ema50_cross",
+    )
     outcome = run_candidates(
         scan.candidates,
         variant,

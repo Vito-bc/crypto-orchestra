@@ -6,8 +6,9 @@ checkout:
 
     powershell -ExecutionPolicy Bypass -File scripts\register_agent_shadow_task.ps1
 
-The task polls after each hourly candle, but model calls are event-triggered:
-they occur only when the frozen scanner produces a new WIDE candidate.
+Re-registration is the activation step for agent-shadow-event-v1. A task
+registered by the previous script keeps using run_agent_shadow.bat (wide-v1)
+until then.
 #>
 
 param([string]$MainCheckout)
@@ -25,7 +26,7 @@ if (-not $MainCheckout) {
 }
 
 $root = (Resolve-Path -LiteralPath $MainCheckout).Path
-$runner = Join-Path $root "scripts\run_agent_shadow.bat"
+$runner = Join-Path $root "scripts\run_agent_shadow_event.bat"
 if (-not (Test-Path -LiteralPath $runner)) { throw "runner not found at $runner" }
 
 $now = Get-Date
@@ -70,7 +71,8 @@ $settings.StartWhenAvailable = $true
 $description = @"
 Log-only event-triggered agent shadow. At minute :05 examines every closed
 hourly candle since the last one it recorded (72h look-back cap) and calls
-models only for a new WIDE candidate. Writes observations
+models only for the first WIDE candidate of each distinct EMA50 cross
+(agent-shadow-event-v1). Writes observations
 to logs\agent_shadow.jsonl; it has no order path. Wake and battery runs are
 enabled; each invocation is limited to forty minutes.
 "@
