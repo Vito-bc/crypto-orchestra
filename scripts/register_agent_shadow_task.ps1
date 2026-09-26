@@ -70,7 +70,8 @@ $settings.StartWhenAvailable = $true
 $description = @"
 Log-only event-triggered agent shadow. At minute :05 examines every closed
 hourly candle since the last one it recorded (72h look-back cap) and calls
-models only for a new WIDE candidate. Writes observations
+models only for the first WIDE candidate of each distinct EMA50 cross
+(agent-shadow-event-v1). Writes observations
 to logs\agent_shadow.jsonl; it has no order path. Wake and battery runs are
 enabled; each invocation is limited to forty minutes.
 "@

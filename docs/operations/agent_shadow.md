@@ -22,6 +22,11 @@ of its observed outcomes and moving that subset into the trading gate is
 forbidden. Such a change requires a new trial in `docs/trial_registry.md`,
 pre-registered before evaluation, with its own SESOI and floor gate.
 
+Apply this reading rule separately to each `variant_id`. `agent-shadow-wide-v1`
+samples qualifying bars, while `agent-shadow-event-v1` samples distinct EMA50
+crosses. Their observations are not pooled without an explicit justification;
+the different units make a pooled count misleading.
+
 ### LIVE and BACKFILL are two populations (added 2026-09-23)
 
 A decision made during catch-up (see "Catch-up after a gap" below) is made by
@@ -54,6 +59,16 @@ producer records `n_met`, including candidates below the live `n_met >= 4`
 gate. The task runs hourly and examines every closed bar since the last one it
 recorded (see "Catch-up after a gap"); LLM calls are made only for new
 candidates.
+
+The scheduled `agent-shadow-event-v1` keeps the same WIDE qualification but
+asks the ensemble once per EMA50 cross. The scanner counts consecutive closes
+strictly above EMA50 (`candles_above`, at most four); the cross candle is at
+`current position - candles_above + 1`. The first examined closed bar that
+passes the WIDE gates supplies the decision. Later qualifying bars tied to
+that asset and cross candle reuse its event id and incur no new model calls.
+A close at or below EMA50 followed by a new cross starts a new event. Cold
+start and catch-up rules below are unchanged; a new variant starts at the
+newest closed bar rather than replaying earlier bars.
 
 `logs/agent_shadow.jsonl` is append-only and gitignored. Tests replace this path
 with a temporary file; the repository-wide real-logs guard in
@@ -171,6 +186,13 @@ declared mature-rate projection is about **$0.92/month**, based on the blind
 candidate census's 54.47 candidates/month and its stated 6-Haiku + 1-Sonnet
 call estimate. This is a budgeting projection, not an outcome claim.
 
+`agent-shadow-event-v1` keeps those assets, agents, weights and models. Its
+only candidate change is one decision per cross instead of per qualifying bar.
+The wide variant's $0.92/month projection counts bars and does not estimate
+this variant's event rate. The shared $5 monthly spend ceiling still applies.
+The wide records stay in the log, but the scheduled batch runner selects the
+event variant after this change is merged and the task is re-registered.
+
 To declare a variant, prepare a complete object with the fields above and use
 `agent_shadow.variants.append_variant`. Review and commit the new line before
 enabling its first run.
@@ -201,7 +223,7 @@ candidates are decided first; the rest are deferred, never dropped.
 Do not run these commands until the owner intentionally enables API use:
 
 ```powershell
-venv\Scripts\python.exe -m agent_shadow.runner --variant agent-shadow-wide-v1
+venv\Scripts\python.exe -m agent_shadow.runner --variant agent-shadow-event-v1
 venv\Scripts\python.exe -m agent_shadow.attachments
 ```
 
