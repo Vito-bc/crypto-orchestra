@@ -60,7 +60,7 @@ gate. The task runs hourly and examines every closed bar since the last one it
 recorded (see "Catch-up after a gap"); LLM calls are made only for new
 candidates.
 
-The scheduled `agent-shadow-event-v1` keeps the same WIDE qualification but
+The declared `agent-shadow-event-v1` keeps the same WIDE qualification but
 asks the ensemble once per EMA50 cross. The scanner counts consecutive closes
 strictly above EMA50 (`candles_above`, at most four); the cross candle is at
 `current position - candles_above + 1`. The first examined closed bar that
@@ -190,8 +190,11 @@ call estimate. This is a budgeting projection, not an outcome claim.
 only candidate change is one decision per cross instead of per qualifying bar.
 The wide variant's $0.92/month projection counts bars and does not estimate
 this variant's event rate. The shared $5 monthly spend ceiling still applies.
-The wide records stay in the log, but the scheduled batch runner selects the
-event variant after this change is merged and the task is re-registered.
+The wide records stay in the log. A task previously registered by this script
+keeps calling `scripts/run_agent_shadow.bat` (wide-v1) after merge;
+re-registering switches its Execute path to `scripts/run_agent_shadow_event.bat`
+and activates the event variant. Confirm the installed task action after
+re-registration.
 
 To declare a variant, prepare a complete object with the fields above and use
 `agent_shadow.variants.append_variant`. Review and commit the new line before
@@ -235,7 +238,7 @@ Get-Content logs\agent_shadow.jsonl -Tail 20
 Get-Content logs\agent_shadow_spend.json
 ```
 
-Register the scheduler only from the primary checkout after merge:
+Activate the event variant only from the primary checkout after merge:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\register_agent_shadow_task.ps1
@@ -243,7 +246,8 @@ Get-ScheduledTaskInfo -TaskName CryptoOrchestra-AgentShadow
 ```
 
 The registration script resolves the primary Git checkout (the first entry in
-`git worktree list --porcelain`), uses its batch file and working directory,
+`git worktree list --porcelain`), uses `scripts/run_agent_shadow_event.bat`
+and that checkout as the working directory,
 sets an hourly :05 poll, `WakeToRun`, `StartWhenAvailable`, and disables both
 battery restrictions. The batch file sets `PYTHONIOENCODING=utf-8`. Task
 Scheduler ignores overlapping runs. A successful no-event invocation prints

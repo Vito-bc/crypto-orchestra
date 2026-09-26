@@ -96,3 +96,18 @@ def test_event_variant_appends_without_altering_wide_record() -> None:
         assert event[field] == wide[field]
     assert event["candidate_definition"]["stage"] == "wide"
     assert event["candidate_definition"]["unit"] == "ema50_cross"
+
+
+def test_registration_is_the_activation_boundary() -> None:
+    root = Path(__file__).resolve().parents[1]
+    wide_batch = (root / "scripts/run_agent_shadow.bat").read_text(encoding="utf-8")
+    event_batch = (root / "scripts/run_agent_shadow_event.bat").read_text(encoding="utf-8")
+    registration = (root / "scripts/register_agent_shadow_task.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--variant agent-shadow-wide-v1" in wide_batch
+    assert "--variant agent-shadow-event-v1" not in wide_batch
+    assert "--variant agent-shadow-event-v1" in event_batch
+    assert 'Join-Path $root "scripts\\run_agent_shadow_event.bat"' in registration
+    assert "New-ScheduledTaskAction -Execute $runner -WorkingDirectory $root" in registration
